@@ -19,7 +19,7 @@
  * export const handler: Handler = (event) => event.id;
  */
 
-const FUNCTION_TYPES = new Set(["ArrowFunctionExpression", "FunctionExpression"]);
+import { isFunction } from "./ast.js";
 
 const preferFunctionDeclaration = {
 	meta: {},
@@ -36,7 +36,7 @@ const preferFunctionDeclaration = {
 				for (const declarator of node.declarations) {
 					// Why the annotation check: a typed binding states a contract that a declaration cannot.
 					const untyped = declarator.id.type === "Identifier" && !declarator.id.typeAnnotation;
-					if (untyped && declarator.init && FUNCTION_TYPES.has(declarator.init.type)) {
+					if (untyped && isFunction(declarator.init)) {
 						context.report({
 							message: `Declare \`${declarator.id.name}\` with \`function\`. A module-scope arrow or function expression is allowed only with a type annotation on the binding.`,
 							node: declarator,
@@ -48,11 +48,8 @@ const preferFunctionDeclaration = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: {
-		"prefer-function-declaration": preferFunctionDeclaration,
-	},
+const rules = {
+	"prefer-function-declaration": preferFunctionDeclaration,
 };
 
-export default plugin;
+export default rules;

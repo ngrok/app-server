@@ -71,16 +71,13 @@ export function createEntry({
 			const server = await internals.listen(adapter);
 			for (const signal of ["SIGTERM", "SIGINT"] as const) {
 				process.once(signal, () => {
-					void (async () => {
-						try {
-							await server.shutdown();
-						} catch (error) {
+					server
+						.shutdown()
+						.catch((error: unknown) => {
 							internals.logger.log("error", "shutdown failed", errorAttributes(error));
 							process.exitCode = 1;
-						} finally {
-							exitAfterFlush();
-						}
-					})();
+						})
+						.finally(exitAfterFlush);
 				});
 			}
 		},

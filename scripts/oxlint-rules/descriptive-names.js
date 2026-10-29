@@ -14,53 +14,13 @@
  * try { run(); } catch (error) { report(error); }
  */
 
+import { boundIdentifiers } from "./ast.js";
+
 const REPLACEMENTS = new Map([
 	["e", "`error` or `event`"],
 	["evt", "`event`"],
 	["el", "`element`"],
 ]);
-
-/**
- * The identifiers that a binding pattern declares.
- *
- * @yields Each `Identifier` node in the pattern, nested patterns included.
- */
-function* boundIdentifiers(pattern) {
-	if (pattern == null) {
-		return;
-	}
-	switch (pattern.type) {
-		case "Identifier": {
-			yield pattern;
-			return;
-		}
-		case "AssignmentPattern": {
-			yield* boundIdentifiers(pattern.left);
-			return;
-		}
-		case "RestElement": {
-			yield* boundIdentifiers(pattern.argument);
-			return;
-		}
-		case "ArrayPattern": {
-			for (const element of pattern.elements) {
-				yield* boundIdentifiers(element);
-			}
-			return;
-		}
-		case "ObjectPattern": {
-			for (const property of pattern.properties) {
-				yield* boundIdentifiers(property.type === "RestElement" ? property : property.value);
-			}
-			return;
-		}
-		case "TSParameterProperty": {
-			yield* boundIdentifiers(pattern.parameter);
-			break;
-		}
-		default:
-	}
-}
 
 const descriptiveNames = {
 	meta: {},
@@ -97,11 +57,8 @@ const descriptiveNames = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: {
-		"descriptive-names": descriptiveNames,
-	},
+const rules = {
+	"descriptive-names": descriptiveNames,
 };
 
-export default plugin;
+export default rules;

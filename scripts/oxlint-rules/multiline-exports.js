@@ -1,7 +1,7 @@
 /**
  * Enforces that named exports with multiple specifiers are written in multi-line
  * format with a `//,` marker comment, but only when the single-line form would
- * fit within the project's printWidth (100, matching .oxfmtrc.json).
+ * fit within the `printWidth` in .oxfmtrc.json.
  *
  * oxfmt collapses export specifier lists to a single line regardless of
  * `objectWrap: preserve`, because export specifiers are not object literals.
@@ -30,8 +30,13 @@
  * export { foo, bar } from "./foo.js";
  */
 
-// Why these numbers: they match oxfmt's `printWidth` in .oxfmtrc.json and its default `tabWidth`.
-const PRINT_WIDTH = 100;
+import { readFileSync } from "node:fs";
+
+// Why read the config: the rule must agree with the width that oxfmt formats to.
+const { printWidth: PRINT_WIDTH } = JSON.parse(
+	readFileSync(new URL("../../.oxfmtrc.json", import.meta.url), "utf8"),
+);
+// Why 2: it is oxfmt's default `tabWidth`, and .oxfmtrc.json does not set it.
 const TAB_WIDTH = 2;
 
 const multilineExports = {
@@ -45,7 +50,7 @@ const multilineExports = {
 					return;
 				}
 
-				const sourceCode = context.getSourceCode();
+				const sourceCode = context.sourceCode;
 
 				// Find the opening { of the specifier list
 				const firstSpec = node.specifiers[0];
@@ -64,9 +69,14 @@ const multilineExports = {
 					return;
 				}
 
-				// Check for existing //,  marker in the text between { and the first specifier
-				const textBeforeFirstSpec = sourceCode.text.slice(openBrace.range[1], firstSpec.range[0]);
-				if (/\/\/,/u.test(textBeforeFirstSpec)) {
+				// Why any line comment: oxfmt cannot collapse a list that holds one, and `//,` is one.
+				const insideBraces = sourceCode
+					.getAllComments()
+					.filter(
+						(comment) =>
+							comment.range[0] > openBrace.range[0] && comment.range[1] < closeBrace.range[1],
+					);
+				if (insideBraces.some((comment) => comment.type === "Line")) {
 					return;
 				}
 
@@ -89,7 +99,7 @@ const multilineExports = {
 				const message =
 					'Named exports with multiple specifiers must use multi-line format with a "//," marker to prevent formatter collapse.';
 				// Why no fix: the fix rebuilds the list from its specifiers, so it would drop a comment.
-				if (sourceCode.commentsExistBetween(openBrace, closeBrace)) {
+				if (insideBraces.length > 0) {
 					context.report({ message, node });
 					return;
 				}
@@ -111,11 +121,8 @@ const multilineExports = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: {
-		"multiline-exports": multilineExports,
-	},
+const rules = {
+	"multiline-exports": multilineExports,
 };
 
-export default plugin;
+export default rules;

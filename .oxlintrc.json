@@ -35,7 +35,7 @@
     "eslint/no-void": ["error", { "allowAsStatement": true }],
     // Why top-level: under `verbatimModuleSyntax`, an import of inline types only stays in the output.
     "import/consistent-type-specifier-style": ["error", "prefer-top-level"],
-    "promise/catch-or-return": ["error", { "allowThen": true }],
+    "promise/catch-or-return": ["error", { "allowThen": true, "allowFinally": true }],
     "eslint/no-duplicate-imports": ["error", { "allowSeparateTypeImports": true }],
     "typescript/array-type": ["error", { "default": "array" }],
     "typescript/consistent-type-definitions": ["error", "type"],
@@ -63,8 +63,6 @@
     "vitest/prefer-to-be-truthy": "off", // `toBe(true)` is stricter
     "vitest/prefer-to-be-falsy": "off",
     "eslint/no-eq-null": "off", // `eqeqeq` with `null: "never"` stays on
-    "eslint/no-undefined": "off", // `unicorn/no-null` and this rule cannot both hold
-    "unicorn/no-null": "off",
     // `typescript/promise-function-async` stays on: an `async` function turns each throw into a
     // rejection, which a caller such as `Promise.allSettled` needs, with or without an `await`.
     "typescript/require-await": "off",
@@ -95,13 +93,17 @@
     "typescript/explicit-function-return-type": "off",
     "typescript/prefer-readonly-parameter-types": "off",
 
-    // Why off: oxfmt owns the order and the layout. These rules disagree with it.
+    // Why off: oxfmt owns the import order, and object keys follow their meaning, not the alphabet.
     "eslint/sort-imports": "off",
     "eslint/sort-keys": "off",
-    "eslint/capitalized-comments": "off",
-    "import/exports-last": "off",
+
+    // Why off: these rules ask for a style that the code does not use.
+    "eslint/capitalized-comments": "off", // a comment can start with a code name, such as `fetch`
+    "import/exports-last": "off", // each export stays next to the code that it exports
     "import/group-exports": "off",
-    "unicorn/numeric-separators-style": "off",
+    "unicorn/numeric-separators-style": "off", // `1_000` groups a four-digit number on purpose
+    "eslint/no-undefined": "off", // the code passes `undefined` to say "no value", as in Hono's `header(name, undefined)`
+    "unicorn/no-null": "off", // Web APIs take `null`, as in `new Response(null)`
 
     // Why off: a limit on size or count with no number that fits each file.
     "eslint/max-lines": "off",
@@ -146,7 +148,9 @@
     {
       "files": ["**/*.test.ts", "test/**"],
       "rules": {
+        // Why: a stub next to its test reads better than one at module scope.
         "unicorn/consistent-function-scoping": "off",
+        // Why: a test casts a stub to the type that the code under test takes.
         "typescript/no-unsafe-type-assertion": "off",
         // Why: Vitest types its asymmetric matchers, such as `expect.objectContaining`, as `any`.
         "typescript/no-unsafe-assignment": "off"
@@ -163,6 +167,13 @@
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-return": "off",
         "typescript/strict-boolean-expressions": "off"
+      }
+    },
+    {
+      // Why: this module exists to end the process.
+      "files": ["src/exit.ts"],
+      "rules": {
+        "unicorn/no-process-exit": "off"
       }
     },
     {

@@ -13,14 +13,14 @@ import testAssertions from "./oxlint-rules/test-assertions.js";
 const plugin = {
 	meta: { name: "app-server" },
 	rules: {
-		...descriptiveNames.rules,
-		...multilineExports.rules,
-		...noBooleanPositionalParam.rules,
-		...noSleepInTests.rules,
-		...preferFunctionDeclaration.rules,
-		...preferNullCheck.rules,
-		...requireSuppressionReason.rules,
-		...testAssertions.rules,
+		...descriptiveNames,
+		...multilineExports,
+		...noBooleanPositionalParam,
+		...noSleepInTests,
+		...preferFunctionDeclaration,
+		...preferNullCheck,
+		...requireSuppressionReason,
+		...testAssertions,
 	},
 };
 

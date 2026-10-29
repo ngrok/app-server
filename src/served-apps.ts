@@ -36,10 +36,7 @@ export function servedApps(): ServedApps {
 		}
 	};
 	return {
-		serve: async <Result>(
-			entry: AppServerEntry,
-			handle: (entry: AppServerEntry) => Promise<Result>,
-		): Promise<Result> => {
+		serve: async (entry, handle) => {
 			if (current?.entry.app === entry.app) {
 				current.entry = entry;
 			} else {

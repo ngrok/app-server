@@ -41,9 +41,6 @@ const preferNullCheck = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: { "prefer-null-check": preferNullCheck },
-};
+const rules = { "prefer-null-check": preferNullCheck };
 
-export default plugin;
+export default rules;

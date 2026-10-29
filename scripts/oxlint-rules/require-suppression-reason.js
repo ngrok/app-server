@@ -20,8 +20,7 @@ const requireSuppressionReason = {
 			Program() {
 				for (const comment of context.sourceCode.getAllComments()) {
 					const match = DIRECTIVE.exec(comment.value);
-					const reason = (match?.groups?.rest ?? "").split("--").slice(1).join("--").trim();
-					if (match && reason === "") {
+					if (match && !/--\s*\S/u.test(match.groups?.rest ?? "")) {
 						context.report({
 							message:
 								"Add a `-- <reason>` clause that names the constraint that makes this rule wrong here. See AGENTS.md.",
@@ -34,11 +33,8 @@ const requireSuppressionReason = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: {
-		"require-suppression-reason": requireSuppressionReason,
-	},
+const rules = {
+	"require-suppression-reason": requireSuppressionReason,
 };
 
-export default plugin;
+export default rules;

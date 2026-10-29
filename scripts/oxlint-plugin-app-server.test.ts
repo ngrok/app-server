@@ -16,16 +16,10 @@ beforeEach(() => {
 	};
 });
 
-/** Lints one fixture with one plugin rule on, and returns the rule IDs that oxlint reports. */
-function lint({
-	rule,
-	source,
-	fileName = "a.ts",
-}: {
-	rule: string;
-	source: string;
-	fileName?: string;
-}): string[] {
+type Fixture = { rule: string; source: string; fileName?: string };
+
+/** Writes one fixture and a config with one plugin rule on. */
+function writeFixture({ rule, source, fileName = "a.ts" }: Fixture): void {
 	writeFileSync(
 		join(rootDirectory, ".oxlintrc.json"),
 		JSON.stringify({
@@ -35,6 +29,11 @@ function lint({
 		}),
 	);
 	writeFileSync(join(rootDirectory, fileName), source);
+}
+
+/** Lints one fixture with one plugin rule on, and returns the rule IDs that oxlint reports. */
+function lint({ rule, source, fileName = "a.ts" }: Fixture): string[] {
+	writeFixture({ rule, source, fileName });
 	const result = spawnSync(oxlintPath, ["--format=unix", fileName], {
 		cwd: rootDirectory,
 		encoding: "utf8",
@@ -55,7 +54,7 @@ function lint({
 
 /** Runs `oxlint --fix` on one fixture with one plugin rule on, and returns the fixed source. */
 function fix({ rule, source }: { rule: string; source: string }): string {
-	lint({ rule, source });
+	writeFixture({ rule, source });
 	spawnSync(oxlintPath, ["--fix", "a.ts"], { cwd: rootDirectory, encoding: "utf8" });
 	return readFileSync(join(rootDirectory, "a.ts"), "utf8");
 }
@@ -73,12 +72,25 @@ describe.each([
 	},
 	{
 		rule: "descriptive-names",
-		invalid: ["try { run(); } catch (e) { report(e); }", "const handle = (evt: Event) => evt;"],
-		valid: ["try { run(); } catch (error) { report(error); }", "const value = { e: 1 };"],
+		invalid: [
+			"try { run(); } catch (e) { report(e); }",
+			"const handle = (evt: Event) => evt;",
+			"const { el } = refs;",
+			"function first([e]: Error[]) { return e; }",
+		],
+		valid: [
+			"try { run(); } catch (error) { report(error); }",
+			"const value = { e: 1 };",
+			"const { e: event } = events;",
+		],
 	},
 	{
 		rule: "no-boolean-positional-param",
-		invalid: ["function flagRow(label: string, enabled: boolean) {}"],
+		invalid: [
+			"function flagRow(label: string, enabled: boolean) {}",
+			"const toggle = (value: string, force?: boolean | undefined) => value;",
+			"function flagRow(label: string, enabled: boolean = false) {}",
+		],
 		valid: [
 			"function flagRow({ label, enabled }: { label: string; enabled: boolean }) {}",
 			"function onOpenChange(id: string, open: boolean) {}",
@@ -87,7 +99,10 @@ describe.each([
 	},
 	{
 		rule: "prefer-function-declaration",
-		invalid: ["export const double = (value: number) => value * 2;"],
+		invalid: [
+			"export const double = (value: number) => value * 2;",
+			"let double = function (value: number) { return value * 2; };",
+		],
 		valid: [
 			"export function double(value: number) { return value * 2; }",
 			"export const handler: Handler = (event) => event.id;",
@@ -96,8 +111,14 @@ describe.each([
 	},
 	{
 		rule: "require-suppression-reason",
-		invalid: ["// oxlint-disable-next-line no-console\nconsole.log(1);"],
-		valid: ["// oxlint-disable-next-line no-console -- the CLI prints its usage.\nconsole.log(1);"],
+		invalid: [
+			"// oxlint-disable-next-line no-console\nconsole.log(1);",
+			"// eslint-disable-next-line no-console --\nconsole.log(1);",
+		],
+		valid: [
+			"// oxlint-disable-next-line no-console -- the CLI prints its usage.\nconsole.log(1);",
+			"// eslint-disable-next-line no-console -- the CLI prints its usage.\nconsole.log(1);",
+		],
 	},
 	{
 		rule: "no-sleep-in-tests",
@@ -108,6 +129,7 @@ describe.each([
 		valid: [
 			"await new Promise((resolve) => { queueMicrotask(resolve); });",
 			'await new Promise((resolve) => { source.once("ready", resolve); setTimeout(() => deferred.resolve(), 100); });',
+			"await new Promise((resolve) => { setTimeout(({ resolve }) => resolve(), 100, deferred); });",
 		],
 	},
 	{
@@ -125,7 +147,10 @@ describe.each([
 	},
 	{
 		rule: "no-config-teardown",
-		invalid: ["afterEach(() => { vi.restoreAllMocks(); });"],
+		invalid: [
+			"afterEach(() => { vi.restoreAllMocks(); });",
+			"beforeEach(() => vi.unstubAllEnvs());",
+		],
 		valid: ["afterEach(() => { server.close(); });"],
 	},
 ])("$rule", ({ rule, invalid, valid }) => {
@@ -138,7 +163,34 @@ describe.each([
 	});
 });
 
+describe.each([
+	{
+		name: "a list with the marker",
+		source: "const a = 1;\nconst b = 2;\nexport {\n\t//,\n\ta,\n\tb,\n};\n",
+	},
+	{
+		name: "a list that holds a line comment",
+		source: "const a = 1;\nconst b = 2;\nexport {\n\ta, // keep\n\tb,\n};\n",
+	},
+	{ name: "one specifier", source: "const a = 1;\nexport { a };\n" },
+	{
+		name: "a list wider than printWidth",
+		source: `export { ${Array.from({ length: 8 }, (_, index) => `exportedNameNumber${index}`).join(", ")} } from "./names.js";\n`,
+	},
+])("multiline-exports allows $name", ({ source }) => {
+	it("reports nothing", () => {
+		expect(lint({ rule: "multiline-exports", source })).toStrictEqual([]);
+	});
+});
+
 describe("multiline-exports", () => {
+	it("reports a list with a block comment, but does not fix it", () => {
+		const source = "const a = 1;\nconst b = 2;\nexport { a, /* keep */ b };\n";
+
+		expect(lint({ rule: "multiline-exports", source })).toStrictEqual(["multiline-exports"]);
+		expect(fix({ rule: "multiline-exports", source })).toBe(source);
+	});
+
 	it("expands a short export list and adds the `//,` marker", () => {
 		const source = "const a = 1;\nconst b = 2;\nexport { a, b };\n";
 

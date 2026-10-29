@@ -17,6 +17,8 @@
  * const handleOpenChange = (open: boolean) => setOpen(open);
  */
 
+import { isFunction } from "./ast.js";
+
 const EMPTY_TYPES = new Set(["TSUndefinedKeyword", "TSNullKeyword"]);
 
 /** Whether a type annotation is a flag: `boolean`, or `boolean` joined only with `undefined` or `null`. */
@@ -49,10 +51,6 @@ function paramType(param) {
 
 const HANDLER_NAME = /^(?:handle|on)[A-Z]/u;
 
-function isFunction(node) {
-	return node?.type === "ArrowFunctionExpression" || node?.type === "FunctionExpression";
-}
-
 const noBooleanPositionalParam = {
 	meta: {},
 	create(context) {
@@ -82,11 +80,8 @@ const noBooleanPositionalParam = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: {
-		"no-boolean-positional-param": noBooleanPositionalParam,
-	},
+const rules = {
+	"no-boolean-positional-param": noBooleanPositionalParam,
 };
 
-export default plugin;
+export default rules;

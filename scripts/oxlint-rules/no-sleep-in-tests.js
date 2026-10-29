@@ -11,6 +11,8 @@
  * await vi.waitFor(() => expect(lines).toHaveLength(2));
  */
 
+import { bodyExpressions, boundIdentifiers, isFunction } from "./ast.js";
+
 /** The name of a member property or a plain identifier, or `null` for a computed key. */
 function propertyName(node) {
 	if (node == null) {
@@ -35,21 +37,20 @@ function isResolveCallback(callback, resolveName) {
 	}
 	// Why the parameter check: a callback parameter with the resolver's name shadows the resolver.
 	if (
-		!callback.type.endsWith("FunctionExpression") ||
-		callback.params.some((param) => param.type === "Identifier" && param.name === resolveName)
+		!isFunction(callback) ||
+		callback.params.some((param) =>
+			[...boundIdentifiers(param)].some((identifier) => identifier.name === resolveName),
+		)
 	) {
 		return false;
 	}
-	const statements = callback.body.type === "BlockStatement" ? callback.body.body : [callback.body];
-	return statements.some((statement) => {
-		const expression = statement.type === "ExpressionStatement" ? statement.expression : statement;
-		// Why a plain identifier: `deferred.resolve()` settles a different promise.
-		return (
+	// Why a plain identifier: `deferred.resolve()` settles a different promise.
+	return bodyExpressions(callback).some(
+		(expression) =>
 			expression.type === "CallExpression" &&
 			expression.callee.type === "Identifier" &&
-			expression.callee.name === resolveName
-		);
-	});
+			expression.callee.name === resolveName,
+	);
 }
 
 const noSleepInTests = {
@@ -61,23 +62,19 @@ const noSleepInTests = {
 					return;
 				}
 				const executor = node.arguments[0];
-				if (executor == null || !executor.type.endsWith("FunctionExpression")) {
+				if (!isFunction(executor)) {
 					return;
 				}
 				const resolve = executor.params[0];
 				if (resolve?.type !== "Identifier") {
 					return;
 				}
-				const body = executor.body.type === "BlockStatement" ? executor.body.body : [executor.body];
-				const sleeps = body.some((statement) => {
-					const expression =
-						statement.type === "ExpressionStatement" ? statement.expression : statement;
-					return (
+				const sleeps = bodyExpressions(executor).some(
+					(expression) =>
 						expression.type === "CallExpression" &&
 						propertyName(expression.callee) === "setTimeout" &&
-						isResolveCallback(expression.arguments[0], resolve.name)
-					);
-				});
+						isResolveCallback(expression.arguments[0], resolve.name),
+				);
 				if (sleeps) {
 					context.report({
 						message:
@@ -90,9 +87,6 @@ const noSleepInTests = {
 	},
 };
 
-const plugin = {
-	meta: { name: "app-server" },
-	rules: { "no-sleep-in-tests": noSleepInTests },
-};
+const rules = { "no-sleep-in-tests": noSleepInTests };
 
-export default plugin;
+export default rules;

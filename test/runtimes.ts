@@ -54,15 +54,13 @@ function startServer(
 			buffered += chunk.toString();
 			const parts = buffered.split("\n");
 			buffered = parts.pop() ?? "";
-			for (const part of parts) {
-				// Why the check: Vite in `start` and the fixture at shutdown write lines that are not JSON.
-				if (part.startsWith("{")) {
-					const line: Line = JSON.parse(part);
-					lines.push(line);
-					const urls = line["app_server.urls"];
-					if (line.message === "listening" && Array.isArray(urls)) {
-						resolve(String(urls[0]));
-					}
+			// Why the filter: Vite in `start` and the fixture at shutdown write lines that are not JSON.
+			for (const part of parts.filter((candidate) => candidate.startsWith("{"))) {
+				const line: Line = JSON.parse(part);
+				lines.push(line);
+				const urls = line["app_server.urls"];
+				if (line.message === "listening" && Array.isArray(urls)) {
+					resolve(String(urls[0]));
 				}
 			}
 		});
