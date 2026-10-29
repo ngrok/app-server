@@ -19,9 +19,14 @@ export default defineConfig({
 	fixedExtension: false,
 	format: "esm",
 	entry: {
-		cli: "./src/cli.ts",
-		index: "./src/index.ts",
-		"react-router": "./src/react-router.ts",
-		vite: "./src/vite.ts",
+		cli: "./src/cli/cli.ts",
+		index: "./src/core/index.ts",
+		node: "./src/node/index.ts",
+		"node-vite": "./src/node/vite.ts",
+		"react-router": "./src/react-router/index.ts",
+		"react-router-vite": "./src/react-router/vite.ts",
+		"tanstack-start": "./src/tanstack-start/index.ts",
+		"tanstack-start-vite": "./src/tanstack-start/vite.ts",
+		vite: "./src/vite/index.ts",
 	},
 });

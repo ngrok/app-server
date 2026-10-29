@@ -1,6 +1,6 @@
 # @ngrok/app-server agent guide
 
-A composable Hono app server for React Router. One package at the repo root, published to npm with changesets.
+A composable Hono app server for React Router and TanStack Start. One package at the repo root, published to npm with changesets.
 
 ## Commands
 
@@ -23,6 +23,7 @@ Do not pipe a check through `tail` or `head`: the pipe hides its exit code.
 - A comment says why, not what. Start it with `Why:` when it explains a choice.
 - Lint turns on every oxlint category. A rule goes off only in `.oxlintrc.json`, with a reason. A suppression comment also gives a reason: `// oxlint-disable-next-line <rule> -- <reason>`.
 - Check for no value with `== null` and `!= null`. `eqeqeq` and `app-server/prefer-null-check` reject `=== null`, `=== undefined`, and `== undefined`.
+- `src/core` imports Hono and nothing else. Node.js code goes in a host adapter (`src/node`), and framework code goes in a framework adapter (`src/react-router`, `src/tanstack-start`). Lint enforces this.
 - The custom lint rules live in `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
 - Tests assert behavior that a caller sees. A fix comes with a test that fails without it.
 - Stop each process you start, and stage files by path.

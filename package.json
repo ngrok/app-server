@@ -1,7 +1,7 @@
 {
   "name": "@ngrok/app-server",
   "version": "0.1.1",
-  "description": "A composable Hono app server for React Router: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, and Deno.",
+  "description": "A composable Hono app server for React Router and TanStack Start: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, and Deno.",
   "homepage": "https://github.com/ngrok/app-server#readme",
   "bugs": {
     "url": "https://github.com/ngrok/app-server/issues"
@@ -25,9 +25,29 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
+    "./node/vite": {
+      "types": "./dist/node-vite.d.ts",
+      "import": "./dist/node-vite.js"
+    },
     "./react-router": {
       "types": "./dist/react-router.d.ts",
       "import": "./dist/react-router.js"
+    },
+    "./react-router/vite": {
+      "types": "./dist/react-router-vite.d.ts",
+      "import": "./dist/react-router-vite.js"
+    },
+    "./tanstack-start": {
+      "types": "./dist/tanstack-start.d.ts",
+      "import": "./dist/tanstack-start.js"
+    },
+    "./tanstack-start/vite": {
+      "types": "./dist/tanstack-start-vite.d.ts",
+      "import": "./dist/tanstack-start-vite.js"
     },
     "./vite": {
       "types": "./dist/vite.d.ts",
@@ -55,10 +75,16 @@
   "devDependencies": {
     "@changesets/changelog-github": "1.0.1",
     "@changesets/cli": "3.0.3",
+    "@react-router/dev": "8.5.1",
+    "@tanstack/react-router": "1.170.46",
+    "@tanstack/react-start": "1.169.4",
     "@types/node": "24.19.2",
+    "@vitejs/plugin-react": "6.1.2",
     "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-router": "8.5.1",
     "tsdown": "0.23.3",
     "typescript": "7.0.2",

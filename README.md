@@ -1,6 +1,6 @@
 # @ngrok/app-server
 
-A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) framework apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno.
+A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) and [TanStack Start](https://tanstack.com/start) apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno.
 
 What it fixes in `@react-router/serve`:
 
@@ -13,7 +13,9 @@ What it fixes in `@react-router/serve`:
 ## Requirements
 
 - Node.js 24+, Bun 1.3+, or Deno 2.9+
-- React Router 8.5+ and Vite 8.3+
+- Vite 8.3+
+- React Router 8.5+, or TanStack Start 1.169+
+- An ES module app and server build. The package has no CommonJS build, and the Vite plugin refuses a CommonJS server build.
 
 ## Install
 
@@ -23,16 +25,49 @@ pnpm add -E @ngrok/app-server hono
 
 ## Set up
 
-Add the Vite plugin next to `reactRouter()`:
+The server has three layers:
+
+- The core: the request pipeline, the plugins, and `createServer`. It imports Hono and nothing else.
+- A framework adapter: how the framework renders a request. `react-router` and `tanstack-start` come with the package.
+- A host adapter: where the server runs. `node` comes with the package. It runs one long-lived process on Node, Bun, or Deno, such as in a Docker image.
+
+Each adapter has a build side, which the Vite config imports, and a run side, which the server build imports.
+
+Add the Vite plugin next to the framework's plugin. For React Router:
 
 ```ts
 // vite.config.ts
-import { serverEntry } from "@ngrok/app-server/vite";
+import { appServer } from "@ngrok/app-server/vite";
+import { node } from "@ngrok/app-server/node/vite";
+import { reactRouterAdapter } from "@ngrok/app-server/react-router/vite";
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-	plugins: [reactRouter(), serverEntry("./server.ts")],
+	plugins: [
+		reactRouter(),
+		appServer({ framework: reactRouterAdapter(), host: node(), app: "./server.ts" }),
+	],
+});
+```
+
+For TanStack Start:
+
+```ts
+// vite.config.ts
+import { appServer } from "@ngrok/app-server/vite";
+import { node } from "@ngrok/app-server/node/vite";
+import { tanstackStartAdapter } from "@ngrok/app-server/tanstack-start/vite";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import viteReact from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+	plugins: [
+		tanstackStart(),
+		viteReact(),
+		appServer({ framework: tanstackStartAdapter(), host: node(), app: "./server.ts" }),
+	],
 });
 ```
 
@@ -58,29 +93,29 @@ Run it:
 }
 ```
 
-`serverEntry` bundles `server.ts` into `build/server/index.js` with the rest of the app, so the server gets its path aliases and the app's one copy of `react-router`. The file stays a valid React Router server build. `serverEntry()` with no argument uses the default plugins.
+`appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. With no `app`, the server uses the default plugins.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
-An app with no `serverEntry` also works: `app-server serve` reads a plain React Router build and runs it with the CLI's copy and the default plugins. In that build, a route that calls `shutdownSignal()` or `eventStream()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
+A React Router app with no Vite plugin also works: `app-server serve build/server/index.js` reads a plain React Router build and runs it with the CLI's copy, the node host, and the default plugins. In that build, a route that calls `shutdownSignal()`, `eventStream()`, or `requestContext()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
 
 ## Commands
 
-- `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. Each request loads the latest server build, so an edit to a route or to `server.ts` applies at once. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
-- `app-server serve [build/server/index.js]`: production. The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer.
+- `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
+- `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer.
 
-On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys node_modules/@ngrok/app-server/dist/cli.js serve`.
+On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys node_modules/@ngrok/app-server/dist/cli.js serve`. For `start` on Deno, also give `--allow-ffi --allow-write --ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop`. Vite loads its native bundler and writes its cache. On Linux, Vite also reads a WSL file that Deno gives only to `--allow-all`.
 
 ## The pipeline
 
-`createServer` runs the plugins in list order, then the app's own Hono routes, then React Router. `defaultPlugins()` returns this order:
+`createServer` runs the plugins in list order, then the app's own Hono routes, then the framework. `defaultPlugins()` returns this order:
 
 1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses.
+3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
 4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
 5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `prerendered({ headers, rewrite })`: every file in `build/client`, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to React Router. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to React Router.
+6. `prerendered({ headers, rewrite })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to the framework.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
@@ -153,9 +188,9 @@ Parse the `Accept` quality values when a client can send `text/markdown;q=0`.
 
 ## Prerendered headers
 
-During React Router's prerender pass, `serverEntry` records the response headers of each prerendered file that is not an HTML document into `build/client/.headers.json`, and `prerendered()` replays them. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`.
+During the framework's prerender pass, `appServer` records each prerendered path and the response headers of each prerendered file that is not an HTML document into `.app-server.json` in the client build. `prerendered()` replays the headers. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`. When the framework does not list its prerendered paths, as with TanStack Start, the server reads them from this file.
 
-A document's headers are not recorded, because `entry.server` sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. For its CSP, use a `script-src` with the hash of each inline script, not a nonce. The prerender writes one nonce into the file, and every visitor can read it, so it protects nothing.
+A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. For its CSP, use a `script-src` with the hash of each inline script, not a nonce. The prerender writes one nonce into the file, and every visitor can read it, so it protects nothing.
 
 ## Logs
 
@@ -171,7 +206,17 @@ createServer({
 
 The default is `jsonSink()`: one JSON object per line on stdout.
 
-In a loader, read the request ID and a logger whose lines carry it:
+In server code, read the request ID and a logger whose lines carry it. `requestContext()` works with each framework. It gives `undefined` outside a server request, such as in a prerender pass:
+
+```ts
+import { requestContext } from "@ngrok/app-server";
+
+export async function loader() {
+	requestContext()?.logger.info("loading");
+}
+```
+
+React Router also gets the values in its context, and TanStack Start gets them as `context.appServer` in its request context:
 
 ```ts
 import { appServerContext } from "@ngrok/app-server/react-router";
@@ -220,18 +265,28 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 For other long work, stop on `shutdownSignal()`.
 
+## Adapters
+
+A framework adapter or a host adapter is two small objects. A third-party adapter uses the same contract.
+
+- `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
+- `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
+- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`.
+
 ## Options
 
 `createServer` takes:
 
 - `plugins`: default `defaultPlugins()`.
 - `logger`: default `jsonSink()`.
-- `listeners`: default `[tcp()]`. A listener decides how connections arrive. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
-- `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`.
+- `listeners`: default the host's listeners. A listener decides how connections arrive. On the node host, the default is `[tcp()]` from `@ngrok/app-server/node`. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
+- `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
 - `shutdownDeadlineMs`: default `10000`.
 
 ## Limits
 
-- The build must serve at `/` (React Router `publicPath`).
-- `serverEntry` does not support React Router `serverBundles`.
+- The build must serve at `/` (Vite `base`). The Vite plugin fails the build for another base.
+- `appServer` does not support React Router `serverBundles`.
+- The package has one host adapter, `node`. A serverless host, such as Cloudflare Workers or Vercel, needs its own adapter. See `HostRuntime` and `HostBuild`.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.

@@ -1,0 +1,8 @@
+{
+  "prerendered": ["/cpu", "/gone"],
+  "headers": {
+    "/cpu": {
+      "x-captured": "yes"
+    }
+  }
+}
