@@ -47,6 +47,10 @@ export {
 } from "./plugins/trailing-slash.js";
 export {
 	//,
+	prefersMarkdown,
+} from "./prefers-markdown.js";
+export {
+	//,
 	requestContext,
 } from "./request-context.js";
 export {

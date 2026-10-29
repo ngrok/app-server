@@ -194,10 +194,35 @@ createServer({
 
 ## Content negotiation
 
-`rewrite` maps a request path to the file to serve. A rewritten path follows the same rules as a request path. This serves a prerendered markdown twin, such as `/components/button.md` for `/components/button`, to a client that asks for markdown:
+One URL can answer HTML to a browser and markdown to an agent, per [acceptmarkdown.com](https://acceptmarkdown.com). `prefersMarkdown(request)` decides which answer a request gets. Use it in the server, in a plugin, and in the app, so each place answers one request the same way.
+
+```ts
+import { prefersMarkdown } from "@ngrok/app-server";
+
+prefersMarkdown(new Request(url, { headers: { Accept: "text/markdown" } })); // => true
+prefersMarkdown(new Request(url, { headers: { Accept: "text/html, text/markdown;q=0.5" } })); // => false
+```
+
+It returns `true` when these conditions are all true:
+
+- The `Accept` header names `text/markdown`. A wildcard (`*/*`, `text/*`) never selects markdown, so a browser gets HTML.
+- The `q` of `text/markdown` is more than 0.
+- The `q` of `text/markdown` is equal to or more than the `q` of HTML. The `q` of HTML comes from the most specific range: `text/html`, then `text/*`, then `*/*`. A tie selects markdown.
+
+When a URL has both answers, follow these rules:
+
+- Send `Vary: Accept` on both answers. Else a shared cache can give the markdown to a browser.
+- Send no `Vary: Accept` for a URL with only one answer, such as the `.md` URL itself.
+- Send the markdown with `Content-Type: text/markdown; charset=utf-8`.
+
+### A prerendered page
+
+`rewrite` maps a request path to the file to serve. A rewritten path follows the same rules as a request path. This serves a prerendered markdown twin, such as `/components/button.md` for `/components/button`:
 
 ```ts
 import { readdirSync } from "node:fs";
+import { createServer, defaultPlugins, prefersMarkdown } from "@ngrok/app-server";
+import type { Plugin } from "@ngrok/app-server";
 
 const markdownPaths = new Set(
 	readdirSync("build/client", { recursive: true, encoding: "utf8" })
@@ -222,15 +247,37 @@ createServer({
 		beforeStatic: [varyOnAccept],
 		prerendered: {
 			rewrite: (path, c) =>
-				markdownPaths.has(twin(path)) && c.req.header("Accept")?.includes("text/markdown")
-					? twin(path)
-					: path,
+				markdownPaths.has(twin(path)) && prefersMarkdown(c.req.raw) ? twin(path) : path,
 		},
 	}),
 });
 ```
 
-Parse the `Accept` quality values when a client can send `text/markdown;q=0`.
+### A rendered page
+
+A page that the framework renders for each request negotiates in the app. In React Router, do it in `handleRequest` in `app/entry.server.tsx`. `markdownFor` stands for the app's own lookup:
+
+```ts
+import { prefersMarkdown } from "@ngrok/app-server";
+
+export default async function handleRequest(
+	request: Request,
+	status: number,
+	headers: Headers /* , … */,
+) {
+	const markdown = markdownFor(new URL(request.url).pathname);
+	if (markdown != null) {
+		headers.append("Vary", "Accept");
+		if (prefersMarkdown(request)) {
+			headers.set("Content-Type", "text/markdown; charset=utf-8");
+			return new Response(markdown, { status, headers });
+		}
+	}
+	// Render the HTML as usual. The `Vary` header goes with it.
+}
+```
+
+A resource route, or a TanStack Start server route, gets the same `Request`. Call `prefersMarkdown(request)` there.
 
 ## Prerendered headers
 
