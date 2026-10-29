@@ -1,5 +1,24 @@
 # @ngrok/app-server
 
+## 0.1.1
+
+### Patch Changes
+
+- [#3](https://github.com/ngrok/app-server/pull/3) [`2c71a17`](https://github.com/ngrok/app-server/commit/2c71a1703e58864ce19488ae2a3e4b7575612394) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server start` tries the next port when its port is in use. Set Vite's `server.strictPort` to stop on a port in use. `app-server serve` does not change: a port in use stops startup.
+
+- [#3](https://github.com/ngrok/app-server/pull/3) [`2c71a17`](https://github.com/ngrok/app-server/commit/2c71a1703e58864ce19488ae2a3e4b7575612394) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Add `--port` to `app-server start` and `app-server serve`. The flag wins over `PORT`.
+
+- [#3](https://github.com/ngrok/app-server/pull/3) [`2c71a17`](https://github.com/ngrok/app-server/commit/2c71a1703e58864ce19488ae2a3e4b7575612394) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Rename the CLI commands. `app-server dev` is now `app-server start`. `app-server start` is now `app-server serve`. Update the scripts in `package.json`:
+  
+  ```json
+  {
+  	"scripts": {
+  		"start": "app-server start",
+  		"serve": "app-server serve"
+  	}
+  }
+  ```
+
 ## 0.1.0
 
 ### Minor Changes
