@@ -62,14 +62,18 @@ describe("serverEntry", () => {
 		});
 	});
 
-	it("exports the app and the adapter next to the React Router build", () => {
+	it("exports the entry that the CLI calls, made by the bundle's copy of the package", () => {
 		expect(serverEntrySource("/app/server.ts")).toBe(
 			[
 				'export * from "virtual:react-router/server-build";',
-				'export { createAdapter as appServerAdapter } from "@ngrok/app-server/react-router";',
-				'export { default as app } from "/app/server.ts";',
+				'import * as build from "virtual:react-router/server-build";',
+				'import { appServerEntry } from "@ngrok/app-server/react-router";',
+				'import app from "/app/server.ts";',
+				"export const appServer = appServerEntry(build, app);",
 			].join("\n"),
 		);
-		expect(serverEntrySource(undefined)).not.toContain("default as app");
+		expect(serverEntrySource(undefined)).toContain(
+			"export const appServer = appServerEntry(build);",
+		);
 	});
 });

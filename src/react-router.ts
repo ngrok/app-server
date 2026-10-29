@@ -6,6 +6,8 @@ import {
 	RouterContextProvider,
 	type ServerBuild,
 } from "react-router";
+import { createServer, type AppServer } from "./create-server.js";
+import { createEntry, type AppServerEntry } from "./entry.js";
 import { jsonSink, sinkLogger } from "./log.js";
 import type { FrameworkAdapter, RequestLogger, SetupInfo } from "./types.js";
 
@@ -78,4 +80,19 @@ export function createAdapter(
 			return handler(request, routerContext);
 		},
 	};
+}
+
+/**
+ * The `appServer` export of a React Router server build. The `serverEntry`
+ * Vite plugin adds it, so the copy of this package in the build runs the
+ * server. With no `app`, the server has the default plugins.
+ *
+ * @example
+ * export const appServer = appServerEntry(build, app);
+ */
+export function appServerEntry(
+	build: ServerBuild,
+	app: AppServer = createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1" }),
+): AppServerEntry {
+	return createEntry({ app, framework: (mode) => createAdapter(build, { mode }) });
 }

@@ -18,10 +18,10 @@ export type BuildIdOptions = {
 export function buildId({ header = "X-Build-Id", value }: BuildIdOptions): Plugin {
 	return {
 		name: "build-id",
+		// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
+		// answer 200 when the build ID changes.
+		etagPart: () => value,
 		middleware: async (context, next) => {
-			// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
-			// answer 200 when the build ID changes.
-			context.set("etagParts", [...(context.get("etagParts") ?? []), value]);
 			await next();
 			const isDocument = context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false;
 			if (isDocument || context.req.path.endsWith(".data")) {

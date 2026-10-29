@@ -173,12 +173,10 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 		setup: () => {
 			parse();
 		},
+		etagPart: () => parse().script,
 		middleware: async (context, next) => {
-			const { script } = parse();
-			if (script != null) {
-				context.set("etagParts", [...(context.get("etagParts") ?? []), script]);
-			}
 			await next();
+			const { script } = parse();
 			const response = context.res;
 			if (
 				script == null ||
