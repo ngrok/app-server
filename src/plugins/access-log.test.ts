@@ -55,6 +55,48 @@ describe("accessLog", () => {
 
 		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
 	});
+
+	it("logs a line when the response body fails", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							controller.error(new Error("render failed"));
+						},
+					}),
+				),
+		});
+
+		const response = await request("/");
+		await expect(response.text()).rejects.toThrow("render failed");
+
+		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
+	});
+
+	it("logs a HEAD request to an app route", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			routes: (app) => {
+				app.get("/livez", (context) => context.text("ok"));
+			},
+		});
+
+		await request("/livez", { method: "HEAD" });
+
+		expect(lines[0]?.attributes["network.bytes_written"]).toBe(0);
+	});
+
+	it("redacts the query of the Referer", async () => {
+		const { request, lines } = await testServer({ plugins: [accessLog()] });
+
+		await (
+			await request("/", { headers: { Referer: "https://example.com/verify?code=123" } })
+		).text();
+
+		expect(lines[0]?.attributes["http.referer"]).toBe("https://example.com/verify?code=REDACTED");
+	});
 });
 
 describe("loggedUrl", () => {

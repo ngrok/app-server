@@ -27,6 +27,15 @@ export function loggedUrl(url: URL, { redact }: { redact: boolean }): string {
 	return `${url.pathname}?${query}`;
 }
 
+/** A `Referer` with its query redacted like {@link loggedUrl}. A value that is not a URL is dropped. */
+function loggedReferer(referer: string | undefined, { redact }: { redact: boolean }) {
+	if (referer == null || !redact) {
+		return referer;
+	}
+	const url = URL.parse(referer);
+	return url == null ? undefined : `${url.origin}${loggedUrl(url, { redact })}`;
+}
+
 /**
  * One log line per request, static hits included, with Datadog standard
  * attribute names. The line goes out when the body ends or the client
@@ -46,7 +55,8 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 				context.var.logger.info("request", lineAttributes(context, { bytes, aborted, started }));
 			};
 			const response = context.res;
-			if (response.body == null) {
+			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
+			if (response.body == null || context.req.method === "HEAD") {
 				write({ bytes: 0, aborted: false });
 				return;
 			}
@@ -54,7 +64,15 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 			let bytes = 0;
 			const counted = new ReadableStream<Uint8Array>({
 				async pull(controller) {
-					const { done, value } = await reader.read();
+					let result: ReadableStreamReadResult<Uint8Array>;
+					try {
+						result = await reader.read();
+					} catch (error) {
+						// Why here: `cancel` does not run for a stream that failed.
+						write({ bytes, aborted: true });
+						throw error;
+					}
+					const { done, value } = result;
 					if (done) {
 						controller.close();
 						write({ bytes, aborted: false });
@@ -80,7 +98,7 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 			"http.url": loggedUrl(new URL(context.req.url), { redact: redactQuery }),
 			"http.status_code": context.res.status,
 			"http.useragent": context.req.header("User-Agent"),
-			"http.referer": context.req.header("Referer"),
+			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
 			"network.client.ip": context.env.remoteAddress,
 			"network.bytes_written": bytes,
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.

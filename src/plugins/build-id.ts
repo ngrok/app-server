@@ -22,7 +22,7 @@ export function buildId({ header = "X-Build-Id", value }: BuildIdOptions): Plugi
 			await next();
 			const isDocument = context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false;
 			if (isDocument || context.req.path.endsWith(".data")) {
-				context.res.headers.set(header, value);
+				context.header(header, value);
 			}
 		},
 	};

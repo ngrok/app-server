@@ -1,4 +1,8 @@
-import type { HandleDocumentRequestFunction, ServerBuild } from "react-router";
+import {
+	RouterContextProvider,
+	type HandleDocumentRequestFunction,
+	type ServerBuild,
+} from "react-router";
 import { describe, expect, it } from "vitest";
 import { requestId } from "./plugins/request-id.js";
 import { appServerContext, createAdapter, isServerBuild } from "./react-router.js";
@@ -44,6 +48,15 @@ describe("createAdapter", () => {
 		const response = await request("/whoami", { headers: { "X-Request-Id": "abc-123" } });
 
 		expect(await response.json()).toEqual({ requestId: "abc-123" });
+	});
+
+	it("gives a logger and no request ID outside a server request, as in a prerender pass", () => {
+		const context = new RouterContextProvider();
+
+		expect(context.get(appServerContext)).toMatchObject({
+			requestId: undefined,
+			logger: { info: expect.any(Function) },
+		});
 	});
 
 	it("reads the client directory and prerendered paths from the build", () => {

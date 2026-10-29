@@ -6,6 +6,7 @@ import {
 	RouterContextProvider,
 	type ServerBuild,
 } from "react-router";
+import { jsonSink, sinkLogger } from "./log.js";
 import type { FrameworkAdapter, RequestLogger, SetupInfo } from "./types.js";
 
 /** What the server puts in React Router's context for each request. */
@@ -17,14 +18,19 @@ export type AppServerContext = {
 };
 
 /**
- * The React Router context key for {@link AppServerContext}.
+ * The React Router context key for {@link AppServerContext}. Outside a server
+ * request, such as in React Router's prerender pass, it holds no request ID
+ * and a logger that writes to `jsonSink()`.
  *
  * @example
  * export async function loader({ context }: Route.LoaderArgs) {
  * 	context.get(appServerContext).logger.info("loading the dashboard");
  * }
  */
-export const appServerContext = createContext<AppServerContext>();
+export const appServerContext = createContext<AppServerContext>({
+	requestId: undefined,
+	logger: sinkLogger(jsonSink()),
+});
 
 /**
  * Whether a module is a React Router server build.

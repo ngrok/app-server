@@ -87,10 +87,10 @@ const securityHeaders: Plugin = {
 	name: "security-headers",
 	middleware: async (c, next) => {
 		await next();
-		c.res.headers.set("X-Frame-Options", "DENY");
+		c.header("X-Frame-Options", "DENY"); // `c.header` also works on a response with immutable headers
 	},
 	setup: (info) => {}, // once, before the first request; a throw stops startup
-	onShutdown: async () => {}, // at shutdown, before the drain deadline
+	onShutdown: async () => {}, // at shutdown, while the listeners drain, up to the deadline
 };
 ```
 

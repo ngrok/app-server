@@ -187,6 +187,8 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			}
 			context.res = new Response(injectBeforeHeadEnd(response.body, script), response);
 			context.res.headers.delete("Content-Length");
+			// Why: the file's ETag does not change when the values do, so a 304 would keep the old values.
+			context.res.headers.delete("ETag");
 		},
 	};
 }

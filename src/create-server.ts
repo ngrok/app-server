@@ -27,8 +27,8 @@ export type RunningServer = {
 	/** The URL of each listener. */
 	urls: readonly string[];
 	/**
-	 * Aborts `shutdownSignal()`, runs each plugin's `onShutdown`, then stops the
-	 * listeners and drains open requests until the deadline.
+	 * Aborts `shutdownSignal()`, then runs each plugin's `onShutdown` while the
+	 * listeners stop and drain open requests. Both stop at the deadline.
 	 */
 	shutdown: () => Promise<void>;
 };
@@ -106,6 +106,19 @@ function withForwardedProto(request: Request): Request {
 	return new Request(url, request);
 }
 
+/** Whether `work` settles before `ms` pass. */
+async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const settled = await Promise.race([
+		work.then(() => true),
+		new Promise<boolean>((resolve) => {
+			timer = setTimeout(resolve, ms, false);
+		}),
+	]);
+	clearTimeout(timer);
+	return settled;
+}
+
 /**
  * Builds an app server: a Hono app that runs the plugins in list order, then
  * the app's own routes, then the framework. It does not listen; the
@@ -174,17 +187,26 @@ export function createServer({
 					stopping ??= (async () => {
 						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
 						abortShutdownSignal();
-						const results = await Promise.allSettled(
-							plugins.map(async (plugin) => plugin.onShutdown?.()),
-						);
-						for (const result of results) {
-							if (result.status === "rejected") {
-								logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+						const pluginShutdown = (async () => {
+							const results = await Promise.allSettled(
+								plugins.map(async (plugin) => plugin.onShutdown?.()),
+							);
+							for (const result of results) {
+								if (result.status === "rejected") {
+									logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+								}
 							}
+						})();
+						// Why at the same time: a plugin that hangs must not keep the listeners open.
+						const [pluginsFinished] = await Promise.all([
+							settlesWithin(pluginShutdown, shutdownDeadlineMs),
+							...started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
+						]);
+						if (!pluginsFinished) {
+							logger.log("warn", "plugin shutdown passed the deadline", {
+								"app_server.deadline_ms": shutdownDeadlineMs,
+							});
 						}
-						await Promise.all(
-							started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
-						);
 						logger.log("info", "stopped", {});
 					})();
 					return stopping;

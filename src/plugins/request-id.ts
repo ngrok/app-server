@@ -24,9 +24,10 @@ export function requestId({ headerName = "X-Request-Id" }: RequestIdOptions = {}
 		middleware: async (context, next) => {
 			await assign(context, next);
 			// Why set it again: a `Response` that the framework returns replaces the headers set before `next`.
+			// `context.header` also copies a response whose headers are immutable.
 			const id = context.get("requestId");
 			if (id != null) {
-				context.res.headers.set(headerName, id);
+				context.header(headerName, id);
 			}
 		},
 	};

@@ -65,4 +65,42 @@ describe("streamingCompress", () => {
 		expect(noGzip.headers.get("Content-Encoding")).toBeNull();
 		expect(noGzip.headers.get("Vary")).toBe("Accept-Encoding");
 	});
+
+	it("leaves a client that refuses gzip with q=0 alone", async () => {
+		const { request } = await testServer({ plugins: [streamingCompress()] });
+
+		const response = await request("/", {
+			headers: { "Accept-Encoding": "gzip;q=0, identity;q=1" },
+		});
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+	});
+
+	it("reads the source only as fast as the client reads", async () => {
+		const total = 1_000;
+		let pulls = 0;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							pulls += 1;
+							controller.enqueue(new TextEncoder().encode("<p>chunk</p>"));
+							if (pulls === total) {
+								controller.close();
+							}
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		await reader?.read();
+		await reader?.cancel();
+
+		expect(pulls).toBeLessThan(10);
+	});
 });

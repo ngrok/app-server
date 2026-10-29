@@ -34,18 +34,25 @@ export function errorAttributes(error: unknown): Record<string, unknown> {
 	return { "error.message": String(error) };
 }
 
-/** A logger whose lines carry the request's ID, method, and path. */
-export function requestLogger(sink: LogSink, context: Context<AppServerEnv>): RequestLogger {
-	// Why read at call time: the `requestId` plugin runs after this logger is made.
+/** A logger that writes to `sink`, with the attributes from `base` first on each line. */
+export function sinkLogger(
+	sink: LogSink,
+	base: () => Readonly<Record<string, unknown>> = () => ({}),
+): RequestLogger {
 	const line =
 		(level: "debug" | "info" | "warn" | "error") =>
 		(message: string, attributes: Readonly<Record<string, unknown>> = {}) => {
-			sink.log(level, message, {
-				"http.request_id": context.get("requestId"),
-				"http.method": context.req.method,
-				"http.url_details.path": context.req.path,
-				...attributes,
-			});
+			sink.log(level, message, { ...base(), ...attributes });
 		};
 	return { debug: line("debug"), info: line("info"), warn: line("warn"), error: line("error") };
+}
+
+/** A logger whose lines carry the request's ID, method, and path. */
+export function requestLogger(sink: LogSink, context: Context<AppServerEnv>): RequestLogger {
+	// Why read at call time: the `requestId` plugin runs after this logger is made.
+	return sinkLogger(sink, () => ({
+		"http.request_id": context.get("requestId"),
+		"http.method": context.req.method,
+		"http.url_details.path": context.req.path,
+	}));
 }

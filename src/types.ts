@@ -99,7 +99,7 @@ export type Plugin = {
 	middleware?: MiddlewareHandler<AppServerEnv>;
 	/** Runs once before the server takes requests. A thrown error stops startup. */
 	setup?: (info: SetupInfo) => void | Promise<void>;
-	/** Runs at shutdown, before the drain deadline. */
+	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
 	onShutdown?: () => Promise<void>;
 };
 

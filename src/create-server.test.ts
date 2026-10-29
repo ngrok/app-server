@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import { tcp } from "./tcp.js";
-import { testServer } from "./test-server.js";
+import { renderedFramework, testServer } from "./test-server.js";
 import type { FrameworkAdapter, LogSink, Plugin } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
@@ -76,6 +76,21 @@ describe("createServer", () => {
 
 		expect(await (await trusted.request("/", init)).text()).toBe("https: form");
 		expect(await (await untrusted.request("/", init)).text()).toBe("http: form");
+	});
+
+	it("adds its headers to a response whose headers are immutable", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			routes: (app) => {
+				app.get("/moved", () => Response.redirect("https://example.com/", 302));
+			},
+		});
+
+		const response = await request("/moved", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.status).toBe(302);
+		expect(response.headers.get("X-Request-Id")).not.toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
 	it("logs an unhandled error and answers 500", async () => {
@@ -171,5 +186,15 @@ describe("createServer", () => {
 		expect(first).toBe("data: hello\n\n");
 		expect(rest).toBe("");
 		expect(onShutdown).toHaveBeenCalledTimes(1);
+	});
+
+	it("stops the listeners at the deadline when a plugin's onShutdown hangs", async () => {
+		const server = await listening(renderedFramework, [
+			{ name: "stuck", onShutdown: () => new Promise(() => {}) },
+		]);
+
+		await server.shutdown();
+
+		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
 	});
 });

@@ -61,6 +61,18 @@ describe("runtimeEnv", () => {
 		expect(response.headers.get("Content-Length")).toBeNull();
 	});
 
+	it("drops the ETag of a document it changes, so a 304 cannot keep old values", async () => {
+		const { request } = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource })],
+			render: async () =>
+				new Response("<html><head></head></html>", {
+					headers: { "Content-Type": "text/html", ETag: 'W/"1-1"' },
+				}),
+		});
+
+		expect((await request("/")).headers.get("ETag")).toBeNull();
+	});
+
 	it("leaves a document alone when no value is public", async () => {
 		const { request } = await testServer({
 			plugins: [runtimeEnv(z.object({ SESSION_KEY: z.string() }), { source: validSource })],
