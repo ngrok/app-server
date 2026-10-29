@@ -43,7 +43,12 @@ function isResolveCallback(callback, resolveName) {
 	const statements = callback.body.type === "BlockStatement" ? callback.body.body : [callback.body];
 	return statements.some((statement) => {
 		const expression = statement.type === "ExpressionStatement" ? statement.expression : statement;
-		return expression.type === "CallExpression" && propertyName(expression.callee) === resolveName;
+		// Why a plain identifier: `deferred.resolve()` settles a different promise.
+		return (
+			expression.type === "CallExpression" &&
+			expression.callee.type === "Identifier" &&
+			expression.callee.name === resolveName
+		);
 	});
 }
 

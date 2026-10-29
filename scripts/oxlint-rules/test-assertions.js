@@ -15,6 +15,16 @@
  */
 
 const TEST_FUNCTION_NAMES = new Set(["it", "test"]);
+
+/** The name at the root of a callee: `it` for `it(…)`, `it.concurrent(…)`, and `it.each([…])(…)`. */
+function rootName(callee) {
+	let current = callee;
+	while (current.type === "MemberExpression" || current.type === "CallExpression") {
+		current = current.type === "MemberExpression" ? current.object : current.callee;
+	}
+	return current.type === "Identifier" ? current.name : null;
+}
+
 /** Whether the call chain under a matcher call starts at `expect(…)` or `expect.element(…)`. */
 function isExpectChain(node) {
 	let current = node;
@@ -41,7 +51,7 @@ function isExpectChain(node) {
 	return false;
 }
 
-/** Collects the matcher names called on `expect` chains in a subtree. */
+/** Collects the matcher names called on `expect` chains in a subtree, with a `not.` prefix when negated. */
 function collectMatchers(node, matchers) {
 	if (node == null || typeof node !== "object") {
 		return;
@@ -52,7 +62,13 @@ function collectMatchers(node, matchers) {
 		node.callee.property.type === "Identifier" &&
 		isExpectChain(node.callee.object)
 	) {
-		matchers.push(node.callee.property.name);
+		const { object, property } = node.callee;
+		// Why keep the negation: `not.toBeDefined()` asserts the exact value `undefined`.
+		const negated =
+			object.type === "MemberExpression" &&
+			object.property.type === "Identifier" &&
+			object.property.name === "not";
+		matchers.push(negated ? `not.${property.name}` : property.name);
 	}
 	// Why skip `parent`: the walk would climb back up the tree.
 	for (const [, child] of Object.entries(node).filter(([name]) => name !== "parent")) {
@@ -71,7 +87,7 @@ const noOnlyToBeDefined = {
 	create(context) {
 		return {
 			CallExpression(node) {
-				if (node.callee.type !== "Identifier" || !TEST_FUNCTION_NAMES.has(node.callee.name)) {
+				if (!TEST_FUNCTION_NAMES.has(rootName(node.callee))) {
 					return;
 				}
 				const body = node.arguments.find(

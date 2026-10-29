@@ -93,13 +93,26 @@ describe.each([
 	},
 	{
 		rule: "no-sleep-in-tests",
-		invalid: ["await new Promise((resolve) => setTimeout(resolve, 100));"],
-		valid: ["await new Promise((resolve) => { queueMicrotask(resolve); });"],
+		invalid: [
+			"await new Promise((resolve) => setTimeout(resolve, 100));",
+			"await new Promise((resolve) => { setTimeout(() => resolve(), 100); });",
+		],
+		valid: [
+			"await new Promise((resolve) => { queueMicrotask(resolve); });",
+			'await new Promise((resolve) => { source.once("ready", resolve); setTimeout(() => deferred.resolve(), 100); });',
+		],
 	},
 	{
 		rule: "no-only-to-be-defined",
-		invalid: ['it("loads", () => { expect(result).toBeDefined(); });'],
-		valid: ['it("loads", () => { expect(result).toBeDefined(); expect(result.id).toBe(1); });'],
+		invalid: [
+			'it("loads", () => { expect(result).toBeDefined(); });',
+			'it.each([1])("loads %s", () => { expect(result).toBeDefined(); });',
+			'it.concurrent("loads", () => { expect(result).toBeDefined(); });',
+		],
+		valid: [
+			'it("loads", () => { expect(result).toBeDefined(); expect(result.id).toBe(1); });',
+			'it("clears", () => { expect(result).not.toBeDefined(); });',
+		],
 	},
 	{
 		rule: "no-config-teardown",
