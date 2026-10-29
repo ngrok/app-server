@@ -146,6 +146,33 @@ describe("createServer", () => {
 		]);
 	});
 
+	it.each([
+		["a string", "boom"],
+		["null", null],
+	])("logs %s that a route throws and answers 500", async (_, thrown) => {
+		const { request, lines } = await testServer({
+			plugins: [],
+			routes: (app) => {
+				app.get("/throws", () => {
+					throw thrown;
+				});
+			},
+		});
+
+		const response = await request("/throws");
+
+		expect(response.status).toBe(500);
+		expect(lines).toEqual([
+			{
+				level: "error",
+				message: "unhandled error",
+				attributes: expect.objectContaining({
+					"error.message": `A non-Error value was thrown: ${String(thrown)}`,
+				}),
+			},
+		]);
+	});
+
 	it("stops the handler's stream when the client disconnects through gzip and the access log", async () => {
 		const cancel = vi.fn<(reason: unknown) => void>();
 		const server = await listening(

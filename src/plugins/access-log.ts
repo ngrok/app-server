@@ -56,8 +56,14 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 			};
 			const response = context.res;
 			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
-			if (response.body == null || context.req.method === "HEAD") {
+			if (context.req.method === "HEAD") {
 				write({ bytes: 0, aborted: false });
+				return;
+			}
+			// Why `Content-Length`: a stage that answers through Node's response, such as Vite in
+			// development, gives a response with no body and the length it sent.
+			if (response.body == null) {
+				write({ bytes: Number(response.headers.get("Content-Length") ?? 0), aborted: false });
 				return;
 			}
 			const reader = response.body.getReader();

@@ -66,6 +66,22 @@ describe("streamingCompress", () => {
 		expect(noGzip.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("leaves a partial response alone, so its Content-Range still matches the bytes", async () => {
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response("abc", {
+					status: 206,
+					headers: { "Content-Type": "text/plain", "Content-Range": "bytes 0-2/10" },
+				}),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(await response.text()).toBe("abc");
+	});
+
 	it("leaves a client that refuses gzip with q=0 alone", async () => {
 		const { request } = await testServer({ plugins: [streamingCompress()] });
 

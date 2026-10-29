@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { createServer, serverInternals } from "../create-server.js";
+import type { LoggedLine } from "../test-server.js";
 import { testServer } from "../test-server.js";
+import { tcp } from "../tcp.js";
+import type { NodeMiddleware } from "../types.js";
+import { accessLog } from "./access-log.js";
+import { requestId } from "./request-id.js";
 import { assets, prerendered, type PrerenderedOptions } from "./static.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
@@ -12,6 +18,7 @@ const files: Record<string, string> = {
 	"components/button.md": "# Button",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
+	"llms-full.txt": "x".repeat(200_000),
 	"assets/entry-abc123.js": "export {};",
 	".env": "SECRET=1",
 	".well-known/security.txt": "Contact: security@example.com",
@@ -74,16 +81,49 @@ describe("prerendered", () => {
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
 	});
 
-	it("serves the file that rewrite names", async () => {
-		const { request } = await staticServer({
-			rewrite: (path, context) =>
-				context.req.header("Accept") === "text/markdown" ? `${path}.md` : path,
-		});
+	it("serves a page's markdown file to a client that prefers markdown", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
 
-		const response = await request("/components/button", { headers: { Accept: "text/markdown" } });
+		const response = await request("/components/button/", {
+			headers: { Accept: "text/markdown, text/html;q=0.9" },
+		});
 
 		expect(await response.text()).toBe("# Button");
 		expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+		expect(response.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("serves HTML, with Vary, to a client that refuses markdown or does not name it", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const refuses = await request("/components/button", {
+			headers: { Accept: "text/html, text/markdown;q=0" },
+		});
+		const browser = await request("/components/button", {
+			headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" },
+		});
+
+		expect(await refuses.text()).toBe("<h1>Button</h1>");
+		expect(await browser.text()).toBe("<h1>Button</h1>");
+		expect(browser.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("sends Vary: Accept only for a page with a markdown file", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const response = await request("/llms.txt", { headers: { Accept: "text/markdown" } });
+
+		expect(await response.text()).toBe("llms");
+		expect(response.headers.get("Vary")).toBeNull();
+	});
+
+	it("serves the page itself when markdownTwins is off", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/components/button", { headers: { Accept: "text/markdown" } });
+
+		expect(await response.text()).toBe("<h1>Button</h1>");
+		expect(response.headers.get("Vary")).toBeNull();
 	});
 
 	it("serves a React Router data file as text/x-script", async () => {
@@ -117,6 +157,18 @@ describe("prerendered", () => {
 		expect(await response.text()).toBe("");
 	});
 
+	it("streams a large file in chunks, not as one buffer", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/llms-full.txt");
+		const reader = response.body?.getReader();
+		const first = await reader?.read();
+		await reader?.cancel();
+
+		expect(response.headers.get("Content-Length")).toBe("200000");
+		expect(first?.value?.byteLength).toBeLessThan(200_000);
+	});
+
 	it("answers HEAD with the length and no body", async () => {
 		const { request } = await staticServer();
 
@@ -136,6 +188,12 @@ describe("prerendered", () => {
 		expect(await (await request("/.well-known/security.txt")).text()).toBe(
 			"Contact: security@example.com",
 		);
+	});
+
+	it("hands an encoded slash to the framework, so a file has one URL and its captured headers", async () => {
+		const { request } = await staticServer();
+
+		expect(await (await request("/components%2Fbutton")).text()).toBe("rendered");
 	});
 
 	it("never serves a file outside the client build", async () => {
@@ -183,5 +241,43 @@ describe("assets", () => {
 
 		expect(response.status).toBe(404);
 		expect(await response.text()).toBe("Not Found");
+	});
+});
+
+describe("assets in development", () => {
+	it("sends the request ID with Vite's answer and logs Vite's status and length", async () => {
+		const lines: LoggedLine[] = [];
+		const app = createServer({
+			plugins: [requestId(), accessLog(), assets()],
+			logger: { log: (level, message, attributes) => lines.push({ level, message, attributes }) },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (_, response) => {
+			response.statusCode = 418;
+			response.setHeader("Content-Length", "6");
+			response.end("teapot");
+		};
+		const internals = serverInternals(app);
+		const framework = { clientDirectory, prerenderedPaths: [], fetch: async () => new Response() };
+		await internals?.prepare({
+			mode: "development",
+			viteMiddleware,
+			...framework,
+			logger: { log: () => {} },
+		});
+		const server = await internals?.listen(framework);
+
+		const response = await fetch(new URL("/@vite/client", server?.urls[0]), {
+			headers: { "X-Request-Id": "abc-123" },
+		});
+		await server?.shutdown();
+
+		expect(response.status).toBe(418);
+		expect(await response.text()).toBe("teapot");
+		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+		expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
+			"http.status_code": 418,
+			"network.bytes_written": 6,
+		});
 	});
 });

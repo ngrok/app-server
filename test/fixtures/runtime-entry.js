@@ -45,6 +45,16 @@ const routes = {
 			}),
 			{ headers: { "Content-Type": "text/html" } },
 		),
+	// A body that never ends and ignores `shutdownSignal()`, so only the drain deadline stops it.
+	"/stuck": () =>
+		new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode("stuck"));
+				},
+			}),
+			{ headers: { "Content-Type": "text/plain" } },
+		),
 	"/events": (request) =>
 		eventStream({ signal: request.signal }, ({ send }) => {
 			send({ data: "hello" });

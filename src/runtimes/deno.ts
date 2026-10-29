@@ -18,6 +18,44 @@ type DenoGlobal = {
 	) => DenoServer;
 };
 
+/** Wraps a response body so the listener can end it at the deadline. `open` holds its closer while the body is open. */
+function closableResponse(response: Response, open: Set<() => void>): Response {
+	if (response.body == null) {
+		return response;
+	}
+	const reader = response.body.getReader();
+	let force: () => void;
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			force = () => {
+				open.delete(force);
+				controller.error(new Error("The shutdown deadline passed."));
+				void reader.cancel();
+			};
+			open.add(force);
+		},
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read();
+				if (done) {
+					open.delete(force);
+					controller.close();
+				} else {
+					controller.enqueue(value);
+				}
+			} catch (error) {
+				open.delete(force);
+				throw error;
+			}
+		},
+		cancel(reason) {
+			open.delete(force);
+			return reader.cancel(reason);
+		},
+	});
+	return new Response(body, response);
+}
+
 /** Listens with `Deno.serve`. */
 export async function listen(
 	fetch: FetchHandler,
@@ -25,6 +63,9 @@ export async function listen(
 ): Promise<StartedListener> {
 	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `Deno` is a runtime global with no types in this package.
 	const deno = Reflect.get(globalThis, "Deno") as DenoGlobal;
+	// Why: Deno has no forced close, and `shutdown()` waits for each open request. At the
+	// deadline, the listener answers each pending request with a 503 and ends each open body.
+	const open = new Set<() => void>();
 	const server = deno.serve(
 		{
 			port: options.port,
@@ -32,19 +73,34 @@ export async function listen(
 			// Why a no-op: the server logs its own startup line.
 			onListen: () => {},
 		},
-		(request, info) => fetch(request, { remoteAddress: info.remoteAddr.hostname }),
+		async (request, info) => {
+			const forced = Promise.withResolvers<Response>();
+			const force = () => {
+				forced.resolve(new Response(null, { status: 503 }));
+			};
+			open.add(force);
+			const answer = (async () => {
+				try {
+					return closableResponse(
+						await fetch(request, { remoteAddress: info.remoteAddr.hostname }),
+						open,
+					);
+				} finally {
+					open.delete(force);
+				}
+			})();
+			return Promise.race([answer, forced.promise]);
+		},
 	);
 	return {
 		url: listenerUrl(options.hostname, server.addr.port),
 		stop: async ({ deadlineMs }) => {
-			// Why a race: `shutdown()` waits for every open request, and Deno has no forced close.
-			let deadline: ReturnType<typeof setTimeout> | undefined;
-			await Promise.race([
-				server.shutdown(),
-				new Promise<void>((resolve) => {
-					deadline = setTimeout(resolve, deadlineMs);
-				}),
-			]);
+			const deadline = setTimeout(() => {
+				for (const force of open) {
+					force();
+				}
+			}, deadlineMs);
+			await server.shutdown();
 			clearTimeout(deadline);
 		},
 	};

@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { capturedHeadersKey, readCapturedHeaders } from "../captured-headers.js";
+import { findMarkdownPaths, markdownTwinPath, prefersMarkdown } from "../markdown-twins.js";
 import { findStaticFile, staticResponse } from "../static-files.js";
 import type { AppServerEnv, NodeMiddleware, Plugin } from "../types.js";
 
@@ -11,6 +12,11 @@ function viteStage(viteMiddleware: NodeMiddleware): MiddlewareHandler<AppServerE
 		const { incoming, outgoing } = context.env;
 		if (incoming == null || outgoing == null) {
 			return next();
+		}
+		// Why before Vite: it sends the headers itself, so the headers the earlier stages set, such
+		// as the request ID, must be on `outgoing` first.
+		for (const [name, value] of context.res.headers) {
+			outgoing.appendHeader(name, value);
 		}
 		const answered = await new Promise<boolean>((resolve, reject) => {
 			const onFinish = () => {
@@ -28,8 +34,16 @@ function viteStage(viteMiddleware: NodeMiddleware): MiddlewareHandler<AppServerE
 		});
 		if (answered) {
 			// Why a new response per request: the later stages set headers on it, and
-			// `@hono/node-server` sends nothing for a response with this header.
-			return new Response(null, { headers: { "x-hono-already-sent": "true" } });
+			// `@hono/node-server` sends nothing for a response with this header. The status and
+			// length are Vite's, for the access log.
+			const length = outgoing.getHeader("Content-Length");
+			return new Response(null, {
+				status: outgoing.statusCode,
+				headers: {
+					"x-hono-already-sent": "true",
+					...(length == null ? {} : { "Content-Length": String(length) }),
+				},
+			});
 		}
 		return next();
 	};
@@ -80,10 +94,12 @@ export type PrerenderedOptions = {
 		context: Context<AppServerEnv>,
 	) => Readonly<Record<string, string>> | undefined;
 	/**
-	 * Maps a request path to the URL path of the file to serve, for content
-	 * negotiation. Return the path unchanged to serve the usual file.
+	 * Serve a page's markdown file, such as `/components/button.md` for
+	 * `/components/button`, to a client that prefers `text/markdown` (see
+	 * `prefersMarkdown`). Each page with a markdown file gets `Vary: Accept`.
+	 * @default false
 	 */
-	rewrite?: (path: string, context: Context<AppServerEnv>) => string;
+	markdownTwins?: boolean;
 };
 
 /**
@@ -110,6 +126,9 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			}
 			const root = info.clientDirectory;
 			const captured = await readCapturedHeaders(root);
+			const markdownPaths = options.markdownTwins
+				? await findMarkdownPaths(root)
+				: new Set<string>();
 			const missing: string[] = [];
 			for (const path of info.prerenderedPaths) {
 				if ((await findStaticFile(root, path)) == null) {
@@ -127,15 +146,22 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				if (method !== "GET" && method !== "HEAD") {
 					return next();
 				}
-				const path = options.rewrite?.(context.req.path, context) ?? context.req.path;
+				const twin = markdownTwinPath(context.req.path, markdownPaths);
+				const path =
+					twin != null && prefersMarkdown(context.req.header("Accept")) ? twin : context.req.path;
 				const file = await findStaticFile(root, path);
 				if (file == null) {
-					return next();
+					await next();
+				} else {
+					context.res = await staticResponse(context, file, {
+						...captured.get(capturedHeadersKey(path)),
+						...options.headers?.(path, context),
+					});
 				}
-				return staticResponse(context, file, {
-					...captured.get(capturedHeadersKey(path)),
-					...options.headers?.(path, context),
-				});
+				// Why: one URL answers HTML or markdown, so a shared cache must key on `Accept`.
+				if (twin != null) {
+					context.header("Vary", "Accept", { append: true });
+				}
 			};
 		},
 		middleware: (context, next) => (stage == null ? next() : stage(context, next)),

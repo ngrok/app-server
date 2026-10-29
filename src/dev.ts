@@ -38,8 +38,9 @@ export async function dev(): Promise<void> {
 		: "virtual:react-router/server-build";
 	const sink = jsonSink();
 	let fallback: unknown;
-	// Why keep it: a stop signal runs the `onShutdown` hooks of the app that served last.
-	let lastInternals: ServerInternals | undefined;
+	// Why keep each one: an edit to `server.ts` makes a new app, and the old app's plugins still
+	// hold what their `setup` opened. A stop signal runs the `onShutdown` hooks of every app once.
+	const preparedApps = new Set<ServerInternals>();
 
 	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
 		try {
@@ -50,7 +51,7 @@ export async function dev(): Promise<void> {
 					return fallback;
 				},
 			});
-			lastInternals = internals;
+			preparedApps.add(internals);
 			await internals.prepare({
 				mode: "development",
 				viteMiddleware: viteServer.middlewares,
@@ -98,7 +99,9 @@ export async function dev(): Promise<void> {
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {
 			abortShutdownSignal();
-			void lastInternals?.stopPlugins();
+			for (const internals of preparedApps) {
+				void internals.stopPlugins();
+			}
 			httpServer.closeAllConnections();
 			httpServer.close();
 			viteServer.close().catch((error: unknown) => {

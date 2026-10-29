@@ -50,6 +50,13 @@ export type AppServerEnv = {
 		/** The request ID, set by the `requestId` plugin. */
 		requestId?: string;
 		logger: RequestLogger;
+		/**
+		 * Values that change a response at run time, such as the public env values
+		 * that `runtimeEnv` writes into a document. The static stages add them to
+		 * each file's ETag, so a 304 never keeps a response made with old values.
+		 * Add to the list before `next`.
+		 */
+		etagParts?: readonly string[];
 	};
 };
 

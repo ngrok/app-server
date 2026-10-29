@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { testServer } from "../test-server.js";
 import { runtimeEnv } from "./runtime-env.js";
+import { prerendered } from "./static.js";
+
+const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-runtime-env-"));
+writeFileSync(join(clientDirectory, "index.html"), "<html><head></head><body>page</body></html>");
+
+afterAll(() => {
+	rmSync(clientDirectory, { recursive: true, force: true });
+});
 
 const schema = z.object({
 	PORT: z.coerce.number().int(),
@@ -71,6 +82,26 @@ describe("runtimeEnv", () => {
 		});
 
 		expect((await request("/")).headers.get("ETag")).toBeNull();
+	});
+
+	it("answers 200 with new values for a prerendered page revalidated with an ETag from before a restart", async () => {
+		const serve = (url: string) =>
+			testServer({
+				plugins: [
+					runtimeEnv(schema, { source: { ...validSource, PUBLIC_API_URL: url } }),
+					prerendered(),
+				],
+				clientDirectory,
+			});
+		const before = await serve("https://old.example.com");
+		const etag = (await before.request("/", { method: "HEAD" })).headers.get("ETag") ?? "";
+		const after = await serve("https://new.example.com");
+
+		const response = await after.request("/", { headers: { "If-None-Match": etag } });
+
+		expect(etag).not.toBe("");
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("https://new.example.com");
 	});
 
 	it("leaves a document alone when no value is public", async () => {

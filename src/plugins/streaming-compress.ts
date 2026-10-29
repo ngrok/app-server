@@ -63,8 +63,8 @@ function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Arr
 /**
  * Gzips text responses and flushes after each chunk, so a streamed page shell
  * or a server-sent event reaches the client at once. `hono/compress` holds a
- * stream until it ends. Skips a response that is already encoded or marked
- * `no-transform`, and always sets `Vary: Accept-Encoding`.
+ * stream until it ends. Skips a response that is already encoded, a partial
+ * response, and one marked `no-transform`. Always sets `Vary: Accept-Encoding`.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress()] });
@@ -83,6 +83,8 @@ export function streamingCompress(): Plugin {
 				accepts(context, { header: "Accept-Encoding", supports: ["gzip"], default: "identity" }) !==
 					"gzip" ||
 				response.headers.has("Content-Encoding") ||
+				// Why: gzip changes the bytes, so a `Content-Range` would no longer match them.
+				response.headers.has("Content-Range") ||
 				/\bno-transform\b/.test(response.headers.get("Cache-Control") ?? "") ||
 				!COMPRESSIBLE.test(response.headers.get("Content-Type") ?? "")
 			) {

@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
@@ -33,33 +34,29 @@ async function fileStats(path: string) {
 }
 
 /**
- * Finds the file under `root` that answers a URL path. A directory answers
- * with its `index.html` and no redirect, so a prerendered page keeps its URL.
- * Dotfiles, encoded traversal, and paths outside `root` find nothing.
+ * Finds the file under `root` that answers a decoded URL path, such as
+ * Hono's `context.req.path`. A directory answers with its `index.html` and no
+ * redirect, so a prerendered page keeps its URL. Dotfiles and paths outside
+ * `root` find nothing.
+ *
+ * Why no second decode: Hono decodes the path but keeps an encoded `/` as
+ * `%2F`. A second decode makes `/a%2Fb` another name for `/a/b`, and the
+ * captured headers, keyed by `/a/b`, would not apply to it.
  *
  * @example
  * await findStaticFile("/app/build/client", "/components/button");
  * // => { path: "/app/build/client/components/button/index.html", size: 5120, mtimeMs: 1761652800000 }
  */
-export async function findStaticFile(
-	root: string,
-	urlPath: string,
-): Promise<StaticFile | undefined> {
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(urlPath);
-	} catch {
-		return undefined;
-	}
+export async function findStaticFile(root: string, path: string): Promise<StaticFile | undefined> {
 	if (
-		decoded.includes("\0") ||
-		decoded.includes("\\") ||
-		decoded.split("/").includes("..") ||
-		hasDotSegment(decoded)
+		path.includes("\0") ||
+		path.includes("\\") ||
+		path.split("/").includes("..") ||
+		hasDotSegment(path)
 	) {
 		return undefined;
 	}
-	const candidate = join(root, decoded);
+	const candidate = join(root, path);
 	if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
 		return undefined;
 	}
@@ -75,6 +72,30 @@ export async function findStaticFile(
 		}
 	}
 	return undefined;
+}
+
+/**
+ * A file's bytes, one chunk for each pull, so a slow client holds one chunk,
+ * not the whole file. The handle closes at the end, on an error, or on cancel.
+ */
+function fileStream(handle: FileHandle): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const { bytesRead, buffer } = await handle.read({ buffer: new Uint8Array(65_536) });
+				if (bytesRead === 0) {
+					await handle.close();
+					controller.close();
+				} else {
+					controller.enqueue(buffer.subarray(0, bytesRead));
+				}
+			} catch (error) {
+				await handle.close();
+				throw error;
+			}
+		},
+		cancel: () => handle.close(),
+	});
 }
 
 /** The content type of a file, with the React Router and markdown types that `mime` lacks. */
@@ -103,18 +124,29 @@ function matchesEtag(ifNoneMatch: string | undefined, etag: string): boolean {
 	);
 }
 
+/** A weak ETag from a file's size, its modification time, and the request's `etagParts`. */
+function fileEtag(file: StaticFile, parts: readonly string[]): string {
+	const base = `${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}`;
+	if (parts.length === 0) {
+		return `W/"${base}"`;
+	}
+	const hash = createHash("sha256").update(parts.join("\0")).digest("base64url").slice(0, 16);
+	return `W/"${base}-${hash}"`;
+}
+
 /**
- * The response for a static file, with a weak ETag from its size and
- * modification time. A matching `If-None-Match` gets a 304, and `HEAD` gets
- * the headers only. `headers` replace the defaults, so a captured
- * `Content-Type` wins over the one from the file name.
+ * The response for a static file, with a weak ETag from its size,
+ * modification time, and the request's `etagParts`. A matching
+ * `If-None-Match` gets a 304, and `HEAD` gets the headers only. `headers`
+ * replace the defaults, so a captured `Content-Type` wins over the one from
+ * the file name.
  */
 export async function staticResponse(
 	context: Context<AppServerEnv>,
 	file: StaticFile,
 	headers: Readonly<Record<string, string>>,
 ): Promise<Response> {
-	const etag = `W/"${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}"`;
+	const etag = fileEtag(file, context.get("etagParts") ?? []);
 	const responseHeaders = new Headers({ "Content-Type": contentType(file.path), ETag: etag });
 	for (const [name, value] of Object.entries(headers)) {
 		responseHeaders.set(name, value);
@@ -128,7 +160,6 @@ export async function staticResponse(
 		responseHeaders.set("Content-Length", String(file.size));
 		return new Response(null, { headers: responseHeaders });
 	}
-	const body = await readFile(file.path);
-	responseHeaders.set("Content-Length", String(body.byteLength));
-	return new Response(body, { headers: responseHeaders });
+	responseHeaders.set("Content-Length", String(file.size));
+	return new Response(fileStream(await open(file.path)), { headers: responseHeaders });
 }

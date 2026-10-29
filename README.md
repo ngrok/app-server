@@ -73,10 +73,10 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js start`. On Deno, run
 
 1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded and `no-transform` responses.
+3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses.
 4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
 5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `prerendered({ headers, rewrite })`: every file in `build/client`, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to React Router.
+6. `prerendered({ headers, markdownTwins })`: every file in `build/client`, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to React Router. With `markdownTwins: true`, a client that prefers `text/markdown` gets the page's `.md` file, such as `/components/button.md` for `/components/button`, and each page that has one gets `Vary: Accept`. In `entry.server`, `prefersMarkdown(request.headers.get("Accept"))` gives the same answer for a rendered page.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
@@ -94,11 +94,13 @@ const securityHeaders: Plugin = {
 };
 ```
 
+A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, adds that value to `c.var.etagParts` before `next`. The static stages put it in each file's ETag, so a 304 never keeps a response made with an old value.
+
 ## Prerendered headers
 
 During React Router's prerender pass, `serverEntry` records the response headers of each prerendered file that is not an HTML document into `build/client/.headers.json`, and `prerendered()` replays them. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`.
 
-A document's headers are not recorded, because `entry.server` sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. A CSP for a prerendered page must not use a nonce.
+A document's headers are not recorded, because `entry.server` sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. A CSP nonce must be the one in the prerendered file, not a new one for each request.
 
 ## Logs
 
@@ -176,5 +178,5 @@ For other long work, stop on `shutdownSignal()`.
 ## Limits
 
 - The build must serve at `/` (React Router `publicPath`).
-- `serverEntry` does not support React Router `serverBundles`, such as the Vercel preset makes.
+- `serverEntry` does not support React Router `serverBundles`.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.

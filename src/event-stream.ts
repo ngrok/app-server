@@ -78,6 +78,8 @@ export function eventStream(
 				}
 				closed = true;
 				clearInterval(heartbeat);
+				// Why: the listener lives on `shutdownSignal()`, which lasts the life of the process.
+				stopSignal.removeEventListener("abort", close);
 				controller.close();
 			};
 			const write = (text: string) => {
@@ -98,6 +100,7 @@ export function eventStream(
 				.then(close, (error: unknown) => {
 					closed = true;
 					clearInterval(heartbeat);
+					stopSignal.removeEventListener("abort", close);
 					controller.error(error);
 				});
 		},

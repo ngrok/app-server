@@ -174,8 +174,11 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			parse();
 		},
 		middleware: async (context, next) => {
-			await next();
 			const { script } = parse();
+			if (script != null) {
+				context.set("etagParts", [...(context.get("etagParts") ?? []), script]);
+			}
+			await next();
 			const response = context.res;
 			if (
 				script == null ||
@@ -187,7 +190,7 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			}
 			context.res = new Response(injectBeforeHeadEnd(response.body, script), response);
 			context.res.headers.delete("Content-Length");
-			// Why: the file's ETag does not change when the values do, so a 304 would keep the old values.
+			// Why: a rendered document's ETag does not cover the values, so a 304 could keep old ones.
 			context.res.headers.delete("ETag");
 		},
 	};

@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eventStream } from "./event-stream.js";
 
@@ -67,5 +68,21 @@ describe("eventStream", () => {
 		const response = eventStream({}, () => Promise.reject(new Error("upstream failed")));
 
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
+	});
+
+	// Why: the signal hangs off `shutdownSignal()`, so a listener left on it keeps the stream in memory.
+	it.each([
+		["resolves", () => Promise.resolve()],
+		["rejects", () => Promise.reject(new Error("upstream failed"))],
+	])("removes its abort listener when produce %s", async (_, settle) => {
+		let producerSignal: AbortSignal | undefined;
+		const response = eventStream({}, ({ signal }) => {
+			producerSignal = signal;
+			return settle();
+		});
+
+		await readAll(response).catch(() => {});
+
+		expect(producerSignal && getEventListeners(producerSignal, "abort")).toEqual([]);
 	});
 });

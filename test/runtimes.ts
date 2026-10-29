@@ -57,9 +57,16 @@ function request(url: string, headers: Record<string, string> = {}): Promise<Inc
 	});
 }
 
-function exited(child: ChildProcess): Promise<number | null> {
-	return new Promise((resolve) => {
-		child.once("exit", resolve);
+/** The exit code, or a rejection when the child runs past `ms`, so a hang fails the run. */
+function exited(child: ChildProcess, ms: number): Promise<number | null> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			reject(new Error(`The server did not exit within ${ms} ms.`));
+		}, ms);
+		child.once("exit", (code) => {
+			clearTimeout(timer);
+			resolve(code);
+		});
 	});
 }
 
@@ -137,10 +144,20 @@ async function check(runtime: string): Promise<void> {
 			events.once("end", resolve);
 			events.resume();
 		});
-		const exitCode = exited(child);
+		const stuck = await request(new URL("/stuck", base).href);
+		const stuckEnded = new Promise<void>((resolve) => {
+			stuck.once("close", resolve);
+			stuck.resume();
+		});
+		// Why 10 s: the fixture's drain deadline is 3 s.
+		const exitCode = exited(child, 10_000);
 		child.kill("SIGTERM");
-		await eventsEnded;
-		assert.equal(await exitCode, 0, "shutdown ends the open event stream and exits cleanly");
+		assert.equal(
+			await exitCode,
+			0,
+			"shutdown ends the event stream, closes a stuck body at the deadline, and exits cleanly",
+		);
+		await Promise.all([eventsEnded, stuckEnded]);
 		process.stdout.write(`ok ${runtime}\n`);
 	} finally {
 		child.kill("SIGKILL");

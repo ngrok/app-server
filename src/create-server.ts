@@ -147,7 +147,14 @@ export function createServer({
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
-		await next();
+		try {
+			await next();
+		} catch (error) {
+			// Why: Hono sends only an `Error` to `onError`, and rethrows any other value.
+			throw error instanceof Error
+				? error
+				: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
+		}
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
