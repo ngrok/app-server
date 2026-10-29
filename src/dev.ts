@@ -24,10 +24,15 @@ export async function dev(): Promise<void> {
 		server: { middlewareMode: true, ws: { server: httpServer } },
 		appType: "custom",
 	});
-	const ssr = viteServer.environments.ssr;
-	if (ssr == null || !vite.isRunnableDevEnvironment(ssr)) {
-		throw new Error("Vite's SSR environment cannot run modules.");
-	}
+	// Why read it for each request: a Vite restart, such as after a config edit, replaces the environments.
+	const ssrRunner = () => {
+		const ssr = viteServer.environments.ssr;
+		if (ssr == null || !vite.isRunnableDevEnvironment(ssr)) {
+			throw new Error("Vite's SSR environment cannot run modules.");
+		}
+		return ssr.runner;
+	};
+	ssrRunner();
 	const entryId = viteServer.config.plugins.some((plugin) => plugin.name === "@ngrok/app-server")
 		? SERVER_ENTRY_ID
 		: "virtual:react-router/server-build";
@@ -38,7 +43,7 @@ export async function dev(): Promise<void> {
 
 	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
 		try {
-			const { framework, internals, fetch } = await loadEntry(await ssr.runner.import(entryId), {
+			const { framework, internals, fetch } = await loadEntry(await ssrRunner().import(entryId), {
 				mode: "development",
 				fallbackApp: () => {
 					fallback ??= createServer({ logger: sink });

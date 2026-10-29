@@ -27,11 +27,17 @@ function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Arr
 		},
 		async pull() {
 			try {
-				const { done, value } = await reader.read();
-				if (done) {
+				let chunk = await reader.read();
+				// Why skip empty chunks: gzip writes nothing for one, and a pull that enqueues nothing
+				// is not called again.
+				while (!chunk.done && chunk.value.byteLength === 0) {
+					chunk = await reader.read();
+				}
+				if (chunk.done) {
 					gzip.end();
 					return;
 				}
+				const { value } = chunk;
 				await new Promise<void>((resolve, reject) => {
 					gzip.write(value, (error) => {
 						if (error == null) {

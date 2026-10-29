@@ -94,6 +94,18 @@ describe("prerendered", () => {
 		expect(response.headers.get("Content-Type")).toBe("text/x-script");
 	});
 
+	it("compares If-None-Match with an ETag that the headers option sets", async () => {
+		const generatedEtag =
+			(await (await staticServer()).request("/llms.txt")).headers.get("ETag") ?? "";
+		const { request } = await staticServer({ headers: () => ({ ETag: '"custom"' }) });
+
+		const custom = await request("/llms.txt", { headers: { "If-None-Match": '"custom"' } });
+		const generated = await request("/llms.txt", { headers: { "If-None-Match": generatedEtag } });
+
+		expect(custom.status).toBe(304);
+		expect(generated.status).toBe(200);
+	});
+
 	it("answers 304 to a matching If-None-Match", async () => {
 		const { request } = await staticServer();
 		const etag = (await request("/llms.txt")).headers.get("ETag") ?? "";
@@ -118,6 +130,8 @@ describe("prerendered", () => {
 		const { request } = await staticServer();
 
 		expect(await (await request("/.env")).text()).toBe("rendered");
+		expect(await (await request("/%2eenv")).text()).toBe("rendered");
+		expect(await (await request("/%E0%A4%A")).text()).toBe("rendered");
 		expect(await (await request("/.headers.json")).text()).toBe("rendered");
 		expect(await (await request("/.well-known/security.txt")).text()).toBe(
 			"Contact: security@example.com",

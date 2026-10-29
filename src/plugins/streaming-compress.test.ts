@@ -103,4 +103,27 @@ describe("streamingCompress", () => {
 
 		expect(pulls).toBeLessThan(10);
 	});
+
+	it("keeps streaming past an empty chunk", async () => {
+		const encoder = new TextEncoder();
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							for (const text of ["hello", "", "bye"]) {
+								controller.enqueue(encoder.encode(text));
+							}
+							controller.close();
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe("hellobye");
+	});
 });

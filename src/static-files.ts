@@ -88,12 +88,17 @@ function contentType(path: string): string {
 	return getMimeType(path) ?? "application/octet-stream";
 }
 
+/** An ETag without its weak prefix, for the weak comparison that `If-None-Match` uses. */
+function opaqueTag(etag: string): string {
+	return etag.trim().replace(/^W\//, "");
+}
+
 /** Whether an `If-None-Match` header lists an ETag. */
 function matchesEtag(ifNoneMatch: string | undefined, etag: string): boolean {
 	return (
 		ifNoneMatch?.split(",").some((candidate) => {
 			const trimmed = candidate.trim();
-			return trimmed === "*" || trimmed === etag || trimmed === etag.slice(2);
+			return trimmed === "*" || opaqueTag(trimmed) === opaqueTag(etag);
 		}) ?? false
 	);
 }
@@ -114,7 +119,8 @@ export async function staticResponse(
 	for (const [name, value] of Object.entries(headers)) {
 		responseHeaders.set(name, value);
 	}
-	if (matchesEtag(context.req.header("If-None-Match"), etag)) {
+	// Why the final header: `headers` can replace the ETag.
+	if (matchesEtag(context.req.header("If-None-Match"), responseHeaders.get("ETag") ?? etag)) {
 		responseHeaders.delete("Content-Type");
 		return new Response(null, { status: 304, headers: responseHeaders });
 	}
