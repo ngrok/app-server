@@ -1,19 +1,23 @@
 import type { Context } from "hono";
 import type { AppServerEnv, RequestContext, RequestStore } from "./types.js";
 
-let store: RequestStore | undefined;
+/**
+ * Each store that a request ran in. Why a set: two entries in one process can
+ * have two hosts, and each request uses the store of its own app.
+ */
+const stores = new Set<RequestStore>();
 
-/** Sets the storage that {@link requestContext} reads. `createEntry` sets the host's. */
-export function setRequestStore(next: RequestStore | undefined): void {
-	store = next;
-}
-
-/** Runs `work` with `context` as the request that {@link requestContext} reads. */
+/** Runs `work` in `store` with `context` as the request that {@link requestContext} reads. */
 export async function withRequestContext(
+	store: RequestStore | undefined,
 	context: Context<AppServerEnv>,
 	work: () => Promise<void>,
 ): Promise<void> {
-	return store == null ? work() : store.run(context, work);
+	if (store == null) {
+		return work();
+	}
+	stores.add(store);
+	return store.run(context, work);
 }
 
 /**
@@ -27,9 +31,11 @@ export async function withRequestContext(
  * }
  */
 export function requestContext(): RequestContext | undefined {
-	const context = store?.get();
-	if (context == null) {
-		return undefined;
+	for (const store of stores) {
+		const context = store.get();
+		if (context != null) {
+			return { requestId: context.get("requestId"), logger: context.var.logger };
+		}
 	}
-	return { requestId: context.get("requestId"), logger: context.var.logger };
+	return undefined;
 }

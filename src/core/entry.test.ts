@@ -125,6 +125,33 @@ describe("createEntry", () => {
 		expect(requestContext()).toBeUndefined();
 	});
 
+	it("keeps requestContext() for an entry when another entry has a host with no storage", async () => {
+		const { host, fetch } = testHost();
+		const seen = vi.fn<(id: string | undefined) => void>();
+		const entry = createEntry({
+			app: createServer({ plugins: [requestId()], logger: recordingLogger([]) }),
+			host,
+			framework: () =>
+				stubFramework(async () => {
+					seen(requestContext()?.requestId);
+					return new Response("ok");
+				}),
+		});
+		createEntry({
+			app: createServer({ logger: recordingLogger([]) }),
+			host: { name: host.name, files: host.files, listeners: host.listeners },
+			framework: () => stubFramework(),
+		});
+
+		await entry.start();
+		await fetch()?.(
+			new Request("http://localhost/", { headers: { "X-Request-Id": "abc-123" } }),
+			{},
+		);
+
+		expect(seen).toHaveBeenCalledWith("abc-123");
+	});
+
 	it("names the adapter when no client directory is known", async () => {
 		const { host } = testHost();
 		const entry = createEntry({

@@ -16,6 +16,7 @@ import type {
 	Listener,
 	LogSink,
 	Plugin,
+	RequestStore,
 	SetupInfo,
 } from "./types.js";
 
@@ -51,6 +52,8 @@ export type ServerInternals = {
 	) => Promise<RunningServer>;
 	/** Runs each plugin's `onShutdown` once, and stops waiting for them at the shutdown deadline. */
 	stopPlugins: () => Promise<void>;
+	/** Sets the storage for `requestContext()` in this app's requests. `createEntry` sets the host's. */
+	setRequestStore: (store: RequestStore | undefined) => void;
 };
 
 /** Options for {@link defaultPlugins}. */
@@ -163,6 +166,7 @@ export function createServer({
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
 	const app = new Hono<AppServerEnv>();
+	let requestStore: RequestStore | undefined;
 	if (trustForwardedProto) {
 		// Why wrap `fetch`: every plugin and route, not only the framework, must see the trusted scheme.
 		const dispatch = app.fetch;
@@ -170,7 +174,7 @@ export function createServer({
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
-		await withRequestContext(context, next);
+		await withRequestContext(requestStore, context, next);
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
@@ -205,6 +209,9 @@ export function createServer({
 	let stoppingPlugins: Promise<void> | undefined;
 	const internals: ServerInternals = {
 		logger,
+		setRequestStore: (store) => {
+			requestStore = store;
+		},
 		prepare: async (info) => {
 			prepared ??= (async () => {
 				for (const plugin of plugins) {

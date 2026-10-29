@@ -3,7 +3,6 @@ import { readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { errorAttributes } from "./log.js";
-import { setRequestStore } from "./request-context.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import type {
 	AppServerEnv,
@@ -80,7 +79,7 @@ export function createEntry({
 			"The app is not from `createServer()` of the copy of @ngrok/app-server in this build.",
 		);
 	}
-	setRequestStore(host.storage);
+	internals.setRequestStore(host.storage);
 	const setupInfo = async (runtime: FrameworkRuntime) => {
 		const directory = clientDirectory ?? runtime.clientDirectory;
 		if (directory == null) {
