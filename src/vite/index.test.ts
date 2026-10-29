@@ -124,6 +124,30 @@ describe("appServer", () => {
 		);
 	});
 
+	it("passes the framework's runtime options to its runtime", () => {
+		expect(
+			serverEntrySource({
+				framework: { ...reactRouterAdapter(), runtimeOptions: "{ serverFnBase: BASE }" },
+				host: node(),
+				appModule: undefined,
+				clientDirectory: "CLIENT",
+			}),
+		).toContain("framework: (mode) => runtime(serverModule, { ...{ serverFnBase: BASE }, mode }),");
+	});
+
+	it("fails the build for a server build that is not an ES module", () => {
+		const plugin = appServer({ framework: reactRouterAdapter(), host: node() });
+		const renderStart = plugin.renderStart;
+		const handler = typeof renderStart === "function" ? renderStart : renderStart?.handler;
+
+		expect(() => {
+			Reflect.apply(handler ?? (() => {}), { environment: { name: "ssr" } }, [
+				{ format: "cjs" },
+				{},
+			]);
+		}).toThrow('needs an ES module server build, and this build has the format "cjs"');
+	});
+
 	it("fails the build for a base other than /", async () => {
 		await expect(
 			preview({

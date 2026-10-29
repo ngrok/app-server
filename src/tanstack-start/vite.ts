@@ -13,6 +13,8 @@ export function tanstackStartAdapter(): FrameworkBuild {
 		name: "tanstack-start",
 		serverModule: "virtual:tanstack-start-server-entry",
 		runtimeModule: "@ngrok/app-server/tanstack-start",
+		// Why in the entry: Start defines `TSS_SERVER_FN_BASE` at build time, so only bundled code sees it.
+		runtimeOptions: "{ serverFnBase: process.env.TSS_SERVER_FN_BASE }",
 		// Why this flag: Start sets it in the build process before it starts the preview server
 		// of its prerender pass.
 		isPrerenderPass: () => process.env.TSS_PRERENDERING === "true",

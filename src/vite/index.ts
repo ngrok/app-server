@@ -47,6 +47,12 @@ export type FrameworkBuild = {
 	 * module. It has the type `FrameworkRuntimeFactory`.
 	 */
 	runtimeModule: string;
+	/**
+	 * The source of an object literal with more options for `runtime`, such as
+	 * a build constant of the framework. The bundler replaces the constants in
+	 * it, because the source is part of the server entry.
+	 */
+	runtimeOptions?: string;
 	/** Whether a preview server runs the framework's prerender pass. */
 	isPrerenderPass: (server: PreviewServer) => boolean;
 	/** Throws for a config that the adapter does not support, so the build fails, not the first request. */
@@ -79,7 +85,7 @@ export type AppServerOptions = {
 
 /** What {@link serverEntrySource} needs. */
 type EntrySource = {
-	framework: Pick<FrameworkBuild, "serverModule" | "runtimeModule">;
+	framework: Pick<FrameworkBuild, "serverModule" | "runtimeModule" | "runtimeOptions">;
 	host: Pick<HostBuild, "runtimeModule">;
 	/** The absolute path of the app module, else `undefined` for the default app. */
 	appModule: string | undefined;
@@ -110,7 +116,7 @@ export function serverEntrySource({
 		`\tapp,`,
 		`\thost,`,
 		`\tclientDirectory: ${clientDirectory},`,
-		`\tframework: (mode) => runtime(serverModule, { mode }),`,
+		`\tframework: (mode) => runtime(serverModule, { ${framework.runtimeOptions == null ? "" : `...${framework.runtimeOptions}, `}mode }),`,
 		`});`,
 	].join("\n");
 }
@@ -211,6 +217,14 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin {
 			// preview reads that entry.
 			if (this.environment.name === SERVER_ENVIRONMENT && this.environment.mode === "build") {
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
+			}
+		},
+		renderStart(options) {
+			// Why: the server entry uses `import.meta.url`, and the CLI loads it as an ES module.
+			if (this.environment.name === SERVER_ENVIRONMENT && options.format !== "es") {
+				throw new Error(
+					`@ngrok/app-server needs an ES module server build, and this build has the format "${options.format}".`,
+				);
 			}
 		},
 		resolveId: (id) => (id === SERVER_ENTRY_ID ? RESOLVED_SERVER_ENTRY_ID : undefined),
