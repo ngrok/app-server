@@ -16,6 +16,6 @@ describe("requestId", () => {
 
 		const response = await request("/", { headers: { "X-Request-Id": "<script>" } });
 
-		expect(response.headers.get("X-Request-Id")).toMatch(/^[\da-f]{8}-[\da-f]{4}-/);
+		expect(response.headers.get("X-Request-Id")).toMatch(/^[\da-f]{8}-[\da-f]{4}-/u);
 	});
 });

@@ -1,12 +1,8 @@
 import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Plugin, PreviewServer } from "vite";
-import {
-	//,
-	CAPTURED_HEADERS_FILE,
-	capturedHeadersKey,
-	type CapturedHeaders,
-} from "./captured-headers.js";
+import { CAPTURED_HEADERS_FILE, capturedHeadersKey } from "./captured-headers.js";
+import type { CapturedHeaders } from "./captured-headers.js";
 
 /** The module ID of the server build entry that {@link serverEntry} generates. */
 export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";

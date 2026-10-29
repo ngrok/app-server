@@ -19,7 +19,7 @@ export type CapturedHeaders = Record<string, Record<string, string>>;
  * capturedHeadersKey("/components/button/"); // => "/components/button"
  */
 export function capturedHeadersKey(pathname: string): string {
-	const trimmed = pathname.replace(/\/+$/, "");
+	const trimmed = pathname.replace(/\/+$/u, "");
 	return trimmed === "" ? "/" : trimmed;
 }
 

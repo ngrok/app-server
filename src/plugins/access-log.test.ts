@@ -35,7 +35,7 @@ describe("accessLog", () => {
 		await reader?.read();
 		const linesBeforeEnd = lines.length;
 		held.release();
-		while (!(await reader?.read())?.done) {
+		while ((await reader?.read())?.done === false) {
 			// Drains the body.
 		}
 

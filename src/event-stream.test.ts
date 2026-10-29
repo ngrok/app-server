@@ -17,7 +17,7 @@ describe("eventStream", () => {
 		});
 
 		expect(response.headers.get("Content-Type")).toBe("text/event-stream; charset=utf-8");
-		expect(await readAll(response)).toBe(
+		await expect(readAll(response)).resolves.toBe(
 			"event: update\nid: 7\ndata: line one\ndata: line two\n\n",
 		);
 	});
@@ -27,7 +27,7 @@ describe("eventStream", () => {
 			send({ data: "first\revent: injected" });
 		});
 
-		expect(await readAll(response)).toBe("data: first\ndata: event: injected\n\n");
+		await expect(readAll(response)).resolves.toBe("data: first\ndata: event: injected\n\n");
 	});
 
 	it("refuses a line break in the event name", async () => {
@@ -40,7 +40,7 @@ describe("eventStream", () => {
 
 	it("sends a heartbeat comment while the stream is quiet", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
-		const response = eventStream({ heartbeatMs: 1_000 }, () => new Promise(() => {}));
+		const response = eventStream({ heartbeatMs: 1_000 }, async () => new Promise(() => {}));
 		const reader = response.body?.getReader();
 
 		await vi.advanceTimersByTimeAsync(1_000);
@@ -53,36 +53,43 @@ describe("eventStream", () => {
 	it("aborts the producer's signal and ends the stream when the request aborts", async () => {
 		const request = new AbortController();
 		let producerSignal: AbortSignal | undefined;
-		const response = eventStream({ signal: request.signal }, ({ signal }) => {
+		const response = eventStream({ signal: request.signal }, async ({ signal }) => {
 			producerSignal = signal;
 			return new Promise(() => {});
 		});
 
 		request.abort();
 
-		expect(await readAll(response)).toBe("");
+		await expect(readAll(response)).resolves.toBe("");
 		expect(producerSignal?.aborted).toBe(true);
 	});
 
 	it("errors the stream when produce rejects", async () => {
-		const response = eventStream({}, () => Promise.reject(new Error("upstream failed")));
+		const response = eventStream({}, async () => {
+			throw new Error("upstream failed");
+		});
 
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
 	});
 
 	// Why: the signal hangs off `shutdownSignal()`, so a listener left on it keeps the stream in memory.
 	it.each([
-		["resolves", () => Promise.resolve()],
-		["rejects", () => Promise.reject(new Error("upstream failed"))],
+		["resolves", async () => {}],
+		[
+			"rejects",
+			async () => {
+				throw new Error("upstream failed");
+			},
+		],
 	])("removes its abort listener when produce %s", async (_, settle) => {
 		let producerSignal: AbortSignal | undefined;
-		const response = eventStream({}, ({ signal }) => {
+		const response = eventStream({}, async ({ signal }) => {
 			producerSignal = signal;
 			return settle();
 		});
 
 		await readAll(response).catch(() => {});
 
-		expect(producerSignal && getEventListeners(producerSignal, "abort")).toEqual([]);
+		expect(producerSignal && getEventListeners(producerSignal, "abort")).toStrictEqual([]);
 	});
 });

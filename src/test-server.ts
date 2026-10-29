@@ -1,5 +1,6 @@
 // Test helper: a prepared app server with a recording log sink and a stub framework.
-import { createServer, serverInternals, type CreateServerOptions } from "./create-server.js";
+import { createServer, serverInternals } from "./create-server.js";
+import type { AppServer, CreateServerOptions, ServerInternals } from "./create-server.js";
 import type { FrameworkAdapter, LogLevel, LogSink, Plugin } from "./types.js";
 
 /** One line that the recording sink got. */
@@ -12,7 +13,7 @@ export type LoggedLine = {
 const encoder = new TextEncoder();
 
 /** A response that sends `first` at once and the rest when `release` runs. */
-export function heldStream(first: string) {
+export function heldStream(first: string): { response: Response; release: () => void } {
 	let held: ReadableStreamDefaultController<Uint8Array> | undefined;
 	const response = new Response(
 		new ReadableStream<Uint8Array>({
@@ -31,8 +32,18 @@ export function heldStream(first: string) {
 }
 
 /** A framework that answers every request with `rendered` as HTML. */
-export const renderedFramework = async (): Promise<Response> =>
-	new Response("rendered", { headers: { "Content-Type": "text/html; charset=utf-8" } });
+export async function renderedFramework(): Promise<Response> {
+	return new Response("rendered", { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+/** What {@link testServer} returns. */
+type TestServer = {
+	app: AppServer;
+	internals: ServerInternals;
+	framework: FrameworkAdapter;
+	lines: LoggedLine[];
+	request: (path: string, init?: RequestInit) => Promise<Response>;
+};
 
 /**
  * Builds and prepares an app server for `app.request` tests.
@@ -54,8 +65,8 @@ export async function testServer({
 	prerenderedPaths?: readonly string[];
 	render?: FrameworkAdapter["fetch"];
 	options?: Omit<CreateServerOptions, "plugins" | "logger">;
-	routes?: (app: ReturnType<typeof createServer>) => void;
-}) {
+	routes?: (app: AppServer) => void;
+}): Promise<TestServer> {
 	const lines: LoggedLine[] = [];
 	const logger: LogSink = {
 		log: (level, message, attributes) => {
@@ -75,6 +86,6 @@ export async function testServer({
 		internals,
 		framework,
 		lines,
-		request: (path: string, init?: RequestInit) => app.request(path, init, { framework }),
+		request: async (path: string, init?: RequestInit) => app.request(path, init, { framework }),
 	};
 }

@@ -29,7 +29,7 @@ describe("buildId", () => {
 	});
 
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {
-		const serve = (value: string) =>
+		const serve = async (value: string) =>
 			testServer({ plugins: [buildId({ value }), prerendered()], clientDirectory });
 		const etag = (await (await serve("v1")).request("/")).headers.get("ETag") ?? "";
 

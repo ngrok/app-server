@@ -16,6 +16,7 @@ export function exitAfterFlush(): void {
 	const done = () => {
 		pending -= 1;
 		if (pending === 0) {
+			// oxlint-disable-next-line unicorn/no-process-exit -- this function exists to end the process.
 			process.exit();
 		}
 	};
@@ -23,6 +24,7 @@ export function exitAfterFlush(): void {
 	flush(process.stderr, done);
 	// Why a fallback: a reader that stops reading the pipe would hold the callbacks forever.
 	setTimeout(() => {
+		// oxlint-disable-next-line unicorn/no-process-exit -- this function exists to end the process.
 		process.exit();
 	}, FLUSH_TIMEOUT_MS).unref();
 }

@@ -1,5 +1,6 @@
 import type { FetchHandler, StartedListener } from "../types.js";
-import { listenerUrl, type ListenOptions } from "./listen-options.js";
+import { listenerUrl } from "./listen-options.js";
+import type { ListenOptions } from "./listen-options.js";
 
 /** The part of Bun's server that the listener uses. */
 type BunServer = {
@@ -33,7 +34,7 @@ export async function listen(
 		...(options.hostname == null ? {} : { hostname: options.hostname }),
 		// Why: Bun's 10 s default also closes a quiet event stream.
 		idleTimeout: Math.min(BUN_MAX_IDLE_TIMEOUT_S, Math.ceil(options.idleTimeoutMs / 1_000)),
-		fetch: (request, bunServer) =>
+		fetch: async (request, bunServer) =>
 			fetch(request, { remoteAddress: bunServer.requestIP(request)?.address }),
 	});
 	return {

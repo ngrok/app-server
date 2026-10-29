@@ -1,5 +1,6 @@
 import type { FetchHandler, StartedListener } from "../types.js";
-import { listenerUrl, type ListenOptions } from "./listen-options.js";
+import { listenerUrl } from "./listen-options.js";
+import type { ListenOptions } from "./listen-options.js";
 
 /** The part of Deno's server that the listener uses. */
 type DenoServer = {
@@ -48,7 +49,7 @@ function closableResponse(response: Response, open: Set<() => void>): Response {
 				throw error;
 			}
 		},
-		cancel(reason) {
+		async cancel(reason) {
 			open.delete(force);
 			return reader.cancel(reason);
 		},

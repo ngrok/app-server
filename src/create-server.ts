@@ -1,8 +1,11 @@
 import { Hono } from "hono";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
-import { accessLog, type AccessLogOptions } from "./plugins/access-log.js";
-import { requestId, type RequestIdOptions } from "./plugins/request-id.js";
-import { assets, prerendered, type PrerenderedOptions } from "./plugins/static.js";
+import { accessLog } from "./plugins/access-log.js";
+import type { AccessLogOptions } from "./plugins/access-log.js";
+import { requestId } from "./plugins/request-id.js";
+import type { RequestIdOptions } from "./plugins/request-id.js";
+import { assets, prerendered } from "./plugins/static.js";
+import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
 import { abortShutdownSignal, renewShutdownSignal } from "./shutdown.js";
 import { tcp } from "./tcp.js";
@@ -157,7 +160,7 @@ export function createServer({
 	if (trustForwardedProto) {
 		// Why wrap `fetch`: every plugin and route, not only the framework, must see the trusted scheme.
 		const dispatch = app.fetch;
-		app.fetch = (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
+		app.fetch = async (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
@@ -170,7 +173,7 @@ export function createServer({
 	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
 	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
 	for (const { middleware, etagPart } of plugins) {
-		app.use((context, next) => {
+		app.use(async (context, next) => {
 			const part = etagPart?.();
 			if (part != null) {
 				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
@@ -178,7 +181,7 @@ export function createServer({
 			return asError(async () => (middleware == null ? next() : middleware(context, next)));
 		});
 	}
-	app.use((_, next) => asError(next));
+	app.use(async (_, next) => asError(next));
 	app.onError((error, context) => {
 		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
 		if ("getResponse" in error && typeof error.getResponse === "function") {
@@ -196,12 +199,12 @@ export function createServer({
 	let stoppingPlugins: Promise<void> | undefined;
 	const internals: ServerInternals = {
 		logger,
-		prepare: (info) => {
+		prepare: async (info) => {
 			prepared ??= (async () => {
 				for (const plugin of plugins) {
 					await plugin.setup?.(info);
 				}
-				app.all("*", (context) => context.env.framework.fetch(context.req.raw, context));
+				app.all("*", async (context) => context.env.framework.fetch(context.req.raw, context));
 			})();
 			return prepared;
 		},
@@ -220,14 +223,16 @@ export function createServer({
 				}
 				return response;
 			};
-			const starts = await Promise.allSettled(listeners.map((listener) => listener.start(fetch)));
+			const starts = await Promise.allSettled(
+				listeners.map(async (listener) => listener.start(fetch)),
+			);
 			const started = starts.flatMap((start) =>
 				start.status === "fulfilled" ? [start.value] : [],
 			);
 			const failed = starts.find((start) => start.status === "rejected");
 			if (failed != null) {
 				// Why stop the others: the caller gets no handle to stop them.
-				await Promise.all(started.map((listener) => listener.stop({ deadlineMs: 0 })));
+				await Promise.all(started.map(async (listener) => listener.stop({ deadlineMs: 0 })));
 				throw failed.reason;
 			}
 			const urls = started.map((listener) => listener.url);
@@ -235,7 +240,7 @@ export function createServer({
 			let stopping: Promise<void> | undefined;
 			running = {
 				urls,
-				shutdown: () => {
+				shutdown: async () => {
 					stopping ??= (async () => {
 						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
 						abortShutdownSignal();
@@ -247,12 +252,12 @@ export function createServer({
 						// the other stops short.
 						const results = await Promise.allSettled([
 							internals.stopPlugins(),
-							...started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
+							...started.map(async (listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
 						]);
 						clearTimeout(deadline);
-						const failed = results.find((result) => result.status === "rejected");
-						if (failed != null) {
-							throw failed.reason;
+						const rejected = results.find((result) => result.status === "rejected");
+						if (rejected != null) {
+							throw rejected.reason;
 						}
 						logger.log("info", "stopped", {});
 					})();
@@ -261,7 +266,7 @@ export function createServer({
 			};
 			return running;
 		},
-		stopPlugins: () => {
+		stopPlugins: async () => {
 			stoppingPlugins ??= (async () => {
 				const hooks = (async () => {
 					const results = await Promise.allSettled(

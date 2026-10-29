@@ -29,14 +29,14 @@ export type EventStreamOptions = {
 
 function formatEvent({ data, event, id }: ServerSentEvent): string {
 	// Why: a line break in `event` or `id` would start another field or event.
-	if (/[\r\n]/.test(`${event ?? ""}${id ?? ""}`)) {
+	if (/[\r\n]/u.test(`${event ?? ""}${id ?? ""}`)) {
 		throw new TypeError("An event's `event` and `id` cannot contain a line break.");
 	}
 	const lines = [
 		...(event == null ? [] : [`event: ${event}`]),
 		...(id == null ? [] : [`id: ${id}`]),
 		// Why `\r` too: a client reads a lone carriage return as a line end.
-		...data.split(/\r\n|\r|\n/).map((line) => `data: ${line}`),
+		...data.split(/\r\n|\r|\n/u).map((line) => `data: ${line}`),
 	];
 	return `${lines.join("\n")}\n\n`;
 }
@@ -96,7 +96,14 @@ export function eventStream(
 				return;
 			}
 			Promise.resolve()
-				.then(() => produce({ send: (event) => write(formatEvent(event)), signal: stopSignal }))
+				.then(async () =>
+					produce({
+						send: (event) => {
+							write(formatEvent(event));
+						},
+						signal: stopSignal,
+					}),
+				)
 				.then(close, (error: unknown) => {
 					closed = true;
 					clearInterval(heartbeat);

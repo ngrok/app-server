@@ -21,5 +21,8 @@ Do not pipe a check through `tail` or `head`: the pipe hides its exit code.
 - Every published change needs a changeset (`pnpm changeset`). The package is `0.x`: a breaking change is a `minor`, any other change a `patch`.
 - Comments, JSDoc, changesets, commits, and PR descriptions use ASD-STE100 Simplified Technical English: active voice, simple tenses, one idea per sentence, one term per concept.
 - A comment says why, not what. Start it with `Why:` when it explains a choice.
+- Lint turns on every oxlint category. A rule goes off only in `.oxlintrc.json`, with a reason. A suppression comment also gives a reason: `// oxlint-disable-next-line <rule> -- <reason>`.
+- Check for no value with `== null` and `!= null`. `eqeqeq` and `app-server/prefer-null-check` reject `=== null`, `=== undefined`, and `== undefined`.
+- The custom lint rules live in `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
 - Tests assert behavior that a caller sees. A fix comes with a test that fails without it.
 - Stop each process you start, and stage files by path.

@@ -1,52 +1,175 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["jsdoc", "promise", "typescript", "unicorn", "vitest"],
+  "plugins": ["import", "jsdoc", "node", "oxc", "promise", "typescript", "unicorn", "vitest"],
+  // Why a local plugin: these conventions have no built-in rule. See scripts/oxlint-plugin-app-server.js.
+  "jsPlugins": ["./scripts/oxlint-plugin-app-server.js"],
+  // Why every category: each rule is on unless a rule below turns it off with a reason. A new
+  // oxlint version turns its new rules on too, and the bump shows what they flag.
   "categories": {
     "correctness": "error",
-    "suspicious": "error"
+    "suspicious": "error",
+    "pedantic": "error",
+    "perf": "error",
+    "restriction": "error",
+    "style": "error"
   },
   "ignorePatterns": ["dist", "node_modules", "test/fixtures"],
   "rules": {
-    "array-callback-return": "error",
-    "curly": "error",
+    "app-server/descriptive-names": "error",
+    "app-server/multiline-exports": "error",
+    "app-server/no-boolean-positional-param": "error",
+    "app-server/prefer-function-declaration": "error",
+    "app-server/prefer-null-check": "error",
+    "app-server/require-suppression-reason": "error",
+
+    // Options that match the code's idioms.
     "eqeqeq": ["error", "always", { "null": "never" }],
     "eslint/max-params": ["error", { "max": 3 }],
-    "eslint/no-nested-ternary": "error",
-    "eslint/no-shadow": "off",
-    "jsdoc/no-defaults": "error",
-    "jsdoc/require-param-name": "error",
-    "no-explicit-any": "error",
-    "no-promise-executor-return": "error",
-    "no-throw-literal": "error",
-    "no-var": "error",
-    "prefer-const": "error",
-    "promise/always-return": "error",
-    "promise/no-return-wrap": "error",
-    "typescript/await-thenable": "error",
-    "typescript/consistent-type-exports": "error",
-    "typescript/consistent-type-imports": "error",
-    "typescript/no-floating-promises": "error",
-    "typescript/no-import-type-side-effects": "error",
-    "typescript/no-invalid-void-type": "error",
-    "typescript/no-misused-promises": "error",
-    "typescript/no-non-null-assertion": "error",
-    "typescript/no-unnecessary-type-assertion": "error",
-    "typescript/no-unsafe-type-assertion": "error",
-    "typescript/restrict-template-expressions": "error",
+    "eslint/no-use-before-define": ["error", { "functions": false }],
+    // Why: destructuring into a variable that exists needs parentheses, which read worse.
+    "eslint/prefer-destructuring": [
+      "error",
+      { "AssignmentExpression": { "array": false, "object": false } }
+    ],
+    // Why: `void promise` marks a promise that `no-floating-promises` lets go on purpose.
+    "eslint/no-void": ["error", { "allowAsStatement": true }],
+    // Why top-level: under `verbatimModuleSyntax`, an import of inline types only stays in the output.
+    "import/consistent-type-specifier-style": ["error", "prefer-top-level"],
+    "promise/catch-or-return": ["error", { "allowThen": true }],
+    "eslint/no-duplicate-imports": ["error", { "allowSeparateTypeImports": true }],
+    "typescript/array-type": ["error", { "default": "array" }],
+    "typescript/consistent-type-definitions": ["error", "type"],
+    // Why: an empty environment value means "not set", so `||` falls back on purpose.
+    "typescript/prefer-nullish-coalescing": ["error", { "ignorePrimitives": { "string": true } }],
+    "typescript/strict-boolean-expressions": ["error", { "allowNullableString": true }],
     "typescript/switch-exhaustiveness-check": [
       "error",
       { "considerDefaultExhaustiveForUnions": true }
     ],
-    "typescript/unbound-method": "error",
-    "typescript/use-unknown-in-catch-callback-variable": "error",
-    "unicorn/filename-case": ["error", { "case": "kebabCase" }]
+    "unicorn/filename-case": ["error", { "case": "kebabCase" }],
+    // Why: an explicit `undefined` argument, as in Hono's `header(name, undefined)`, says "remove".
+    "unicorn/no-useless-undefined": [
+      "error",
+      { "checkArguments": false, "checkArrowFunctionBody": false }
+    ],
+    "vitest/consistent-test-it": ["error", { "fn": "it", "withinDescribe": "it" }],
+
+    // Why off: each rule of a pair asks for the opposite of the other. The rule that stays on
+    // matches the code.
+    "import/no-named-export": "off", // `import/no-default-export` stays on
+    "import/prefer-default-export": "off",
+    "vitest/no-importing-vitest-globals": "off", // `vitest/prefer-importing-vitest-globals` stays on
+    "vitest/prefer-called-once": "off", // `vitest/prefer-called-times` stays on
+    "vitest/prefer-to-be-truthy": "off", // `toBe(true)` is stricter
+    "vitest/prefer-to-be-falsy": "off",
+    "eslint/no-eq-null": "off", // `eqeqeq` with `null: "never"` stays on
+    "eslint/no-undefined": "off", // `unicorn/no-null` and this rule cannot both hold
+    "unicorn/no-null": "off",
+    // `typescript/promise-function-async` stays on: an `async` function turns each throw into a
+    // rejection, which a caller such as `Promise.allSettled` needs, with or without an `await`.
+    "typescript/require-await": "off",
+    "eslint/require-await": "off",
+    "typescript/consistent-return": "off", // `noImplicitReturns` in tsconfig.json checks this
+
+    // Why off: these rules are for code that must run before ES2018, or they ban a core part of
+    // TypeScript or Node.js. The package targets Node.js 24.
+    "oxc/no-async-await": "off",
+    "oxc/no-optional-chaining": "off",
+    "oxc/no-rest-spread-properties": "off",
+    "import/no-nodejs-modules": "off",
+    "node/no-process-env": "off",
+    "node/no-top-level-await": "off",
+    "eslint/no-ternary": "off",
+    "eslint/no-plusplus": "off",
+    "eslint/init-declarations": "off",
+    "eslint/one-var": "off",
+    "eslint/func-style": "off",
+    "promise/avoid-new": "off",
+
+    // Why off: TypeScript types already state these, and the JSDoc states the contract in prose.
+    "jsdoc/require-param": "off",
+    "jsdoc/require-param-type": "off",
+    "jsdoc/require-returns": "off",
+    "jsdoc/require-returns-type": "off",
+    "jsdoc/require-yields-type": "off",
+    "typescript/explicit-function-return-type": "off",
+    "typescript/prefer-readonly-parameter-types": "off",
+
+    // Why off: oxfmt owns the order and the layout. These rules disagree with it.
+    "eslint/sort-imports": "off",
+    "eslint/sort-keys": "off",
+    "eslint/capitalized-comments": "off",
+    "import/exports-last": "off",
+    "import/group-exports": "off",
+    "unicorn/numeric-separators-style": "off",
+
+    // Why off: a limit on size or count with no number that fits each file.
+    "eslint/max-lines": "off",
+    "eslint/max-lines-per-function": "off",
+    "eslint/max-statements": "off",
+    "eslint/id-length": "off",
+    "eslint/no-magic-numbers": "off",
+    "import/max-dependencies": "off",
+    "unicorn/max-nested-calls": "off",
+
+    // Why off: the server works this way by design.
+    "eslint/no-await-in-loop": "off", // the plugins set up and stop in list order
+    "node/callback-return": "off", // it reads Hono's `next()` as a Node.js callback
+    "node/no-sync": "off", // the sync calls run at startup or at build time
+    "promise/prefer-await-to-then": "off", // a signal handler cannot await
+    "promise/prefer-await-to-callbacks": "off",
+    "promise/prefer-catch": "off", // `then(onFulfilled, onRejected)` keeps an error of the first out of the second
+    "unicorn/import-style": "off", // named imports from `node:path` are the code's style
+    "unicorn/no-await-expression-member": "off",
+    "import/no-relative-parent-imports": "off", // one package, so `../types.js` is a sibling module
+    "eslint/no-empty-function": "off", // a no-op callback is the clearest default
+
+    // Why off: these rules ask for structure in tests that the tests do not need.
+    "vitest/prefer-expect-assertions": "off",
+    "vitest/require-test-timeout": "off", // `vitest.config.ts` sets the timeout
+    "vitest/prefer-describe-function-title": "off",
+    "vitest/require-top-level-describe": "off",
+    "vitest/no-hooks": "off",
+    "vitest/require-hook": "off",
+    "vitest/no-conditional-in-test": "off" // a condition narrows a type for the assertion
   },
   "overrides": [
     {
+      // Why only Vitest files: `test/runtimes.ts` polls a child process, and a poll waits on purpose.
       "files": ["**/*.test.ts"],
       "rules": {
+        "app-server/no-config-teardown": "error",
+        "app-server/no-only-to-be-defined": "error",
+        "app-server/no-sleep-in-tests": "error"
+      }
+    },
+    {
+      "files": ["**/*.test.ts", "test/**"],
+      "rules": {
         "unicorn/consistent-function-scoping": "off",
-        "typescript/no-unsafe-type-assertion": "off"
+        "typescript/no-unsafe-type-assertion": "off",
+        // Why: Vitest types its asymmetric matchers, such as `expect.objectContaining`, as `any`.
+        "typescript/no-unsafe-assignment": "off"
+      }
+    },
+    {
+      // Why: oxlint passes AST nodes to a rule untyped, and loads a plugin by its default export.
+      "files": ["scripts/oxlint-plugin-app-server.js", "scripts/oxlint-rules/**"],
+      "rules": {
+        "import/no-default-export": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/strict-boolean-expressions": "off"
+      }
+    },
+    {
+      // Why: the tools load these files by their default export.
+      "files": ["*.config.ts"],
+      "rules": {
+        "import/no-default-export": "off"
       }
     }
   ]

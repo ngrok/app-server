@@ -31,7 +31,7 @@ export type FrameworkAdapter = {
 /** What a listener passes to the app with each request. */
 export type ListenerBindings = {
 	/** The client's IP address, when the runtime knows it. */
-	remoteAddress?: string;
+	remoteAddress?: string | undefined;
 	/** Node's request, on a `node:http` listener only. */
 	incoming?: IncomingMessage;
 	/** Node's response, on a `node:http` listener only. */

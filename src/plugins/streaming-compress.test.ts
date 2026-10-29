@@ -79,7 +79,7 @@ describe("streamingCompress", () => {
 		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
 
 		expect(response.headers.get("Content-Encoding")).toBeNull();
-		expect(await response.text()).toBe("abc");
+		await expect(response.text()).resolves.toBe("abc");
 	});
 
 	it("leaves a client that refuses gzip with q=0 alone", async () => {

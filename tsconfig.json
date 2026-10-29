@@ -13,6 +13,15 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "exactOptionalPropertyTypes": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true,
 
     "module": "NodeNext",
     "sourceMap": true,
@@ -22,5 +31,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*", "test/**/*", "*.config.ts"]
+  "include": ["src/**/*", "test/**/*", "scripts/**/*", "*.config.ts"]
 }

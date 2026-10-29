@@ -1,8 +1,5 @@
-import {
-	RouterContextProvider,
-	type HandleDocumentRequestFunction,
-	type ServerBuild,
-} from "react-router";
+import { RouterContextProvider } from "react-router";
+import type { HandleDocumentRequestFunction, ServerBuild } from "react-router";
 import { describe, expect, it } from "vitest";
 import { requestId } from "./plugins/request-id.js";
 import { appServerContext, createAdapter, isServerBuild } from "./react-router.js";
@@ -14,12 +11,14 @@ function documentBuild(overrides: Partial<ServerBuild> = {}): ServerBuild {
 		entry: {
 			module: {
 				// Why the rest parameter: React Router passes the load context fifth.
-				default: (...[, , , , loadContext]: Parameters<HandleDocumentRequestFunction>) =>
-					Response.json({ requestId: loadContext.get(appServerContext).requestId }),
+				default: (...args: Parameters<HandleDocumentRequestFunction>) => {
+					const loadContext = args[4];
+					return Response.json({ requestId: loadContext.get(appServerContext).requestId });
+				},
 			},
 		},
 		routes: {
-			root: { id: "root", path: "", parentId: undefined, module: { default: () => null } },
+			root: { id: "root", path: "", module: { default: () => null } },
 			whoami: { id: "whoami", parentId: "root", path: "whoami", module: { default: () => null } },
 		},
 		assets: {
@@ -47,7 +46,7 @@ describe("createAdapter", () => {
 
 		const response = await request("/whoami", { headers: { "X-Request-Id": "abc-123" } });
 
-		expect(await response.json()).toEqual({ requestId: "abc-123" });
+		await expect(response.json()).resolves.toStrictEqual({ requestId: "abc-123" });
 	});
 
 	it("gives a logger and no request ID outside a server request, as in a prerender pass", () => {
@@ -63,7 +62,7 @@ describe("createAdapter", () => {
 		const framework = createAdapter(documentBuild(), { mode: "production" });
 
 		expect(framework.clientDirectory).toBe(`${process.cwd()}/build/client`);
-		expect(framework.prerenderedPaths).toEqual(["/whoami"]);
+		expect(framework.prerenderedPaths).toStrictEqual(["/whoami"]);
 	});
 
 	it("refuses a build with a public path other than /", () => {

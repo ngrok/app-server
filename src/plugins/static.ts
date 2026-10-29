@@ -77,7 +77,7 @@ export function assets(): Plugin {
 				return staticResponse(context, file, { "Cache-Control": IMMUTABLE });
 			};
 		},
-		middleware: (context, next) => (stage == null ? next() : stage(context, next)),
+		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
 	};
 }
 
@@ -153,6 +153,6 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				});
 			};
 		},
-		middleware: (context, next) => (stage == null ? next() : stage(context, next)),
+		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
 	};
 }

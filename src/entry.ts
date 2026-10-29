@@ -1,4 +1,5 @@
-import { serverInternals, type AppServer } from "./create-server.js";
+import { serverInternals } from "./create-server.js";
+import type { AppServer } from "./create-server.js";
 import { exitAfterFlush } from "./exit.js";
 import { errorAttributes } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
@@ -70,13 +71,16 @@ export function createEntry({
 			const server = await internals.listen(adapter);
 			for (const signal of ["SIGTERM", "SIGINT"] as const) {
 				process.once(signal, () => {
-					server
-						.shutdown()
-						.catch((error: unknown) => {
+					void (async () => {
+						try {
+							await server.shutdown();
+						} catch (error) {
 							internals.logger.log("error", "shutdown failed", errorAttributes(error));
 							process.exitCode = 1;
-						})
-						.finally(exitAfterFlush);
+						} finally {
+							exitAfterFlush();
+						}
+					})();
 				});
 			}
 		},

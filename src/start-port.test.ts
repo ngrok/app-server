@@ -1,4 +1,5 @@
-import { createServer, type Server } from "node:net";
+import { createServer } from "node:net";
+import type { Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { listenFromPort } from "./start-port.js";
 
@@ -25,7 +26,7 @@ async function occupiedPort(hostname?: string): Promise<number> {
 afterEach(async () => {
 	await Promise.all(
 		servers.splice(0).map(
-			(open) =>
+			async (open) =>
 				new Promise<void>((resolve) => {
 					open.close(() => {
 						resolve();
@@ -43,7 +44,9 @@ describe("listenFromPort", () => {
 		const port = await listenFromPort(server(), {
 			port: taken,
 			strictPort: false,
-			onPortInUse: (skipped) => inUse.push(skipped),
+			onPortInUse: (skipped) => {
+				inUse.push(skipped);
+			},
 		});
 
 		expect(port).toBeGreaterThan(taken);
@@ -66,7 +69,7 @@ describe("listenFromPort", () => {
 		const taken = await occupiedPort();
 
 		await expect(listenFromPort(server(), { port: taken, strictPort: true })).rejects.toThrow(
-			/EADDRINUSE/,
+			/EADDRINUSE/u,
 		);
 	});
 
@@ -80,7 +83,9 @@ describe("listenFromPort", () => {
 			port: taken,
 			hostname: "127.0.0.1",
 			strictPort: true,
-			onWildcardInUse: (port) => shared.push(port),
+			onWildcardInUse: (port) => {
+				shared.push(port);
+			},
 		}).catch((error: unknown) => error);
 
 		const result =

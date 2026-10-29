@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { preview, type Plugin } from "vite";
+import { preview } from "vite";
+import type { Plugin } from "vite";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { serverEntry, serverEntrySource } from "./vite.js";
 
@@ -13,22 +14,24 @@ afterAll(() => {
 });
 
 /** Answers like React Router's preview handler: one `writeHead` with every header. */
-const responder = (): Plugin => ({
-	name: "responder",
-	configurePreviewServer: (server) => () => {
-		server.middlewares.use((request, response) => {
-			const status = request.url === "/missing" ? 404 : 200;
-			response.writeHead(status, "", {
-				"content-type":
-					request.url === "/page" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
-				"access-control-allow-origin": "*",
-				"set-cookie": "session=1",
-				"content-length": "2",
+function responder(): Plugin {
+	return {
+		name: "responder",
+		configurePreviewServer: (server) => () => {
+			server.middlewares.use((request, response) => {
+				const status = request.url === "/missing" ? 404 : 200;
+				response.writeHead(status, "", {
+					"content-type":
+						request.url === "/page" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+					"access-control-allow-origin": "*",
+					"set-cookie": "session=1",
+					"content-length": "2",
+				});
+				response.end("ok");
 			});
-			response.end("ok");
-		});
-	},
-});
+		},
+	};
+}
 
 describe("serverEntry", () => {
 	it("records the headers of each 2xx file that is not a document, with no cookie or length", async () => {
@@ -50,7 +53,9 @@ describe("serverEntry", () => {
 		await (await fetch(new URL("/page", base))).text();
 		await server.close();
 
-		expect(JSON.parse(readFileSync(join(root, "build/client/.headers.json"), "utf8"))).toEqual({
+		expect(
+			JSON.parse(readFileSync(join(root, "build/client/.headers.json"), "utf8")),
+		).toStrictEqual({
 			"/components/button": {
 				"access-control-allow-origin": "*",
 				"content-type": "text/plain; charset=utf-8",

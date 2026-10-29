@@ -3,7 +3,7 @@ import { constants, createGzip } from "node:zlib";
 import type { Plugin } from "../types.js";
 
 const COMPRESSIBLE =
-	/^(text\/|application\/(json|javascript|xml|schema\+json|manifest\+json|x-ndjson|connect\+json)|image\/svg\+xml)/;
+	/^(?:text\/|application\/(?:json|javascript|xml|schema\+json|manifest\+json|x-ndjson|connect\+json)|image\/svg\+xml)/u;
 
 /**
  * Gzips a byte stream. `Z_SYNC_FLUSH` makes each written chunk readable at
@@ -53,7 +53,7 @@ function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Arr
 			}
 		},
 		// Why cancel the source: a client disconnect must reach the handler, so it stops its work.
-		cancel(reason) {
+		async cancel(reason) {
 			gzip.destroy();
 			return reader.cancel(reason);
 		},
@@ -85,7 +85,7 @@ export function streamingCompress(): Plugin {
 				response.headers.has("Content-Encoding") ||
 				// Why: gzip changes the bytes, so a `Content-Range` would no longer match them.
 				response.headers.has("Content-Range") ||
-				/\bno-transform\b/.test(response.headers.get("Cache-Control") ?? "") ||
+				/\bno-transform\b/u.test(response.headers.get("Cache-Control") ?? "") ||
 				!COMPRESSIBLE.test(response.headers.get("Content-Type") ?? "")
 			) {
 				return;

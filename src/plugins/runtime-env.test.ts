@@ -26,7 +26,7 @@ const validSource = {
 };
 
 /** A document whose `</head>` arrives split across two chunks. */
-const splitDocument = () => {
+function splitDocument() {
 	const encoder = new TextEncoder();
 	return new Response(
 		new ReadableStream<Uint8Array>({
@@ -38,14 +38,14 @@ const splitDocument = () => {
 		}),
 		{ headers: { "Content-Type": "text/html; charset=utf-8", "Content-Length": "60" } },
 	);
-};
+}
 
 describe("runtimeEnv", () => {
 	it("parses the values with their schema types", () => {
 		const env = runtimeEnv(schema, { source: validSource });
 
 		expect(env.values.PORT).toBe(3000);
-		expect(env.publicValues).toEqual({ PUBLIC_API_URL: "https://api.example.com/</script>" });
+		expect(env.publicValues).toStrictEqual({ PUBLIC_API_URL: "https://api.example.com/</script>" });
 	});
 
 	it("stops startup with a message that names each bad value", async () => {
@@ -54,7 +54,7 @@ describe("runtimeEnv", () => {
 		});
 
 		await expect(testServer({ plugins: [env] })).rejects.toThrow(
-			/The environment is not valid:\n {2}PORT: .+\n {2}SESSION_KEY: /,
+			/The environment is not valid:\n {2}PORT: .+\n {2}SESSION_KEY: /u,
 		);
 	});
 
@@ -66,8 +66,8 @@ describe("runtimeEnv", () => {
 
 		const response = await request("/");
 
-		expect(await response.text()).toBe(
-			'<html><head><title>é</title><script id="app-server-public-env" type="application/json">{"PUBLIC_API_URL":"https://api.example.com/\\u003c/script>"}</script></head><body>page</body></html>',
+		await expect(response.text()).resolves.toBe(
+			String.raw`<html><head><title>é</title><script id="app-server-public-env" type="application/json">{"PUBLIC_API_URL":"https://api.example.com/\u003c/script>"}</script></head><body>page</body></html>`,
 		);
 		expect(response.headers.get("Content-Length")).toBeNull();
 	});
@@ -96,7 +96,7 @@ describe("runtimeEnv", () => {
 
 		expect(etag).not.toBe("");
 		expect(response.status).toBe(200);
-		expect(await response.text()).toContain("app-server-public-env");
+		await expect(response.text()).resolves.toContain("app-server-public-env");
 	});
 
 	it("drops the file length from HEAD, since GET adds the values", async () => {
@@ -116,7 +116,7 @@ describe("runtimeEnv", () => {
 			render: async () => splitDocument(),
 		});
 
-		expect(await (await request("/")).text()).not.toContain("app-server-public-env");
+		await expect((await request("/")).text()).resolves.not.toContain("app-server-public-env");
 	});
 
 	it("leaves a partial document alone, so its Content-Range still matches the bytes", async () => {
@@ -129,7 +129,7 @@ describe("runtimeEnv", () => {
 				}),
 		});
 
-		expect(await (await request("/")).text()).toBe("<head></head>");
+		await expect((await request("/")).text()).resolves.toBe("<head></head>");
 	});
 
 	it("leaves a response that is not HTML alone", async () => {
@@ -138,6 +138,6 @@ describe("runtimeEnv", () => {
 			render: async () => new Response("</head>", { headers: { "Content-Type": "text/plain" } }),
 		});
 
-		expect(await (await request("/")).text()).toBe("</head>");
+		await expect((await request("/")).text()).resolves.toBe("</head>");
 	});
 });

@@ -2,9 +2,12 @@
 // each: `node ./test/runtimes.ts [node|bun|deno ...]`. Build the package first. A runtime that is
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { get, type IncomingMessage } from "node:http";
-import { createServer, type Server } from "node:net";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { get } from "node:http";
+import type { IncomingMessage } from "node:http";
+import { createServer } from "node:net";
+import type { Server } from "node:net";
 import { fileURLToPath } from "node:url";
 import { constants, createGunzip } from "node:zlib";
 
@@ -53,14 +56,13 @@ function startServer(
 			buffered = parts.pop() ?? "";
 			for (const part of parts) {
 				// Why the check: Vite in `start` and the fixture at shutdown write lines that are not JSON.
-				if (!part.startsWith("{")) {
-					continue;
-				}
-				const line: Line = JSON.parse(part);
-				lines.push(line);
-				const urls = line["app_server.urls"];
-				if (line.message === "listening" && Array.isArray(urls)) {
-					resolve(String(urls[0]));
+				if (part.startsWith("{")) {
+					const line: Line = JSON.parse(part);
+					lines.push(line);
+					const urls = line["app_server.urls"];
+					if (line.message === "listening" && Array.isArray(urls)) {
+						resolve(String(urls[0]));
+					}
 				}
 			}
 		});
@@ -68,14 +70,17 @@ function startServer(
 	return { child, lines, url };
 }
 
-function request(url: string, headers: Record<string, string> = {}): Promise<IncomingMessage> {
+async function request(
+	url: string,
+	headers: Record<string, string> = {},
+): Promise<IncomingMessage> {
 	return new Promise((resolve, reject) => {
 		get(url, { headers }, resolve).once("error", reject);
 	});
 }
 
 /** The exit code, or a rejection when the child runs past `ms`, so a hang fails the run. */
-function exited(child: ChildProcess, ms: number): Promise<number | null> {
+async function exited(child: ChildProcess, ms: number): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => {
 			reject(new Error(`The server did not exit within ${ms} ms.`));
@@ -87,9 +92,9 @@ function exited(child: ChildProcess, ms: number): Promise<number | null> {
 	});
 }
 
-async function waitFor(check: () => Promise<boolean>, what: string): Promise<void> {
+async function waitFor(isDone: () => Promise<boolean>, what: string): Promise<void> {
 	for (let attempt = 0; attempt < 50; attempt++) {
-		if (await check()) {
+		if (await isDone()) {
 			return;
 		}
 		await new Promise((resolve) => {
@@ -100,7 +105,7 @@ async function waitFor(check: () => Promise<boolean>, what: string): Promise<voi
 }
 
 /** Listens on an open port on 127.0.0.1 and resolves with the server and its port. */
-function holdPort(): Promise<{ server: Server; port: number }> {
+async function holdPort(): Promise<{ server: Server; port: number }> {
 	return new Promise((resolve, reject) => {
 		const server = createServer();
 		server.once("error", reject);
@@ -111,7 +116,7 @@ function holdPort(): Promise<{ server: Server; port: number }> {
 	});
 }
 
-function close(server: Server): Promise<void> {
+async function close(server: Server): Promise<void> {
 	return new Promise((resolve) => {
 		server.close(() => {
 			resolve();
@@ -157,7 +162,7 @@ async function check(runtime: string): Promise<void> {
 		assert.equal(page.status, 200, "a prerendered page answers at its own URL");
 		assert.equal(await page.text(), "<h1>CPU</h1>\n");
 		assert.equal(page.headers.get("x-captured"), "yes", "captured headers replay");
-		assert.match(page.headers.get("etag") ?? "", /^W\//);
+		assert.match(page.headers.get("etag") ?? "", /^W\//u);
 
 		const rendered = await fetch(new URL("/unknown", base), {
 			headers: { "X-Request-Id": "abc-123" },
@@ -172,14 +177,18 @@ async function check(runtime: string): Promise<void> {
 		const gunzip = createGunzip({ flush: constants.Z_SYNC_FLUSH });
 		streamed.pipe(gunzip);
 		const shell = await new Promise<string>((resolve) => {
-			gunzip.once("data", (chunk: Buffer) => resolve(chunk.toString()));
+			gunzip.once("data", (chunk: Buffer) => {
+				resolve(chunk.toString());
+			});
 		});
 		assert.equal(shell, "<html>shell", "the first gzip chunk arrives before the stream ends");
 		await (await fetch(new URL("/release", base))).text();
 
 		const held = await request(new URL("/hold", base).href);
 		await new Promise<void>((resolve) => {
-			held.once("data", () => resolve());
+			held.once("data", () => {
+				resolve();
+			});
 		});
 		held.destroy();
 		await waitFor(
@@ -205,7 +214,9 @@ async function check(runtime: string): Promise<void> {
 
 		const events = await request(new URL("/events", base).href);
 		const firstEvent = await new Promise<string>((resolve) => {
-			events.once("data", (chunk: Buffer) => resolve(chunk.toString()));
+			events.once("data", (chunk: Buffer) => {
+				resolve(chunk.toString());
+			});
 		});
 		assert.equal(firstEvent, "data: hello\n\n");
 		const eventsEnded = new Promise<void>((resolve) => {

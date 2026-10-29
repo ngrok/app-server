@@ -29,7 +29,7 @@ export async function start(): Promise<void> {
 	});
 	// Why read it for each request: a Vite restart, such as after a config edit, replaces the environments.
 	const ssrRunner = () => {
-		const ssr = viteServer.environments.ssr;
+		const { ssr } = viteServer.environments;
 		if (ssr == null || !vite.isRunnableDevEnvironment(ssr)) {
 			throw new Error("Vite's SSR environment cannot run modules.");
 		}
@@ -46,7 +46,7 @@ export async function start(): Promise<void> {
 		try {
 			const response = await apps.serve(
 				await loadEntry(await ssrRunner().import(entryId)),
-				(entry) =>
+				async (entry) =>
 					entry.fetchDev(
 						request,
 						{
@@ -77,9 +77,7 @@ export async function start(): Promise<void> {
 
 	const port =
 		process.env.PORT == null ? viteServer.config.server.port : parsePort(process.env.PORT);
-	const configuredHost = viteServer.config.server.host;
-	const hostname =
-		process.env.HOST || (configuredHost === true ? undefined : configuredHost || "localhost");
+	const hostname = process.env.HOST || viteHostname(viteServer.config.server.host);
 	const boundPort = await listenFromPort(httpServer, {
 		port,
 		hostname,
@@ -112,4 +110,12 @@ export async function start(): Promise<void> {
 			void Promise.all([pluginsStopped, httpClosed, viteClosed]).finally(exitAfterFlush);
 		});
 	}
+}
+
+/** The hostname for Vite's `server.host`: `true` is every interface, and no value is `localhost`. */
+function viteHostname(host: string | boolean | undefined): string | undefined {
+	if (host === true) {
+		return undefined;
+	}
+	return typeof host === "string" && host !== "" ? host : "localhost";
 }
