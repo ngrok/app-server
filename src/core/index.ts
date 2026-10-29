@@ -43,6 +43,10 @@ export {
 } from "./plugins/streaming-compress.js";
 export {
 	//,
+	trailingSlash,
+} from "./plugins/trailing-slash.js";
+export {
+	//,
 	requestContext,
 } from "./request-context.js";
 export {
@@ -91,6 +95,11 @@ export type {
 	//,
 	PrerenderedOptions,
 } from "./plugins/static.js";
+export type {
+	//,
+	TrailingSlash,
+	TrailingSlashOptions,
+} from "./plugins/trailing-slash.js";
 export type {
 	//,
 	AppServerEnv,

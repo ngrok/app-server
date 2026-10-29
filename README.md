@@ -4,7 +4,7 @@ A composable [Hono](https://hono.dev) app server for [React Router](https://reac
 
 What it fixes in `@react-router/serve`:
 
-- A prerendered page answers at its own URL with a 200. Its URL with a trailing slash gets a 301 to that URL, so each page has one URL.
+- Each page has one URL. A page URL with the other trailing-slash form gets a 308 to it, for rendered and prerendered pages. A prerendered page answers at its own URL with a 200.
 - A prerendered resource route (`llms.txt`, `sitemap.xml`, a JSON API file) and each `.data` file keep the headers their loader sent: `Content-Type`, `Cache-Control`, CORS.
 - A streamed page under gzip reaches the client chunk by chunk.
 - Each request gets one JSON log line in your format, static files included, and an `X-Request-Id`.
@@ -115,7 +115,8 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
 4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
 5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `prerendered({ headers, rewrite })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to the framework.
+6. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
+7. `prerendered({ headers, rewrite })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to the framework.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
@@ -145,6 +146,51 @@ const version: Plugin = {
 	},
 };
 ```
+
+## Trailing slashes
+
+`/docs/button` and `/docs/button/` are two URLs. Choose one form for the site, and send a permanent redirect from the other form. Else a search engine and a cache keep two copies of each page. Point the canonical tag at the same form.
+
+`defaultPlugins({ trailingSlash })` sets the form. The default is `never`:
+
+| Mode       | `/docs/button`         | `/docs/button/`       |
+| ---------- | ---------------------- | --------------------- |
+| `never`    | 200                    | 308 to `/docs/button` |
+| `always`   | 308 to `/docs/button/` | 200                   |
+| `preserve` | 200                    | 200                   |
+
+The redirect applies to rendered and prerendered pages, and it keeps the query string. It does not apply to `/`, a method other than GET or HEAD, or a data request of the framework. `always` adds no slash to a path whose last segment has a dot, such as `/llms.txt` or a `.data` request.
+
+Why 308: it is permanent, as 301 is, and a client keeps the method. Next.js and Vercel send the same status for this redirect.
+
+### React Router
+
+React Router has no trailing-slash option. It renders `/docs/button`, `/docs/button/`, and `/docs/button//` with a 200. So the server is the only place that makes the URL canonical. Choose the mode in `defaultPlugins`.
+
+### TanStack Start
+
+The TanStack router has its own `trailingSlash` option, and its default is also `never`. On the server it sends a 307 to its own form. Do not mix the two modes. When the server mode and the router mode differ, the redirects loop: the server sends `/x` to `/x/`, and the router sends `/x/` back to `/x`.
+
+Check the server mode against the router with `RouterTrailingSlash`. It is the mode of the router in the app's `Register`, so TypeScript fails when the modes differ:
+
+```ts
+// src/router.ts
+export function getRouter() {
+	return createRouter({ routeTree, trailingSlash: "always" });
+}
+```
+
+```ts
+// server.ts
+import { createServer, defaultPlugins } from "@ngrok/app-server";
+import type { RouterTrailingSlash } from "@ngrok/app-server/tanstack-start";
+
+createServer({
+	plugins: defaultPlugins({ trailingSlash: "always" satisfies RouterTrailingSlash }),
+});
+```
+
+`"never" satisfies RouterTrailingSlash` fails to type-check here. With no registered router, `RouterTrailingSlash` allows each mode. The server mode wins for each page, because the server redirects first. The router's 307 is temporary, and its `Location` uses the request's host, so a proxy's internal host can leak into it.
 
 ## Content negotiation
 

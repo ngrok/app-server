@@ -7,6 +7,8 @@ import type { RequestIdOptions } from "./plugins/request-id.js";
 import { assets, prerendered } from "./plugins/static.js";
 import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
+import { trailingSlash } from "./plugins/trailing-slash.js";
+import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { withRequestContext } from "./request-context.js";
 import { abortShutdownSignal, renewShutdownSignal } from "./shutdown.js";
 import type {
@@ -62,6 +64,12 @@ export type DefaultPluginsOptions = {
 	accessLog?: AccessLogOptions;
 	prerendered?: PrerenderedOptions;
 	/**
+	 * How a page URL ends. Set the same mode in the framework's router when it
+	 * has one, else the redirects loop. See {@link trailingSlash}.
+	 * @default "never"
+	 */
+	trailingSlash?: TrailingSlash;
+	/**
 	 * Plugins that go after compression and before the static stages, so they
 	 * see every response, prerendered pages included. `runtimeEnv` and
 	 * `buildId` go here.
@@ -71,8 +79,8 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `requestId`, `accessLog`,
- * `streamingCompress`, the `beforeStatic` plugins, `assets`, and
- * `prerendered`. It is a plain array, so an app can filter it or splice into it.
+ * `streamingCompress`, the `beforeStatic` plugins, `assets`, `trailingSlash`,
+ * and `prerendered`. It is a plain array, so an app can filter it or splice into it.
  *
  * @example
  * createServer({ plugins: defaultPlugins({ accessLog: { redactQuery: false }, beforeStatic: [env] }) });
@@ -84,6 +92,8 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		streamingCompress(),
 		...(options.beforeStatic ?? []),
 		assets(),
+		// Why after `assets`: in development, the dev server there answers Vite's paths, such as `/@vite/client`.
+		trailingSlash({ mode: options.trailingSlash ?? "never" }),
 		prerendered(options.prerendered),
 	];
 }
