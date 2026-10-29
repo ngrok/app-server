@@ -14,6 +14,7 @@ Breaking changes:
 - `createAdapter` and `appServerEntry` from `@ngrok/app-server/react-router` are now `runtime(build, { mode })`.
 - `SetupInfo` has `files` in place of `clientDirectory`, and `devServer` in place of `viteMiddleware`.
 - The entry protocol is now 2. Install the same version of the package that the build uses.
+- The package supports ES modules only. The Vite plugin fails the build when the server build is not an ES module, such as React Router's `serverModuleFormat: "cjs"`.
 
 New features:
 

@@ -15,6 +15,7 @@ What it fixes in `@react-router/serve`:
 - Node.js 24+, Bun 1.3+, or Deno 2.9+
 - Vite 8.3+
 - React Router 8.5+, or TanStack Start 1.169+
+- An ES module app and server build. The package has no CommonJS build, and the Vite plugin refuses a CommonJS server build.
 
 ## Install
 
