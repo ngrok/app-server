@@ -1,6 +1,6 @@
 {
   "name": "@ngrok/app-server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A composable Hono app server for React Router: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, and Deno.",
   "homepage": "https://github.com/ngrok/app-server#readme",
   "bugs": {
