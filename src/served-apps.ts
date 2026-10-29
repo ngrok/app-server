@@ -3,7 +3,7 @@ import type { AppServerEntry } from "./entry.js";
 type ServedApp = { entry: AppServerEntry; pending: number; replaced: boolean };
 
 /**
- * Tracks the apps that `app-server dev` serves. An edit to `server.ts` makes a
+ * Tracks the apps that `app-server start` serves. An edit to `server.ts` makes a
  * new app, and the old app's plugins still hold what their `setup` opened.
  * When the last request that the old app took returns, its `onShutdown` hooks
  * run, and the tracker lets go of it. A route edit makes a new entry with the

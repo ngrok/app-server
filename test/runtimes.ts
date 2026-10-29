@@ -8,13 +8,13 @@ import { fileURLToPath } from "node:url";
 import { constants, createGunzip } from "node:zlib";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
-const startArgs = ["dist/cli.js", "start", "test/fixtures/runtime-entry.js"];
+const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
 const commands: Record<string, [string, string[]]> = {
-	node: ["node", startArgs],
-	bun: ["bun", startArgs],
+	node: ["node", serveArgs],
+	bun: ["bun", serveArgs],
 	deno: [
 		"deno",
-		["run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", ...startArgs],
+		["run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", ...serveArgs],
 	],
 };
 
