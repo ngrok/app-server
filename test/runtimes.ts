@@ -30,8 +30,11 @@ const commands: Record<string, (args: string[]) => [string, string[]]> = {
 			"--allow-env",
 			"--allow-read",
 			"--allow-sys",
-			// Why: in `start`, Vite loads its native bundler and writes its cache.
-			...(args.includes("start") ? ["--allow-ffi", "--allow-write"] : []),
+			// Why: in `start`, Vite loads its native bundler and writes its cache. On Linux, Vite also
+			// reads a WSL file that Deno gives only to `--allow-all`, so Deno ignores that read.
+			...(args.includes("start")
+				? ["--allow-ffi", "--allow-write", "--ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop"]
+				: []),
 			...args,
 		],
 	],
