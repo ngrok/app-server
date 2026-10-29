@@ -8,7 +8,7 @@ import { eventStream } from "./event-stream.js";
 import { accessLog } from "./plugins/access-log.js";
 import { tcp } from "./tcp.js";
 import { renderedFramework, testServer } from "./test-server.js";
-import type { FrameworkAdapter, LogSink, Plugin, StartedListener } from "./types.js";
+import type { FrameworkAdapter, Listener, LogSink, Plugin, StartedListener } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
 async function listening(render: FrameworkAdapter["fetch"], plugins: Plugin[] = defaultPlugins()) {
@@ -306,19 +306,27 @@ describe("createServer", () => {
 		expect(onShutdown).toHaveBeenCalledTimes(1);
 	});
 
-	it("stops the started listeners when another listener fails to start", async () => {
+	it.each<{ failure: string; start: Listener["start"] }>([
+		{
+			failure: "rejects",
+			start: async () => {
+				throw new Error("address in use");
+			},
+		},
+		{
+			failure: "throws before it returns a promise",
+			start: () => {
+				throw new Error("address in use");
+			},
+		},
+	])("stops the started listeners when another listener $failure", async ({ start }) => {
 		const stop = vi.fn<StartedListener["stop"]>(async () => {});
 		const app = createServer({
 			plugins: [],
 			logger: { log: () => {} },
 			listeners: [
 				{ name: "ok", start: async () => ({ url: "http://localhost:1", stop }) },
-				{
-					name: "taken",
-					start: async () => {
-						throw new Error("address in use");
-					},
-				},
+				{ name: "taken", start },
 			],
 		});
 

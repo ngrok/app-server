@@ -39,10 +39,18 @@ function lint({
 		cwd: rootDirectory,
 		encoding: "utf8",
 	});
-	return Array.from(
+	if (result.error != null) {
+		throw result.error;
+	}
+	const ruleIds = Array.from(
 		result.stdout.matchAll(/\[Error\/app-server\((?<id>[a-z-]+)\)\]/gu),
 		(match) => match.groups?.id ?? "",
 	);
+	// Why check the exit: a config error or a rule that throws also prints no rule diagnostic.
+	if (ruleIds.length === 0 && result.status !== 0) {
+		throw new Error(`oxlint exited with ${result.status}: ${result.stdout}${result.stderr}`);
+	}
+	return ruleIds;
 }
 
 /** Runs `oxlint --fix` on one fixture with one plugin rule on, and returns the fixed source. */
@@ -108,6 +116,7 @@ describe.each([
 			'it("loads", () => { expect(result).toBeDefined(); });',
 			'it.each([1])("loads %s", () => { expect(result).toBeDefined(); });',
 			'it.concurrent("loads", () => { expect(result).toBeDefined(); });',
+			'it.each`value`("loads $value", () => { expect(result).toBeDefined(); });',
 		],
 		valid: [
 			'it("loads", () => { expect(result).toBeDefined(); expect(result.id).toBe(1); });',

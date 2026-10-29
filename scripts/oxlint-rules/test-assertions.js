@@ -16,11 +16,19 @@
 
 const TEST_FUNCTION_NAMES = new Set(["it", "test"]);
 
-/** The name at the root of a callee: `it` for `it(…)`, `it.concurrent(…)`, and `it.each([…])(…)`. */
+/** The name at the root of a callee: `it` for `it(…)`, `it.concurrent(…)`, `it.each([…])(…)`, and ``it.each`…`(…)``. */
 function rootName(callee) {
 	let current = callee;
-	while (current.type === "MemberExpression" || current.type === "CallExpression") {
-		current = current.type === "MemberExpression" ? current.object : current.callee;
+	for (;;) {
+		if (current.type === "MemberExpression") {
+			current = current.object;
+		} else if (current.type === "CallExpression") {
+			current = current.callee;
+		} else if (current.type === "TaggedTemplateExpression") {
+			current = current.tag;
+		} else {
+			break;
+		}
 	}
 	return current.type === "Identifier" ? current.name : null;
 }
