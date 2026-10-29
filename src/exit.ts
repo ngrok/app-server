@@ -19,11 +19,23 @@ export function exitAfterFlush(): void {
 			process.exit();
 		}
 	};
-	// Why a write: its callback runs after each earlier write. A pipe on macOS writes async.
-	process.stdout.write("", done);
-	process.stderr.write("", done);
-	// Why a fallback: a reader that stops reading the pipe would hold the write callbacks forever.
+	flush(process.stdout, done);
+	flush(process.stderr, done);
+	// Why a fallback: a reader that stops reading the pipe would hold the callbacks forever.
 	setTimeout(() => {
 		process.exit();
 	}, FLUSH_TIMEOUT_MS).unref();
+}
+
+/** Calls `done` after `stream` writes what it holds. */
+function flush(stream: NodeJS.WriteStream, done: () => void): void {
+	if ("Bun" in globalThis) {
+		// Why `end` on Bun: on Bun 1.3, the callback of a write runs before a full pipe takes the
+		// earlier writes. The callback of `end` waits for them. A write after `end` still works on Bun.
+		stream.end(done);
+		return;
+	}
+	// Why a write: its callback runs after each earlier write. A pipe on macOS writes async.
+	// Why not `end` on Node: a write after `end` throws there.
+	stream.write("", done);
 }

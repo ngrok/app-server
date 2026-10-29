@@ -1,4 +1,5 @@
 import { request as httpRequest } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
 import { createServer, defaultPlugins, serverInternals, type AppServer } from "./create-server.js";
@@ -320,6 +321,40 @@ describe("createServer", () => {
 			}),
 		).rejects.toThrow("address in use");
 		expect(stop).toHaveBeenCalledTimes(1);
+	});
+
+	it("finishes the other stops before it rejects for a listener that fails to stop", async () => {
+		const finished: string[] = [];
+		const app = createServer({
+			plugins: [
+				{
+					name: "slow-hook",
+					onShutdown: async () => {
+						await sleep(50);
+						finished.push("hook");
+					},
+				},
+			],
+			logger: { log: () => {} },
+			listeners: [
+				{
+					name: "broken",
+					start: async () => ({
+						url: "http://localhost:1",
+						stop: () => Promise.reject(new Error("stop failed")),
+					}),
+				},
+			],
+		});
+		const internals = serverInternals(app);
+		const server = await internals?.listen({
+			clientDirectory: "/nonexistent",
+			prerenderedPaths: [],
+			fetch: renderedFramework,
+		});
+
+		await expect(server?.shutdown()).rejects.toThrow("stop failed");
+		expect(finished).toEqual(["hook"]);
 	});
 
 	it("stops the listeners at the deadline when a plugin's onShutdown hangs", async () => {

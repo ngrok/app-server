@@ -1,7 +1,7 @@
 // A server build entry for `test/runtimes.ts`: the built package with a stub framework, so the
 // same checks run on Node, Bun, and Deno.
 import { fileURLToPath } from "node:url";
-import { createEntry, createServer, eventStream, tcp } from "../../dist/index.js";
+import { createEntry, createServer, eventStream, jsonSink, tcp } from "../../dist/index.js";
 
 const encoder = new TextEncoder();
 const clientDirectory = fileURLToPath(new URL("client", import.meta.url));
@@ -10,6 +10,14 @@ let releaseStream = () => {};
 let holdCancelled = false;
 
 const app = createServer({
+	// Why the large line before `stopped`: it fills the stdout pipe just before the exit. The exit
+	// must wait for the pipe, or the `stopped` line is lost.
+	logger: jsonSink((line) => {
+		if (line.includes('"message":"stopped"')) {
+			process.stdout.write(`${"x".repeat(256 * 1024)}\n`);
+		}
+		process.stdout.write(line);
+	}),
 	listeners: [tcp({ port: 0, host: "127.0.0.1" })],
 	shutdownDeadlineMs: 3_000,
 });

@@ -243,11 +243,17 @@ export function createServer({
 							deadlinePassed = true;
 						}, shutdownDeadlineMs);
 						// Why at the same time: a plugin that hangs must not keep the listeners open.
-						await Promise.all([
+						// Why settle all: the process exits after shutdown, so one failed stop must not cut
+						// the other stops short.
+						const results = await Promise.allSettled([
 							internals.stopPlugins(),
 							...started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
 						]);
 						clearTimeout(deadline);
+						const failed = results.find((result) => result.status === "rejected");
+						if (failed != null) {
+							throw failed.reason;
+						}
 						logger.log("info", "stopped", {});
 					})();
 					return stopping;

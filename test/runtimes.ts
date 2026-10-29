@@ -52,7 +52,7 @@ function startServer(
 			const parts = buffered.split("\n");
 			buffered = parts.pop() ?? "";
 			for (const part of parts) {
-				// Why the check: in `start`, Vite can write lines that are not JSON.
+				// Why the check: Vite in `start` and the fixture at shutdown write lines that are not JSON.
 				if (!part.startsWith("{")) {
 					continue;
 				}
@@ -219,6 +219,9 @@ async function check(runtime: string): Promise<void> {
 			stuck.once("close", resolve);
 			stuck.resume();
 		});
+		const stdoutEnded = new Promise<void>((resolve) => {
+			child.stdout.once("end", resolve);
+		});
 		// Why 10 s: the fixture's drain deadline is 3 s.
 		const exitCode = exited(child, 10_000);
 		child.kill("SIGTERM");
@@ -227,7 +230,11 @@ async function check(runtime: string): Promise<void> {
 			0,
 			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits without waiting for the app's timers",
 		);
-		await Promise.all([eventsEnded, stuckEnded]);
+		await Promise.all([eventsEnded, stuckEnded, stdoutEnded]);
+		assert.ok(
+			lines.some((line) => line.message === "stopped"),
+			"the exit waits for stdout, so the last log line arrives",
+		);
 		process.stdout.write(`ok ${runtime}\n`);
 	} finally {
 		child.kill("SIGKILL");

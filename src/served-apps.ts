@@ -12,10 +12,12 @@ type ServedApp = { entry: AppServerEntry; pending: number; replaced: boolean };
 export function servedApps() {
 	let current: ServedApp | undefined;
 	const served = new Set<ServedApp>();
-	const retire = (app: ServedApp) => {
-		served.delete(app);
-		return app.entry.stopPlugins();
-	};
+	// Why keep the app until its hooks settle: `stopAll` must wait for hooks that already run.
+	// `stopPlugins` runs the hooks once, so a second call only waits.
+	const retire = (app: ServedApp) =>
+		app.entry.stopPlugins().finally(() => {
+			served.delete(app);
+		});
 	return {
 		/** Runs `handle` for a request that `entry` serves. */
 		serve: async <Result>(

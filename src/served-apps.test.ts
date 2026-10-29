@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "./create-server.js";
 import { createEntry, type AppServerEntry } from "./entry.js";
@@ -83,6 +84,25 @@ describe("servedApps", () => {
 		expect(await Promise.race([stopping, Promise.resolve("pending")])).toBe("pending");
 
 		finishHooks();
+		expect(await stopping).toBe("stopped");
+	});
+
+	it("at exit, waits for the hooks of a replaced app that still run", async () => {
+		const apps = servedApps();
+		const { promise: hookFinished, resolve: finishHook } = Promise.withResolvers<undefined>();
+		const old = entryFor(
+			createServer({ plugins: [{ name: "slow-hook", onShutdown: () => hookFinished }] }),
+		);
+		await apps.serve(old, async () => "old app");
+		await apps.serve(entryFor(), async () => "new app");
+		expect(old.stopPlugins).toHaveBeenCalledTimes(1);
+
+		const stopping = apps.stopAll().then(() => "stopped");
+		// Why wait: without the hook, `stopAll` resolves within a few microtasks.
+		await sleep(20);
+		expect(await Promise.race([stopping, Promise.resolve("pending")])).toBe("pending");
+
+		finishHook(undefined);
 		expect(await stopping).toBe("stopped");
 	});
 });
