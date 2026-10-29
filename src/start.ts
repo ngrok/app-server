@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { loadEntry } from "./entry.js";
+import { exitAfterFlush } from "./exit.js";
 import { listenFromPort } from "./start-port.js";
 import { errorAttributes, jsonSink } from "./log.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
@@ -97,13 +98,18 @@ export async function start(): Promise<void> {
 
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {
-			apps.stopAll();
+			const pluginsStopped = apps.stopAll();
 			httpServer.closeAllConnections();
-			httpServer.close();
-			viteServer.close().catch((error: unknown) => {
+			const httpClosed = new Promise<void>((resolve) => {
+				httpServer.close(() => {
+					resolve();
+				});
+			});
+			const viteClosed = viteServer.close().catch((error: unknown) => {
 				sink.log("error", "Vite close failed", errorAttributes(error));
 				process.exitCode = 1;
 			});
+			void Promise.all([pluginsStopped, httpClosed, viteClosed]).finally(exitAfterFlush);
 		});
 	}
 }
