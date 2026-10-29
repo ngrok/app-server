@@ -216,43 +216,25 @@ When a URL has both answers, follow these rules:
 - Send no `Vary: Accept` for a URL with only one answer, such as the `.md` URL itself.
 - Send the markdown with `Content-Type: text/markdown; charset=utf-8`.
 
-### A prerendered page
+### A prerendered markdown twin
 
-`rewrite` maps a request path to the file to serve. A rewritten path follows the same rules as a request path. This serves a prerendered markdown twin, such as `/components/button.md` for `/components/button`:
+When the build prerenders a markdown twin for each page, such as `/components/button.md` for `/components/button`, turn on `markdownTwins`:
 
 ```ts
-import { readdirSync } from "node:fs";
-import { createServer, defaultPlugins, prefersMarkdown } from "@ngrok/app-server";
-import type { Plugin } from "@ngrok/app-server";
-
-const markdownPaths = new Set(
-	readdirSync("build/client", { recursive: true, encoding: "utf8" })
-		.filter((file) => file.endsWith(".md"))
-		.map((file) => `/${file}`),
-);
-const twin = (path: string) => `${path.replace(/\/+$/, "") || "/index"}.md`;
-
-// Why a plugin: one URL answers HTML or markdown, so a shared cache must key on `Accept`.
-const varyOnAccept: Plugin = {
-	name: "vary-on-accept",
-	middleware: async (c, next) => {
-		await next();
-		if (markdownPaths.has(twin(c.req.path))) {
-			c.header("Vary", "Accept", { append: true });
-		}
-	},
-};
-
-createServer({
-	plugins: defaultPlugins({
-		beforeStatic: [varyOnAccept],
-		prerendered: {
-			rewrite: (path, c) =>
-				markdownPaths.has(twin(path)) && prefersMarkdown(c.req.raw) ? twin(path) : path,
-		},
-	}),
-});
+createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: true } }) });
 ```
+
+- A request that `prefersMarkdown` accepts gets the twin, with the twin's captured headers.
+- Each answer for a page with a twin gets `Vary: Accept`: the twin, the prerendered HTML, and the framework's answer for a rendered page. The server adds `Accept` to the `Vary` values that are already there.
+- A page with no twin, and the twin's own URL, get no `Vary: Accept`.
+
+The default twin is the path with no trailing slash plus `.md`, and `/index.md` for `/`. A different mapping goes in `twinOf`. Its path follows the same rules as a request path:
+
+```ts
+prerendered({ markdownTwins: { twinOf: (path) => (path === "/" ? "/llms.md" : `${path}.md`) } });
+```
+
+For other negotiation, `rewrite` maps a request path to the file to serve. It does not run for a request that gets the twin. When its answer depends on a request header, add a `Vary` for that header in a plugin.
 
 ### A rendered page
 
