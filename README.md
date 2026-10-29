@@ -208,6 +208,7 @@ It returns `true` when these conditions are all true:
 - The `Accept` header names `text/markdown`. A wildcard (`*/*`, `text/*`) never selects markdown, so a browser gets HTML.
 - The `q` of `text/markdown` is more than 0.
 - The `q` of `text/markdown` is equal to or more than the `q` of HTML. The `q` of HTML comes from the most specific range: `text/html`, then `text/*`, then `*/*`. A tie selects markdown.
+- Both answers are UTF-8. A range with `charset=utf-8` wins over the same type with no charset, and a range with another charset does not match.
 
 When a URL has both answers, follow these rules:
 

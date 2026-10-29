@@ -88,6 +88,30 @@ describe("prefersMarkdown", () => {
 		expect(selectsMarkdown("text/markdown;q=0.9, text/html;q=x")).toBe(false);
 	});
 
+	it("reads a comma or a semicolon in a quoted parameter value as part of the value", () => {
+		expect(selectsMarkdown(String.raw`text/html;foo="a,text/markdown,b"`)).toBe(false);
+		expect(selectsMarkdown(String.raw`text/markdown;foo="a,b";q=0, text/html`)).toBe(false);
+		expect(selectsMarkdown(String.raw`text/markdown;foo="a;q=0", text/html`)).toBe(true);
+		expect(selectsMarkdown(String.raw`text/markdown;foo="a\",b";q=0, text/html`)).toBe(false);
+	});
+
+	it("uses the range with charset=utf-8 before the range with no charset", () => {
+		const accepts = [
+			"text/markdown, text/markdown;charset=utf-8;q=0, text/html;q=0.5",
+			'text/markdown;q=0.9, text/markdown;charset="UTF-8";q=0.1, text/html;q=0.5',
+			"text/markdown;q=0.5, text/html;q=0.1, text/html;charset=utf-8",
+		];
+
+		expect(accepts.filter((accept) => selectsMarkdown(accept))).toStrictEqual([]);
+	});
+
+	it("ignores a range with another charset, and other parameters", () => {
+		expect(selectsMarkdown("text/markdown;charset=iso-8859-1")).toBe(false);
+		expect(selectsMarkdown("text/markdown;charset=iso-8859-1, text/markdown;q=0.5")).toBe(true);
+		expect(selectsMarkdown("text/markdown;q=0.5, text/html;charset=iso-8859-1")).toBe(true);
+		expect(selectsMarkdown("text/markdown;variant=GFM")).toBe(true);
+	});
+
 	it("reads the Accept headers of one request as one list", () => {
 		const headers = new Headers();
 		headers.append("Accept", "text/html;q=0.5");
