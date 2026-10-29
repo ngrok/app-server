@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { defaultPlugins } from "../create-server.js";
+import type { AppServer } from "../create-server.js";
 import { prerendered } from "./static.js";
 import { trailingSlash } from "./trailing-slash.js";
 import type { TrailingSlash } from "./trailing-slash.js";
@@ -143,6 +144,30 @@ describe("trailingSlash", () => {
 		await expect(answer(always.request, "/")).resolves.toStrictEqual({
 			status: 200,
 			location: null,
+		});
+	});
+
+	it("sends no redirect for a path that one of the app's own routes matches", async () => {
+		const routes = (app: AppServer) => {
+			app.get("/livez", (context) => context.text("live"));
+			app.get("/health/", (context) => context.text("healthy"));
+		};
+		const always = await testServer({
+			plugins: [trailingSlash({ mode: "always" })],
+			clientDirectory,
+			routes,
+		});
+		const never = await testServer({
+			plugins: [trailingSlash({ mode: "never" })],
+			clientDirectory,
+			routes,
+		});
+
+		await expect((await always.request("/livez")).text()).resolves.toBe("live");
+		await expect((await never.request("/health/")).text()).resolves.toBe("healthy");
+		await expect(answer(never.request, "/livez/")).resolves.toStrictEqual({
+			status: 308,
+			location: "/livez",
 		});
 	});
 

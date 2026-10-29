@@ -1,4 +1,5 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import { matchedRoutes } from "hono/route";
 import { isSafeLocalPath } from "../safe-local-path.js";
 import { findStaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
@@ -46,6 +47,15 @@ function canonicalPath(path: string, mode: TrailingSlash): string {
 	return path;
 }
 
+/**
+ * Whether one of the app's own Hono routes matches the request. Why the
+ * path: the plugins and the framework match at `/*`, and Hono matches a
+ * route path strictly, so a redirect would move the request off its route.
+ */
+function hasAppRoute(context: Context<AppServerEnv>): boolean {
+	return matchedRoutes(context).some((route) => route.path !== "/*");
+}
+
 /** Whether `path`, a decoded URL path, names a file in `files`, not a directory. */
 async function isStaticFile(files: StaticFiles, path: string): Promise<boolean> {
 	return (await findStaticFile(files, path))?.path === path;
@@ -56,8 +66,9 @@ async function isStaticFile(files: StaticFiles, path: string): Promise<boolean> 
  * URL. It applies to rendered and prerendered pages, because the server cannot
  * tell which paths have a route. The redirect keeps the query string.
  *
- * It sends no redirect for `/`, a POST or other method that is not GET or
- * HEAD, a data request of the framework, or a path that already has the
+ * It sends no redirect for `/`, a method other than GET or HEAD, a data
+ * request of the framework, a path that one of the app's own Hono routes
+ * matches, such as `app.get("/livez")`, or a path that already has the
  * mode's form. `always` adds no slash to a file in the client build, such as
  * `/LICENSE`, or to a path whose last segment has a dot, such as `/llms.txt`.
  *
@@ -80,7 +91,11 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 			}
 			stage = async (context, next) => {
 				const { method } = context.req;
-				if ((method !== "GET" && method !== "HEAD") || info.isDataRequest(context.req.path)) {
+				if (
+					(method !== "GET" && method !== "HEAD") ||
+					info.isDataRequest(context.req.path) ||
+					hasAppRoute(context)
+				) {
 					return next();
 				}
 				// Why the raw URL: Hono decodes `path`, but a `Location` must keep the percent-encoding.
