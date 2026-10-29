@@ -21,6 +21,22 @@ describe("eventStream", () => {
 		);
 	});
 
+	it("splits the data on a lone carriage return, so the client cannot read it as a field", async () => {
+		const response = eventStream({}, ({ send }) => {
+			send({ data: "first\revent: injected" });
+		});
+
+		expect(await readAll(response)).toBe("data: first\ndata: event: injected\n\n");
+	});
+
+	it("refuses a line break in the event name", async () => {
+		const response = eventStream({}, ({ send }) => {
+			send({ event: "update\ndata: injected", data: "x" });
+		});
+
+		await expect(readAll(response)).rejects.toThrow("cannot contain a line break");
+	});
+
 	it("sends a heartbeat comment while the stream is quiet", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		const response = eventStream({ heartbeatMs: 1_000 }, () => new Promise(() => {}));

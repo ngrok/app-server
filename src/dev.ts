@@ -1,6 +1,6 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
-import { createServer } from "./create-server.js";
+import { createServer, type ServerInternals } from "./create-server.js";
 import { loadEntry } from "./load-entry.js";
 import { errorAttributes, jsonSink } from "./log.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
@@ -33,6 +33,8 @@ export async function dev(): Promise<void> {
 		: "virtual:react-router/server-build";
 	const sink = jsonSink();
 	let fallback: unknown;
+	// Why keep it: a stop signal runs the `onShutdown` hooks of the app that served last.
+	let lastInternals: ServerInternals | undefined;
 
 	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
 		try {
@@ -43,6 +45,7 @@ export async function dev(): Promise<void> {
 					return fallback;
 				},
 			});
+			lastInternals = internals;
 			await internals.prepare({
 				mode: "development",
 				viteMiddleware: viteServer.middlewares,
@@ -90,6 +93,7 @@ export async function dev(): Promise<void> {
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {
 			abortShutdownSignal();
+			void lastInternals?.stopPlugins();
 			httpServer.closeAllConnections();
 			httpServer.close();
 			viteServer.close().catch((error: unknown) => {

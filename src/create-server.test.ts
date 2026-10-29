@@ -1,10 +1,11 @@
 import { request as httpRequest } from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
+import { basicAuth } from "hono/basic-auth";
+import { createServer, defaultPlugins, serverInternals, type AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import { tcp } from "./tcp.js";
 import { renderedFramework, testServer } from "./test-server.js";
-import type { FrameworkAdapter, LogSink, Plugin } from "./types.js";
+import type { FrameworkAdapter, LogSink, Plugin, StartedListener } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
 async function listening(render: FrameworkAdapter["fetch"], plugins: Plugin[] = defaultPlugins()) {
@@ -66,16 +67,50 @@ describe("createServer", () => {
 	it("reads the scheme from X-Forwarded-Proto only when trustForwardedProto is set", async () => {
 		const render = async (request: Request) =>
 			new Response(`${new URL(request.url).protocol} ${await request.text()}`);
-		const init = { method: "POST", body: "form", headers: { "X-Forwarded-Proto": "https" } };
+		const routes = (app: AppServer) => {
+			app.get("/route", (context) => context.text(new URL(context.req.url).protocol));
+		};
+		const headers = { "X-Forwarded-Proto": "https" };
+		const init = { method: "POST", body: "form", headers };
 		const trusted = await testServer({
 			plugins: [],
 			render,
+			routes,
 			options: { trustForwardedProto: true },
 		});
-		const untrusted = await testServer({ plugins: [], render });
+		const untrusted = await testServer({ plugins: [], render, routes });
 
 		expect(await (await trusted.request("/", init)).text()).toBe("https: form");
+		expect(await (await trusted.request("/route", { headers })).text()).toBe("https:");
 		expect(await (await untrusted.request("/", init)).text()).toBe("http: form");
+		expect(await (await untrusted.request("/route", { headers })).text()).toBe("http:");
+	});
+
+	it("answers an HTTPException with its own response, not a 500", async () => {
+		const { request, lines } = await testServer({
+			plugins: [],
+			routes: (app) => {
+				app.use("/admin", basicAuth({ username: "admin", password: "secret" }));
+			},
+		});
+
+		const response = await request("/admin");
+
+		expect(response.status).toBe(401);
+		expect(response.headers.get("WWW-Authenticate")).toContain("Basic");
+		expect(lines).toEqual([]);
+	});
+
+	it("cancels the body of a HEAD response, so a stream stops", async () => {
+		const cancel = vi.fn<(reason: unknown) => void>();
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			render: async () => new Response(new ReadableStream({ cancel })),
+		});
+
+		await request("/events", { method: "HEAD" });
+
+		expect(cancel).toHaveBeenCalledTimes(1);
 	});
 
 	it("adds its headers to a response whose headers are immutable", async () => {
@@ -186,6 +221,27 @@ describe("createServer", () => {
 		expect(first).toBe("data: hello\n\n");
 		expect(rest).toBe("");
 		expect(onShutdown).toHaveBeenCalledTimes(1);
+	});
+
+	it("stops the started listeners when another listener fails to start", async () => {
+		const stop = vi.fn<StartedListener["stop"]>(async () => {});
+		const app = createServer({
+			plugins: [],
+			logger: { log: () => {} },
+			listeners: [
+				{ name: "ok", start: async () => ({ url: "http://localhost:1", stop }) },
+				{ name: "taken", start: () => Promise.reject(new Error("address in use")) },
+			],
+		});
+
+		await expect(
+			serverInternals(app)?.listen({
+				clientDirectory: "/nonexistent",
+				prerenderedPaths: [],
+				fetch: renderedFramework,
+			}),
+		).rejects.toThrow("address in use");
+		expect(stop).toHaveBeenCalledTimes(1);
 	});
 
 	it("stops the listeners at the deadline when a plugin's onShutdown hangs", async () => {

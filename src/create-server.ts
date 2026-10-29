@@ -40,6 +40,8 @@ export type ServerInternals = {
 	prepare: (info: SetupInfo) => Promise<void>;
 	/** Starts the listeners. Call `prepare` first. */
 	listen: (framework: FrameworkAdapter) => Promise<RunningServer>;
+	/** Runs each plugin's `onShutdown`, and stops waiting for them at the shutdown deadline. */
+	stopPlugins: () => Promise<void>;
 };
 
 /** Options for {@link defaultPlugins}. */
@@ -138,9 +140,18 @@ export function createServer({
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
 	const app = new Hono<AppServerEnv>();
+	if (trustForwardedProto) {
+		// Why wrap `fetch`: every plugin and route, not only the framework, must see the trusted scheme.
+		const dispatch = app.fetch;
+		app.fetch = (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
+	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
 		await next();
+		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
+		if (context.req.method === "HEAD") {
+			await context.res.body?.cancel();
+		}
 	});
 	for (const plugin of plugins) {
 		if (plugin.middleware != null) {
@@ -148,6 +159,13 @@ export function createServer({
 		}
 	}
 	app.onError((error, context) => {
+		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
+		if ("getResponse" in error && typeof error.getResponse === "function") {
+			const response: unknown = error.getResponse();
+			if (response instanceof Response) {
+				return response;
+			}
+		}
 		context.var.logger.error("unhandled error", errorAttributes(error));
 		return context.text("Internal Server Error", 500);
 	});
@@ -161,12 +179,7 @@ export function createServer({
 				for (const plugin of plugins) {
 					await plugin.setup?.(info);
 				}
-				app.all("*", (context) =>
-					context.env.framework.fetch(
-						trustForwardedProto ? withForwardedProto(context.req.raw) : context.req.raw,
-						context,
-					),
-				);
+				app.all("*", (context) => context.env.framework.fetch(context.req.raw, context));
 			})();
 			return prepared;
 		},
@@ -177,7 +190,16 @@ export function createServer({
 			renewShutdownSignal();
 			const fetch: FetchHandler = (request, bindings) =>
 				app.fetch(request, { ...bindings, framework });
-			const started = await Promise.all(listeners.map((listener) => listener.start(fetch)));
+			const starts = await Promise.allSettled(listeners.map((listener) => listener.start(fetch)));
+			const started = starts.flatMap((start) =>
+				start.status === "fulfilled" ? [start.value] : [],
+			);
+			const failed = starts.find((start) => start.status === "rejected");
+			if (failed != null) {
+				// Why stop the others: the caller gets no handle to stop them.
+				await Promise.all(started.map((listener) => listener.stop({ deadlineMs: 0 })));
+				throw failed.reason;
+			}
 			const urls = started.map((listener) => listener.url);
 			logger.log("info", "listening", { "app_server.urls": urls });
 			let stopping: Promise<void> | undefined;
@@ -187,32 +209,34 @@ export function createServer({
 					stopping ??= (async () => {
 						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
 						abortShutdownSignal();
-						const pluginShutdown = (async () => {
-							const results = await Promise.allSettled(
-								plugins.map(async (plugin) => plugin.onShutdown?.()),
-							);
-							for (const result of results) {
-								if (result.status === "rejected") {
-									logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
-								}
-							}
-						})();
 						// Why at the same time: a plugin that hangs must not keep the listeners open.
-						const [pluginsFinished] = await Promise.all([
-							settlesWithin(pluginShutdown, shutdownDeadlineMs),
+						await Promise.all([
+							internals.stopPlugins(),
 							...started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
 						]);
-						if (!pluginsFinished) {
-							logger.log("warn", "plugin shutdown passed the deadline", {
-								"app_server.deadline_ms": shutdownDeadlineMs,
-							});
-						}
 						logger.log("info", "stopped", {});
 					})();
 					return stopping;
 				},
 			};
 			return running;
+		},
+		stopPlugins: async () => {
+			const hooks = (async () => {
+				const results = await Promise.allSettled(
+					plugins.map(async (plugin) => plugin.onShutdown?.()),
+				);
+				for (const result of results) {
+					if (result.status === "rejected") {
+						logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+					}
+				}
+			})();
+			if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
+				logger.log("warn", "plugin shutdown passed the deadline", {
+					"app_server.deadline_ms": shutdownDeadlineMs,
+				});
+			}
 		},
 	};
 	Object.defineProperty(app, INTERNALS_KEY, { value: internals });
@@ -227,6 +251,8 @@ function isServerInternals(value: unknown): value is ServerInternals {
 		typeof value.prepare === "function" &&
 		"listen" in value &&
 		typeof value.listen === "function" &&
+		"stopPlugins" in value &&
+		typeof value.stopPlugins === "function" &&
 		"logger" in value
 	);
 }
