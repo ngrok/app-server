@@ -84,24 +84,30 @@ describe("runtimeEnv", () => {
 		expect((await request("/")).headers.get("ETag")).toBeNull();
 	});
 
-	it("answers 200 with new values for a prerendered page revalidated with an ETag from before a restart", async () => {
-		const serve = (url: string) =>
-			testServer({
-				plugins: [
-					runtimeEnv(schema, { source: { ...validSource, PUBLIC_API_URL: url } }),
-					prerendered(),
-				],
-				clientDirectory,
-			});
-		const before = await serve("https://old.example.com");
-		const etag = (await before.request("/", { method: "HEAD" })).headers.get("ETag") ?? "";
-		const after = await serve("https://new.example.com");
+	it("answers 200 with the values to a client that holds the file's ETag from before them", async () => {
+		const before = await testServer({ plugins: [prerendered()], clientDirectory });
+		const etag = (await before.request("/")).headers.get("ETag") ?? "";
+		const after = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource }), prerendered()],
+			clientDirectory,
+		});
 
 		const response = await after.request("/", { headers: { "If-None-Match": etag } });
 
 		expect(etag).not.toBe("");
 		expect(response.status).toBe(200);
-		expect(await response.text()).toContain("https://new.example.com");
+		expect(await response.text()).toContain("app-server-public-env");
+	});
+
+	it("drops the file length from HEAD, since GET adds the values", async () => {
+		const { request } = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource }), prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/", { method: "HEAD" });
+
+		expect(response.headers.get("Content-Length")).toBeNull();
 	});
 
 	it("leaves a document alone when no value is public", async () => {

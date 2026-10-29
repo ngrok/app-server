@@ -2,10 +2,16 @@ import { readdir } from "node:fs/promises";
 import { sep } from "node:path";
 import { parseAccept } from "hono/utils/accept";
 
+/** How closely a media range matches `text/html`: 3 exact, 2 `text/*`, 1 any, 0 none. */
+function htmlSpecificity(media: string): number {
+	return ["*/*", "text/*", "text/html"].indexOf(media) + 1;
+}
+
 /**
- * Whether an `Accept` header prefers markdown to HTML. Markdown wins when its
- * quality is above zero and at least that of `text/html` or a wildcard. A
- * browser does not name markdown, so it gets HTML.
+ * Whether an `Accept` header prefers markdown to HTML. Markdown wins when it
+ * names `text/markdown` with a quality above zero and at least that of HTML.
+ * HTML takes the quality of its most specific range: `text/html`, then
+ * `text/*`, then any type. A browser does not name markdown, so it gets HTML.
  *
  * @example
  * prefersMarkdown("text/markdown, text/html;q=0.9"); // => true
@@ -17,16 +23,20 @@ export function prefersMarkdown(accept: string | null | undefined): boolean {
 		return false;
 	}
 	let markdown = 0;
-	let html = 0;
+	let html = { q: 0, specificity: 0 };
 	for (const { type, q } of parseAccept(accept)) {
 		const media = type.toLowerCase();
+		const specificity = htmlSpecificity(media);
 		if (media === "text/markdown") {
 			markdown = Math.max(markdown, q);
-		} else if (media === "text/html" || media === "text/*" || media === "*/*") {
-			html = Math.max(html, q);
+		} else if (
+			specificity > html.specificity ||
+			(specificity === html.specificity && specificity > 0 && q > html.q)
+		) {
+			html = { q, specificity };
 		}
 	}
-	return markdown > 0 && markdown >= html;
+	return markdown > 0 && markdown >= html.q;
 }
 
 /**

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
 import { createServer, defaultPlugins, serverInternals, type AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
+import { accessLog } from "./plugins/access-log.js";
 import { tcp } from "./tcp.js";
 import { renderedFramework, testServer } from "./test-server.js";
 import type { FrameworkAdapter, LogSink, Plugin, StartedListener } from "./types.js";
@@ -149,29 +150,38 @@ describe("createServer", () => {
 	it.each([
 		["a string", "boom"],
 		["null", null],
-	])("logs %s that a route throws and answers 500", async (_, thrown) => {
-		const { request, lines } = await testServer({
-			plugins: [],
-			routes: (app) => {
-				app.get("/throws", () => {
-					throw thrown;
-				});
-			},
-		});
+	])(
+		"logs %s that a route throws, answers 500, and still writes the access line",
+		async (_, thrown) => {
+			const { request, lines } = await testServer({
+				plugins: [accessLog()],
+				routes: (app) => {
+					app.get("/throws", () => {
+						throw thrown;
+					});
+				},
+			});
 
-		const response = await request("/throws");
+			const response = await request("/throws");
+			await response.text();
 
-		expect(response.status).toBe(500);
-		expect(lines).toEqual([
-			{
-				level: "error",
-				message: "unhandled error",
-				attributes: expect.objectContaining({
-					"error.message": `A non-Error value was thrown: ${String(thrown)}`,
-				}),
-			},
-		]);
-	});
+			expect(response.status).toBe(500);
+			expect(lines).toEqual([
+				{
+					level: "error",
+					message: "unhandled error",
+					attributes: expect.objectContaining({
+						"error.message": `A non-Error value was thrown: ${String(thrown)}`,
+					}),
+				},
+				{
+					level: "info",
+					message: "request",
+					attributes: expect.objectContaining({ "http.status_code": 500 }),
+				},
+			]);
+		},
+	);
 
 	it("stops the handler's stream when the client disconnects through gzip and the access log", async () => {
 		const cancel = vi.fn<(reason: unknown) => void>();
@@ -203,6 +213,30 @@ describe("createServer", () => {
 			});
 			request.end();
 		});
+
+		await expect.poll(() => cancel.mock.calls.length).toBe(1);
+		await server.shutdown();
+	});
+
+	it("stops the handler's stream when the client disconnects before the response is ready", async () => {
+		const cancel = vi.fn<(reason: unknown) => void>();
+		const entered = Promise.withResolvers<undefined>();
+		const server = await listening(async (incoming) => {
+			entered.resolve(undefined);
+			// Why wait for the abort: the response must come after the server sees the disconnect.
+			await new Promise((resolve) => {
+				incoming.signal.addEventListener("abort", resolve, { once: true });
+			});
+			return new Response(new ReadableStream<Uint8Array>({ cancel }), {
+				headers: { "Content-Type": "text/plain" },
+			});
+		});
+
+		const request = httpRequest(server.urls[0] ?? "");
+		request.on("error", () => {});
+		request.end();
+		await entered.promise;
+		request.destroy();
 
 		await expect.poll(() => cancel.mock.calls.length).toBe(1);
 		await server.shutdown();

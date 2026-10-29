@@ -55,6 +55,24 @@ const routes = {
 			}),
 			{ headers: { "Content-Type": "text/plain" } },
 		),
+	// Answers after the drain deadline with a body that runs a timer until it is cancelled.
+	"/late": async () => {
+		await new Promise((resolve) => {
+			setTimeout(resolve, 4_000);
+		});
+		let timer;
+		return new Response(
+			new ReadableStream({
+				start(controller) {
+					timer = setInterval(() => controller.enqueue(encoder.encode("tick")), 100);
+				},
+				cancel() {
+					clearInterval(timer);
+				},
+			}),
+			{ headers: { "Content-Type": "text/plain" } },
+		);
+	},
 	"/events": (request) =>
 		eventStream({ signal: request.signal }, ({ send }) => {
 			send({ data: "hello" });

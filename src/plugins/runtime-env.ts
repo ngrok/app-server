@@ -182,16 +182,18 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			const response = context.res;
 			if (
 				script == null ||
-				response.body == null ||
 				response.headers.has("Content-Encoding") ||
 				!(response.headers.get("Content-Type")?.startsWith("text/html") ?? false)
 			) {
 				return;
 			}
-			context.res = new Response(injectBeforeHeadEnd(response.body, script), response);
-			context.res.headers.delete("Content-Length");
-			// Why: a rendered document's ETag does not cover the values, so a 304 could keep old ones.
-			context.res.headers.delete("ETag");
+			if (response.body != null) {
+				context.res = new Response(injectBeforeHeadEnd(response.body, script), response);
+			}
+			// Why for HEAD too: it gets the headers that GET gets. The script changes the length, and a
+			// rendered document's ETag does not cover the values, so a 304 could keep old ones.
+			context.header("Content-Length", undefined);
+			context.header("ETag", undefined);
 		},
 	};
 }

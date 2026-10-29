@@ -108,6 +108,20 @@ function withForwardedProto(request: Request): Request {
 	return new Request(url, request);
 }
 
+/**
+ * Runs `next`, and rethrows a thrown value that is not an `Error` as one.
+ * Hono sends only an `Error` to `onError`, and rethrows any other value.
+ */
+async function asError(next: () => Promise<void>): Promise<void> {
+	try {
+		await next();
+	} catch (error) {
+		throw error instanceof Error
+			? error
+			: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
+	}
+}
+
 /** Whether `work` settles before `ms` pass. */
 async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -147,14 +161,7 @@ export function createServer({
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
-		try {
-			await next();
-		} catch (error) {
-			// Why: Hono sends only an `Error` to `onError`, and rethrows any other value.
-			throw error instanceof Error
-				? error
-				: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
-		}
+		await asError(next);
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
@@ -165,6 +172,9 @@ export function createServer({
 			app.use(plugin.middleware);
 		}
 	}
+	// Why after the plugins too: a value that a route or the framework throws becomes an `Error`
+	// here, so `onError` answers at once and each plugin still sees the 500 after its `next`.
+	app.use((_, next) => asError(next));
 	app.onError((error, context) => {
 		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
 		if ("getResponse" in error && typeof error.getResponse === "function") {
@@ -195,8 +205,16 @@ export function createServer({
 				throw new Error("This app server is already listening.");
 			}
 			renewShutdownSignal();
-			const fetch: FetchHandler = (request, bindings) =>
-				app.fetch(request, { ...bindings, framework });
+			let deadlinePassed = false;
+			const fetch: FetchHandler = async (request, bindings) => {
+				const response = await app.fetch(request, { ...bindings, framework });
+				// Why: after the drain deadline, the listener closed the connection, so no one reads this
+				// body. A cancel stops its producer, which can otherwise keep the process alive.
+				if (deadlinePassed) {
+					await response.body?.cancel();
+				}
+				return response;
+			};
 			const starts = await Promise.allSettled(listeners.map((listener) => listener.start(fetch)));
 			const started = starts.flatMap((start) =>
 				start.status === "fulfilled" ? [start.value] : [],
@@ -216,11 +234,15 @@ export function createServer({
 					stopping ??= (async () => {
 						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
 						abortShutdownSignal();
+						const deadline = setTimeout(() => {
+							deadlinePassed = true;
+						}, shutdownDeadlineMs);
 						// Why at the same time: a plugin that hangs must not keep the listeners open.
 						await Promise.all([
 							internals.stopPlugins(),
 							...started.map((listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
 						]);
+						clearTimeout(deadline);
 						logger.log("info", "stopped", {});
 					})();
 					return stopping;

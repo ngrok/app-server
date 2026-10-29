@@ -76,6 +76,7 @@ export async function listen(
 		async (request, info) => {
 			const forced = Promise.withResolvers<Response>();
 			const force = () => {
+				open.delete(force);
 				forced.resolve(new Response(null, { status: 503 }));
 			};
 			open.add(force);

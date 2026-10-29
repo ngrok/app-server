@@ -9,13 +9,20 @@ export async function listen(
 	options: ListenOptions,
 ): Promise<StartedListener> {
 	const server = createAdaptorServer({
-		fetch: (request, { incoming, outgoing }) =>
-			fetch(request, {
+		fetch: async (request, { incoming, outgoing }) => {
+			const response = await fetch(request, {
 				remoteAddress: incoming.socket.remoteAddress,
 				...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
 					? { incoming, outgoing }
 					: {}),
-			}),
+			});
+			// Why: for a socket that closed first, such as at the drain deadline, `@hono/node-server`
+			// drops the body with no cancel, and its producer runs on.
+			if (outgoing.destroyed) {
+				await response.body?.cancel();
+			}
+			return response;
+		},
 		serverOptions: {
 			keepAliveTimeout: options.idleTimeoutMs,
 			// Why above the keep-alive timeout: Node closes a socket that is between requests when its

@@ -144,6 +144,8 @@ async function check(runtime: string): Promise<void> {
 			events.once("end", resolve);
 			events.resume();
 		});
+		// Why no await: `/late` answers after the drain deadline.
+		request(new URL("/late", base).href).catch(() => {});
 		const stuck = await request(new URL("/stuck", base).href);
 		const stuckEnded = new Promise<void>((resolve) => {
 			stuck.once("close", resolve);
@@ -155,7 +157,7 @@ async function check(runtime: string): Promise<void> {
 		assert.equal(
 			await exitCode,
 			0,
-			"shutdown ends the event stream, closes a stuck body at the deadline, and exits cleanly",
+			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits cleanly",
 		);
 		await Promise.all([eventsEnded, stuckEnded]);
 		process.stdout.write(`ok ${runtime}\n`);
