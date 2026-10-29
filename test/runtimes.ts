@@ -4,28 +4,38 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { get, type IncomingMessage } from "node:http";
+import { createServer, type Server } from "node:net";
 import { fileURLToPath } from "node:url";
 import { constants, createGunzip } from "node:zlib";
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
-const startArgs = ["dist/cli.js", "start", "test/fixtures/runtime-entry.js"];
-const commands: Record<string, [string, string[]]> = {
-	node: ["node", startArgs],
-	bun: ["bun", startArgs],
-	deno: [
+const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
+const portArgs = ["dist/cli.js", "serve", "test/fixtures/port-entry.js"];
+const commands: Record<string, (args: string[]) => [string, string[]]> = {
+	node: (args) => ["node", args],
+	bun: (args) => ["bun", args],
+	deno: (args) => [
 		"deno",
-		["run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", ...startArgs],
+		["run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", ...args],
 	],
 };
 
 type Line = { level: string; message: string; [attribute: string]: unknown };
 
 /** Starts the CLI and resolves with its URL once it logs `listening`. */
-function startServer(runtime: string) {
-	const [command, args] = commands[runtime] ?? ["", []];
+function startServer(
+	runtime: string,
+	cliArgs = serveArgs,
+	{
+		env = {},
+		stderr = "inherit",
+	}: { env?: Record<string, string>; stderr?: "inherit" | "ignore" } = {},
+) {
+	const [command, args] = commands[runtime]?.(cliArgs) ?? ["", []];
 	const child = spawn(command, args, {
 		cwd: packageDirectory,
-		stdio: ["ignore", "pipe", "inherit"],
+		env: { ...process.env, ...env },
+		stdio: ["ignore", "pipe", stderr],
 	});
 	const lines: Line[] = [];
 	let buffered = "";
@@ -82,7 +92,56 @@ async function waitFor(check: () => Promise<boolean>, what: string): Promise<voi
 	throw new Error(`Timed out: ${what}`);
 }
 
+/** Listens on an open port on 127.0.0.1 and resolves with the server and its port. */
+function holdPort(): Promise<{ server: Server; port: number }> {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			resolve({ server, port: typeof address === "object" && address != null ? address.port : 0 });
+		});
+	});
+}
+
+function close(server: Server): Promise<void> {
+	return new Promise((resolve) => {
+		server.close(() => {
+			resolve();
+		});
+	});
+}
+
+async function checkPort(runtime: string): Promise<void> {
+	const held = await holdPort();
+	const open = await holdPort();
+	await close(open.server);
+	try {
+		const flagged = startServer(runtime, [...portArgs, "--port", String(open.port)], {
+			env: { PORT: String(held.port) },
+		});
+		try {
+			assert.equal(new URL(await flagged.url).port, String(open.port), "`--port` wins over `PORT`");
+		} finally {
+			flagged.child.kill("SIGKILL");
+		}
+
+		const busy = startServer(runtime, [...portArgs, "--port", String(held.port)], {
+			stderr: "ignore",
+		});
+		busy.url.catch(() => {});
+		assert.notEqual(
+			await exited(busy.child, 5_000),
+			0,
+			"`serve` stops at once when its port is in use",
+		);
+	} finally {
+		await close(held.server);
+	}
+}
+
 async function check(runtime: string): Promise<void> {
+	await checkPort(runtime);
 	const { child, lines, url } = startServer(runtime);
 	try {
 		const base = await url;
