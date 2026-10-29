@@ -61,9 +61,28 @@ describe("servedApps", () => {
 		const current = entryFor();
 		await apps.serve(current, async () => "current app");
 
-		apps.stopAll();
+		await apps.stopAll();
 
 		expect(current.abortShutdownSignal).toHaveBeenCalledTimes(1);
 		expect(current.stopPlugins).toHaveBeenCalledTimes(1);
+	});
+
+	it("at exit, resolves only when the plugins have stopped", async () => {
+		const apps = servedApps();
+		const current = entryFor();
+		let finishHooks = () => {};
+		current.stopPlugins.mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					finishHooks = resolve;
+				}),
+		);
+		await apps.serve(current, async () => "current app");
+
+		const stopping = apps.stopAll().then(() => "stopped");
+		expect(await Promise.race([stopping, Promise.resolve("pending")])).toBe("pending");
+
+		finishHooks();
+		expect(await stopping).toBe("stopped");
 	});
 });

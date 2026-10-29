@@ -73,6 +73,11 @@ const routes = {
 			{ headers: { "Content-Type": "text/plain" } },
 		);
 	},
+	// Leaves a timer that outlives the response, as React Router's render abort timer does.
+	"/linger": () => {
+		setTimeout(() => {}, 60_000);
+		return new Response("lingering", { headers: { "Content-Type": "text/plain" } });
+	},
 	"/events": (request) =>
 		eventStream({ signal: request.signal }, ({ send }) => {
 			send({ data: "hello" });

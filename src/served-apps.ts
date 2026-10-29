@@ -14,7 +14,7 @@ export function servedApps() {
 	const served = new Set<ServedApp>();
 	const retire = (app: ServedApp) => {
 		served.delete(app);
-		void app.entry.stopPlugins();
+		return app.entry.stopPlugins();
 	};
 	return {
 		/** Runs `handle` for a request that `entry` serves. */
@@ -28,7 +28,7 @@ export function servedApps() {
 				if (current != null) {
 					current.replaced = true;
 					if (current.pending === 0) {
-						retire(current);
+						void retire(current);
 					}
 				}
 				current = { entry, pending: 0, replaced: false };
@@ -41,16 +41,21 @@ export function servedApps() {
 			} finally {
 				app.pending -= 1;
 				if (app.replaced && app.pending === 0) {
-					retire(app);
+					void retire(app);
 				}
 			}
 		},
-		/** At exit: aborts `shutdownSignal()` and runs the `onShutdown` hooks of each app still held. */
-		stopAll: () => {
-			for (const app of served) {
-				app.entry.abortShutdownSignal();
-				retire(app);
-			}
+		/**
+		 * At exit: aborts `shutdownSignal()` and runs the `onShutdown` hooks of each
+		 * app still held. Resolves when the hooks finish or pass the deadline.
+		 */
+		stopAll: async () => {
+			await Promise.all(
+				Array.from(served, (app) => {
+					app.entry.abortShutdownSignal();
+					return retire(app);
+				}),
+			);
 		},
 	};
 }

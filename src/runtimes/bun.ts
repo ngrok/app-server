@@ -39,10 +39,16 @@ export async function listen(
 	return {
 		url: listenerUrl(options.hostname, server.port),
 		stop: async ({ deadlineMs }) => {
-			const deadline = setTimeout(() => {
-				void server.stop(true);
-			}, deadlineMs);
-			await server.stop();
+			let deadline: ReturnType<typeof setTimeout> | undefined;
+			const deadlinePassed = new Promise<void>((resolve) => {
+				deadline = setTimeout(() => {
+					void server.stop(true);
+					resolve();
+				}, deadlineMs);
+			});
+			// Why a race: on Bun 1.3, a response body that stays open keeps both stop promises
+			// pending, and `stop(true)` leaves its connection open. The exit after shutdown closes it.
+			await Promise.race([server.stop(), deadlinePassed]);
 			clearTimeout(deadline);
 		},
 	};

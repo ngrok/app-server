@@ -11,6 +11,8 @@ import { constants, createGunzip } from "node:zlib";
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
 const portArgs = ["dist/cli.js", "serve", "test/fixtures/port-entry.js"];
+const devDirectory = fileURLToPath(new URL("fixtures/dev", import.meta.url));
+const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const commands: Record<string, (args: string[]) => [string, string[]]> = {
 	node: (args) => ["node", args],
 	bun: (args) => ["bun", args],
@@ -27,13 +29,14 @@ function startServer(
 	runtime: string,
 	cliArgs = serveArgs,
 	{
+		cwd = packageDirectory,
 		env = {},
 		stderr = "inherit",
-	}: { env?: Record<string, string>; stderr?: "inherit" | "ignore" } = {},
+	}: { cwd?: string; env?: Record<string, string>; stderr?: "inherit" | "ignore" } = {},
 ) {
 	const [command, args] = commands[runtime]?.(cliArgs) ?? ["", []];
 	const child = spawn(command, args, {
-		cwd: packageDirectory,
+		cwd,
 		env: { ...process.env, ...env },
 		stdio: ["ignore", "pipe", stderr],
 	});
@@ -49,6 +52,10 @@ function startServer(
 			const parts = buffered.split("\n");
 			buffered = parts.pop() ?? "";
 			for (const part of parts) {
+				// Why the check: in `start`, Vite can write lines that are not JSON.
+				if (!part.startsWith("{")) {
+					continue;
+				}
 				const line: Line = JSON.parse(part);
 				lines.push(line);
 				const urls = line["app_server.urls"];
@@ -194,6 +201,8 @@ async function check(runtime: string): Promise<void> {
 			"the access log has the static hit",
 		);
 
+		assert.equal(await (await fetch(new URL("/linger", base))).text(), "lingering");
+
 		const events = await request(new URL("/events", base).href);
 		const firstEvent = await new Promise<string>((resolve) => {
 			events.once("data", (chunk: Buffer) => resolve(chunk.toString()));
@@ -216,7 +225,7 @@ async function check(runtime: string): Promise<void> {
 		assert.equal(
 			await exitCode,
 			0,
-			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits cleanly",
+			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits without waiting for the app's timers",
 		);
 		await Promise.all([eventsEnded, stuckEnded]);
 		process.stdout.write(`ok ${runtime}\n`);
@@ -225,7 +234,28 @@ async function check(runtime: string): Promise<void> {
 	}
 }
 
+/** `app-server start` on Node: Ctrl+C stops the server at once, though the app left a timer. */
+async function checkStart(): Promise<void> {
+	const { child, url } = startServer("node", [cliPath, "start", "--port", "0"], {
+		cwd: devDirectory,
+		env: { HOST: "127.0.0.1" },
+	});
+	try {
+		const page = await fetch(new URL("/", await url));
+		assert.equal(await page.text(), "rendered");
+		const exitCode = exited(child, 5_000);
+		child.kill("SIGINT");
+		assert.equal(await exitCode, 0, "`start` exits without waiting for the app's timers");
+		process.stdout.write("ok node start\n");
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
+	if (runtime === "node") {
+		await checkStart();
+	}
 }

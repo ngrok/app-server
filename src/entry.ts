@@ -1,4 +1,5 @@
 import { serverInternals, type AppServer } from "./create-server.js";
+import { exitAfterFlush } from "./exit.js";
 import { errorAttributes } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import type { FrameworkAdapter, ListenerBindings, NodeMiddleware, SetupInfo } from "./types.js";
@@ -16,7 +17,10 @@ export type AppServerEntry = {
 	protocol: typeof ENTRY_PROTOCOL;
 	/** The app. Two entries with the same app share its plugins. */
 	app: AppServer;
-	/** Production: runs each plugin's `setup`, listens, and shuts down on `SIGTERM` or `SIGINT`. */
+	/**
+	 * Production: runs each plugin's `setup` and listens. On `SIGTERM` or
+	 * `SIGINT`, it shuts down, then exits the process.
+	 */
 	start: () => Promise<void>;
 	/** Development: answers one request with Vite's middleware inside the pipeline. */
 	fetchDev: (
@@ -66,10 +70,13 @@ export function createEntry({
 			const server = await internals.listen(adapter);
 			for (const signal of ["SIGTERM", "SIGINT"] as const) {
 				process.once(signal, () => {
-					server.shutdown().catch((error: unknown) => {
-						internals.logger.log("error", "shutdown failed", errorAttributes(error));
-						process.exitCode = 1;
-					});
+					server
+						.shutdown()
+						.catch((error: unknown) => {
+							internals.logger.log("error", "shutdown failed", errorAttributes(error));
+							process.exitCode = 1;
+						})
+						.finally(exitAfterFlush);
 				});
 			}
 		},
