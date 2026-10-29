@@ -70,6 +70,26 @@ describe("listenFromPort", () => {
 		);
 	});
 
+	it("warns when strictPort is true and a wildcard server holds the port", async () => {
+		const taken = await occupiedPort();
+		const shared: number[] = [];
+
+		// Why both outcomes: macOS lets `127.0.0.1` share a port with a wildcard server, and Linux
+		// does not.
+		const outcome = await listenFromPort(server(), {
+			port: taken,
+			hostname: "127.0.0.1",
+			strictPort: true,
+			onWildcardInUse: (port) => shared.push(port),
+		}).catch((error: unknown) => error);
+
+		const result =
+			outcome instanceof Error
+				? { refused: outcome.message.includes("EADDRINUSE") }
+				: { port: outcome, shared };
+		expect([{ refused: true }, { port: taken, shared: [taken] }]).toContainEqual(result);
+	});
+
 	it("returns the port that the OS picks for port 0", async () => {
 		const port = await listenFromPort(server(), { port: 0, strictPort: false });
 

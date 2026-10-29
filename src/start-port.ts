@@ -12,6 +12,11 @@ export type ListenFromPortOptions = {
 	strictPort: boolean;
 	/** Runs for each port in use before the next port is tried. */
 	onPortInUse?: (port: number) => void;
+	/**
+	 * Runs when `strictPort` is true and the server listens on `hostname`, but
+	 * another server holds the port on a wildcard address.
+	 */
+	onWildcardInUse?: (port: number) => void;
 };
 
 /**
@@ -22,11 +27,21 @@ export type ListenFromPortOptions = {
  */
 export async function listenFromPort(
 	server: Server,
-	{ port, hostname, strictPort, onPortInUse }: ListenFromPortOptions,
+	{ port, hostname, strictPort, onPortInUse, onWildcardInUse }: ListenFromPortOptions,
 ): Promise<number> {
-	if (port === 0 || strictPort) {
+	if (port === 0) {
 		await bind(server, port, hostname);
 		return boundPort(server, port);
+	}
+	if (strictPort) {
+		// Why a warning and not an error: a server on one other address also fails the wildcard
+		// check, and that server does not share `hostname`. Vite warns for the same reason.
+		const freeOnWildcard = hostname == null || (await isFreeOnWildcard(port));
+		await bind(server, port, hostname);
+		if (!freeOnWildcard) {
+			onWildcardInUse?.(port);
+		}
+		return port;
 	}
 	for (let candidate = port; candidate <= MAX_PORT; candidate++) {
 		// Why the wildcard check: a server on `::` and a server on `localhost` can share a port, and

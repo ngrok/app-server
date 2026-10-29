@@ -86,6 +86,12 @@ export async function start(): Promise<void> {
 		onPortInUse: (inUse) => {
 			sink.log("info", "port in use, trying the next port", { "server.port": inUse });
 		},
+		onWildcardInUse: (inUse) => {
+			sink.log("warn", "port in use on a wildcard address", {
+				"server.port": inUse,
+				"server.address": hostname,
+			});
+		},
 	});
 	sink.log("info", "listening", { "app_server.urls": [listenerUrl(hostname, boundPort)] });
 
