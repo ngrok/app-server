@@ -13,6 +13,8 @@ const files: Record<string, string> = {
 	"index.html": "<h1>Home</h1>",
 	"docs/button/index.html": "<h1>Button</h1>",
 	"llms.txt": "llms",
+	LICENSE: "MIT",
+	".well-known/acme-challenge/token": "challenge",
 };
 for (const [path, content] of Object.entries(files)) {
 	mkdirSync(dirname(join(clientDirectory, path)), { recursive: true });
@@ -108,6 +110,11 @@ describe("trailingSlash", () => {
 			const { request } = await serve("always");
 
 			await expect((await request("/llms.txt")).text()).resolves.toBe("llms");
+			await expect((await request("/llms%2Etxt")).text()).resolves.toBe("llms");
+			await expect((await request("/LICENSE")).text()).resolves.toBe("MIT");
+			await expect((await request("/.well-known/acme-challenge/token")).text()).resolves.toBe(
+				"challenge",
+			);
 			await expect(answer(request, "/page.data")).resolves.toStrictEqual({
 				status: 200,
 				location: null,
@@ -137,6 +144,17 @@ describe("trailingSlash", () => {
 			status: 200,
 			location: null,
 		});
+	});
+
+	it("trims a long run of slashes in linear time", async () => {
+		const { request } = await serve("never");
+		const path = `/a${"/".repeat(50_000)}b/`;
+
+		const started = performance.now();
+		const response = await request(path);
+
+		expect(response.status).toBe(308);
+		expect(performance.now() - started).toBeLessThan(250);
 	});
 
 	it("never redirects to another host", async () => {

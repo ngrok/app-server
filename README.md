@@ -159,7 +159,7 @@ const version: Plugin = {
 | `always`   | 308 to `/docs/button/` | 200                   |
 | `preserve` | 200                    | 200                   |
 
-The redirect applies to rendered and prerendered pages, and it keeps the query string. It does not apply to `/`, a method other than GET or HEAD, or a data request of the framework. `always` adds no slash to a path whose last segment has a dot, such as `/llms.txt` or a `.data` request.
+The redirect applies to rendered and prerendered pages, and it keeps the query string. It does not apply to `/`, a method other than GET or HEAD, or a data request of the framework. `always` adds no slash to a file in the client build, such as `/LICENSE`, or to a path whose last segment has a dot, such as `/llms.txt` or a `.data` request. React Router's route discovery manifest (`/__manifest`) counts as a data request.
 
 Why 308: it is permanent, as 301 is, and a client keeps the method. Next.js and Vercel send the same status for this redirect.
 

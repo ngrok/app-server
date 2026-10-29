@@ -73,6 +73,26 @@ describe("runtime", () => {
 		expect(framework.contentTypes).toStrictEqual({ ".data": "text/x-script" });
 	});
 
+	it("marks the route discovery manifest as a data request when discovery is lazy", () => {
+		const lazy = runtime(documentBuild(), { mode: "production" });
+		const custom = runtime(
+			documentBuild({
+				basename: "/app/",
+				routeDiscovery: { mode: "lazy", manifestPath: "/routes" },
+			}),
+			{ mode: "production" },
+		);
+		const initial = runtime(
+			documentBuild({ routeDiscovery: { mode: "initial", manifestPath: "/__manifest" } }),
+			{ mode: "production" },
+		);
+
+		expect(lazy.isDataRequest?.("/__manifest")).toBe(true);
+		expect(custom.isDataRequest?.("/app/routes")).toBe(true);
+		expect(custom.isDataRequest?.("/__manifest")).toBe(false);
+		expect(initial.isDataRequest?.("/__manifest")).toBe(false);
+	});
+
 	it("refuses a build with a public path other than /", () => {
 		expect(() => runtime(documentBuild({ publicPath: "/docs/" }), { mode: "production" })).toThrow(
 			'serves a build at "/" only, and this build has the publicPath "/docs/"',

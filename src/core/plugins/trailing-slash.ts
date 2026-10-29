@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { isSafeLocalPath } from "../safe-local-path.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import { findStaticFile } from "../static-files.js";
+import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 
 /**
  * How a page URL ends:
@@ -21,19 +22,33 @@ function isFilePath(path: string): boolean {
 	return path.slice(path.lastIndexOf("/") + 1).includes(".");
 }
 
+/** `path` with no trailing slashes. Why a scan, not `/\/+$/`: that regex takes quadratic time on a long run of slashes inside the path. */
+function trimTrailingSlashes(path: string): string {
+	let end = path.length;
+	while (end > 0 && path[end - 1] === "/") {
+		end -= 1;
+	}
+	return path.slice(0, end);
+}
+
 /** The URL path in `mode`, or the path unchanged when `mode` keeps it. */
 function canonicalPath(path: string, mode: TrailingSlash): string {
-	const trimmed = path.replace(/\/+$/u, "");
+	const trimmed = trimTrailingSlashes(path);
 	if (trimmed === "") {
 		return "/";
 	}
 	if (mode === "never") {
 		return trimmed;
 	}
-	if (mode === "always" && !isFilePath(trimmed)) {
+	if (mode === "always") {
 		return `${trimmed}/`;
 	}
 	return path;
+}
+
+/** Whether `path`, a decoded URL path, names a file in `files`, not a directory. */
+async function isStaticFile(files: StaticFiles, path: string): Promise<boolean> {
+	return (await findStaticFile(files, path))?.path === path;
 }
 
 /**
@@ -43,8 +58,8 @@ function canonicalPath(path: string, mode: TrailingSlash): string {
  *
  * It sends no redirect for `/`, a POST or other method that is not GET or
  * HEAD, a data request of the framework, or a path that already has the
- * mode's form. `always` adds no slash to a path whose last segment has a
- * dot, such as `/llms.txt`.
+ * mode's form. `always` adds no slash to a file in the client build, such as
+ * `/LICENSE`, or to a path whose last segment has a dot, such as `/llms.txt`.
  *
  * Set the same mode in the framework's router when it has one. Else the two
  * redirects loop: the server sends `/x` to `/x/`, and the router sends `/x/`
@@ -74,6 +89,13 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 				const location = `${path}${url.search}`;
 				// Why the check: a path such as `//evil.com/` must not make a `Location` to another host.
 				if (path === url.pathname || !isSafeLocalPath(location)) {
+					return next();
+				}
+				// Why the decoded path: `/llms%2Etxt` names the file `/llms.txt`.
+				if (
+					mode === "always" &&
+					(isFilePath(context.req.path) || (await isStaticFile(info.files, context.req.path)))
+				) {
 					return next();
 				}
 				return context.redirect(location, 308);
