@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { loadEntry } from "./entry.js";
+import { listenFromPort } from "./dev-port.js";
 import { errorAttributes, jsonSink } from "./log.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
 import { cancelIfClosed } from "./runtimes/node.js";
@@ -14,8 +15,9 @@ import { SERVER_ENTRY_ID } from "./vite.js";
  * Vite's SSR runner, so an edit to a route or to the app's `server.ts` applies
  * at once. HMR shares the port.
  *
- * The port is `PORT`, else Vite's `server.port`. The host is `HOST`, else
- * Vite's `server.host`.
+ * The port is `PORT`, else Vite's `server.port`. When that port is in use, the
+ * server tries each next port, unless Vite's `server.strictPort` is true. The
+ * host is `HOST`, else Vite's `server.host`.
  */
 export async function dev(): Promise<void> {
 	const vite = await import("vite");
@@ -77,14 +79,15 @@ export async function dev(): Promise<void> {
 	const configuredHost = viteServer.config.server.host;
 	const hostname =
 		process.env.HOST || (configuredHost === true ? undefined : configuredHost || "localhost");
-	await new Promise<void>((resolve, reject) => {
-		httpServer.once("error", reject);
-		httpServer.listen(port, hostname, () => {
-			httpServer.off("error", reject);
-			resolve();
-		});
+	const boundPort = await listenFromPort(httpServer, {
+		port,
+		hostname,
+		strictPort: viteServer.config.server.strictPort,
+		onPortInUse: (inUse) => {
+			sink.log("info", "port in use, trying the next port", { "server.port": inUse });
+		},
 	});
-	sink.log("info", "listening", { "app_server.urls": [listenerUrl(hostname, port)] });
+	sink.log("info", "listening", { "app_server.urls": [listenerUrl(hostname, boundPort)] });
 
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {

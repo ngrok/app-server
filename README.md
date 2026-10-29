@@ -66,8 +66,8 @@ An app with no `serverEntry` also works: `app-server start` reads a plain React 
 
 ## Commands
 
-- `app-server dev`: Vite in middleware mode inside the pipeline, with HMR on the same port. Each request loads the latest server build, so an edit to a route or to `server.ts` applies at once. The port is `PORT`, else Vite's `server.port`. The host is `HOST`, else Vite's `server.host`.
-- `app-server start [build/server/index.js]`: production. Reads `PORT` (default 3000) and `HOST` (default every interface). Stops on `SIGTERM` or `SIGINT`.
+- `app-server dev`: Vite in middleware mode inside the pipeline, with HMR on the same port. Each request loads the latest server build, so an edit to a route or to `server.ts` applies at once. The port is `PORT`, else Vite's `server.port`. When that port is in use, `dev` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`.
+- `app-server start [build/server/index.js]`: production. Reads `PORT` (default 3000) and `HOST` (default every interface). A port in use stops startup. Stops on `SIGTERM` or `SIGINT`.
 
 On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js start`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys node_modules/@ngrok/app-server/dist/cli.js start`.
 
