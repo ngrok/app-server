@@ -1,7 +1,10 @@
 // Test helper: a prepared app server with a recording log sink and a stub framework.
-import { createServer, serverInternals } from "./create-server.js";
-import type { AppServer, CreateServerOptions, ServerInternals } from "./create-server.js";
-import type { FrameworkAdapter, LogLevel, LogSink, Plugin } from "./types.js";
+import { readBuildManifest } from "./core/build-manifest.js";
+import { createServer, serverInternals } from "./core/create-server.js";
+import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
+import type { FrameworkRuntime, LogLevel, LogSink, Plugin, SetupInfo } from "./core/types.js";
+import { nodeFiles } from "./node/files.js";
+import { gzipStream } from "./node/gzip.js";
 
 /** One line that the recording sink got. */
 export type LoggedLine = {
@@ -36,11 +39,43 @@ export async function renderedFramework(): Promise<Response> {
 	return new Response("rendered", { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
+/** A stub framework that renders with `render`. */
+export function stubFramework(
+	render: FrameworkRuntime["fetch"] = renderedFramework,
+	extra: Partial<FrameworkRuntime> = {},
+): FrameworkRuntime {
+	return { name: "stub", clientDirectory: "/nonexistent", fetch: render, ...extra };
+}
+
+/** The setup info of a production server over a client build on disk. */
+export async function productionSetup({
+	clientDirectory = "/nonexistent",
+	framework = stubFramework(),
+	logger,
+}: {
+	clientDirectory?: string;
+	framework?: FrameworkRuntime;
+	logger: LogSink;
+}): Promise<SetupInfo> {
+	const files = nodeFiles(clientDirectory);
+	const { prerendered, headers } = await readBuildManifest(files);
+	return {
+		mode: "production",
+		files,
+		prerenderedPaths: framework.prerenderedPaths ?? prerendered,
+		capturedHeaders: new Map(Object.entries(headers)),
+		isDataRequest: framework.isDataRequest ?? (() => false),
+		contentTypes: framework.contentTypes ?? {},
+		gzip: gzipStream,
+		logger,
+	};
+}
+
 /** What {@link testServer} returns. */
 type TestServer = {
 	app: AppServer;
 	internals: ServerInternals;
-	framework: FrameworkAdapter;
+	framework: FrameworkRuntime;
 	lines: LoggedLine[];
 	request: (path: string, init?: RequestInit) => Promise<Response>;
 };
@@ -57,13 +92,15 @@ export async function testServer({
 	clientDirectory = "/nonexistent",
 	prerenderedPaths = [],
 	render = renderedFramework,
+	framework: extra = {},
 	options = {},
 	routes,
 }: {
 	plugins: readonly Plugin[];
 	clientDirectory?: string;
 	prerenderedPaths?: readonly string[];
-	render?: FrameworkAdapter["fetch"];
+	render?: FrameworkRuntime["fetch"];
+	framework?: Partial<FrameworkRuntime>;
 	options?: Omit<CreateServerOptions, "plugins" | "logger">;
 	routes?: (app: AppServer) => void;
 }): Promise<TestServer> {
@@ -75,12 +112,12 @@ export async function testServer({
 	};
 	const app = createServer({ ...options, plugins, logger });
 	routes?.(app);
-	const framework: FrameworkAdapter = { clientDirectory, prerenderedPaths, fetch: render };
+	const framework = stubFramework(render, { clientDirectory, prerenderedPaths, ...extra });
 	const internals = serverInternals(app);
 	if (internals == null) {
 		throw new Error("createServer returned an app with no internals.");
 	}
-	await internals.prepare({ mode: "production", clientDirectory, prerenderedPaths, logger });
+	await internals.prepare(await productionSetup({ clientDirectory, framework, logger }));
 	return {
 		app,
 		internals,

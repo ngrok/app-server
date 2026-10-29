@@ -2,7 +2,7 @@
 // each: `node ./test/runtimes.ts [node|bun|deno ...]`. Build the package first. A runtime that is
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -15,13 +15,25 @@ const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
 const portArgs = ["dist/cli.js", "serve", "test/fixtures/port-entry.js"];
 const devDirectory = fileURLToPath(new URL("fixtures/dev", import.meta.url));
+const reactRouterDirectory = fileURLToPath(new URL("fixtures/react-router", import.meta.url));
+const tanstackStartDirectory = fileURLToPath(new URL("fixtures/tanstack-start", import.meta.url));
+const binDirectory = fileURLToPath(new URL("../node_modules/.bin", import.meta.url));
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const commands: Record<string, (args: string[]) => [string, string[]]> = {
 	node: (args) => ["node", args],
 	bun: (args) => ["bun", args],
 	deno: (args) => [
 		"deno",
-		["run", "--allow-net", "--allow-env", "--allow-read", "--allow-sys", ...args],
+		[
+			"run",
+			"--allow-net",
+			"--allow-env",
+			"--allow-read",
+			"--allow-sys",
+			// Why: in `start`, Vite loads its native bundler and writes its cache.
+			...(args.includes("start") ? ["--allow-ffi", "--allow-write"] : []),
+			...args,
+		],
 	],
 };
 
@@ -268,10 +280,148 @@ async function checkStart(): Promise<void> {
 	}
 }
 
+/** Builds the framework fixture apps with the built package, as an app's build does. */
+function buildFixtures(): void {
+	execFileSync(`${binDirectory}/react-router`, ["build"], {
+		cwd: reactRouterDirectory,
+		stdio: ["ignore", "ignore", "inherit"],
+	});
+	execFileSync(`${binDirectory}/vite`, ["build"], {
+		cwd: tanstackStartDirectory,
+		stdio: ["ignore", "ignore", "inherit"],
+	});
+}
+
+/** The first chunk of a response body, and the whole body. */
+async function chunks(url: string, headers: Record<string, string> = {}) {
+	const response = await request(url, headers);
+	const parts: string[] = [];
+	await new Promise<void>((resolve, reject) => {
+		response.on("data", (chunk: Buffer) => {
+			parts.push(chunk.toString());
+		});
+		response.once("end", resolve);
+		response.once("error", reject);
+	});
+	return { response, first: parts[0] ?? "", body: parts.join("") };
+}
+
+/** Checks what each framework app shares: a prerendered page and a resource with its build headers. */
+async function checkFrameworkShared(base: string, title: string): Promise<void> {
+	const page = await fetch(new URL("/", base));
+	assert.equal(page.status, 200);
+	assert.match(await page.text(), new RegExp(title, "u"), "the prerendered page answers");
+	assert.match(page.headers.get("etag") ?? "", /^W\//u, "the prerendered page comes from its file");
+
+	const hello = await fetch(new URL("/hello.txt", base));
+	assert.equal(await hello.text(), "hello");
+	assert.equal(hello.headers.get("cache-control"), "max-age=60", "the build's headers replay");
+	assert.equal(hello.headers.get("content-type"), "text/plain; charset=utf-8");
+
+	const whoami = await fetch(new URL("/whoami", base), { headers: { "X-Request-Id": "abc-123" } });
+	assert.deepEqual(
+		await whoami.json(),
+		{ fromContext: "abc-123", fromStorage: "abc-123" },
+		"the framework and requestContext() get the request ID",
+	);
+	assert.equal(await (await fetch(new URL("/livez", base))).text(), "ok", "the app's routes run");
+}
+
+/** Stops a server with SIGTERM and checks that it exits cleanly. */
+async function stopCleanly(child: ChildProcess, what: string): Promise<void> {
+	const exitCode = exited(child, 10_000);
+	child.kill("SIGTERM");
+	assert.equal(await exitCode, 0, `${what} shuts down cleanly`);
+}
+
+/** The React Router fixture app: built with the Vite plugin, served by `app-server serve`. */
+async function checkReactRouter(runtime: string): Promise<void> {
+	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: reactRouterDirectory });
+	try {
+		const base = await url;
+		await checkFrameworkShared(base, "React Router home");
+		const data = await fetch(new URL("/hello.txt.data", base));
+		assert.equal(
+			data.headers.get("content-type"),
+			"text/x-script",
+			"a .data file replays its type",
+		);
+		await data.text();
+		await stopCleanly(child, "the React Router app");
+		process.stdout.write(`ok ${runtime} react-router\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/** The TanStack Start fixture app: built with the Vite plugin, served by `app-server serve`. */
+async function checkTanstackStart(runtime: string): Promise<void> {
+	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: tanstackStartDirectory });
+	try {
+		const base = await url;
+		await checkFrameworkShared(base, "TanStack Start home");
+
+		const home = await (await fetch(new URL("/", base))).text();
+		const serverFn = /id="server-fn" href="(?<path>[^"]+)"/u.exec(home)?.groups?.path ?? "";
+		// Why these headers: a browser sends them, and Start's CSRF check needs one of them.
+		const called = await fetch(new URL(serverFn, base), {
+			headers: { "Sec-Fetch-Site": "same-origin", "X-Tsr-ServerFn": "true" },
+		});
+		assert.equal(called.status, 200, "a server function answers through the pipeline");
+		assert.match(await called.text(), /hello from a server function/u);
+
+		const stream = await chunks(new URL("/stream", base).href);
+		assert.match(stream.first, /<h1>shell/u, "the shell arrives first");
+		assert.doesNotMatch(stream.first, /streamed late/u, "the shell arrives before the slow part");
+		assert.match(stream.body, /streamed late/u, "the slow part streams after the shell");
+
+		await stopCleanly(child, "the TanStack Start app");
+		process.stdout.write(`ok ${runtime} tanstack-start\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/** `app-server start` on the TanStack Start fixture: SSR, a Vite module, and HMR on one port. */
+async function checkTanstackStartDev(runtime: string): Promise<void> {
+	const { child, url } = startServer(runtime, [cliPath, "start", "--port", "0"], {
+		cwd: tanstackStartDirectory,
+		env: { HOST: "127.0.0.1" },
+	});
+	try {
+		const base = await url;
+		assert.match(await (await fetch(new URL("/", base))).text(), /TanStack Start home/u);
+		const client = await fetch(new URL("/@vite/client", base));
+		assert.match(client.headers.get("content-type") ?? "", /javascript/u, "Vite serves its client");
+		await client.text();
+		const hmr = await new Promise<string>((resolve, reject) => {
+			const socket = new WebSocket(base.replace(/^http/u, "ws"), "vite-hmr");
+			socket.addEventListener("message", (event) => {
+				resolve(String(event.data));
+				socket.close();
+			});
+			socket.addEventListener("error", () => {
+				reject(new Error("The HMR socket failed."));
+			});
+		});
+		assert.match(hmr, /"type":"connected"/u, "HMR connects on the server's port");
+		const exitCode = exited(child, 10_000);
+		child.kill("SIGINT");
+		assert.equal(await exitCode, 0, "`start` stops cleanly");
+		process.stdout.write(`ok ${runtime} tanstack-start start\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+buildFixtures();
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
 	if (runtime === "node") {
 		await checkStart();
 	}
+	await checkReactRouter(runtime);
+	await checkTanstackStart(runtime);
+	await checkTanstackStartDev(runtime);
 }

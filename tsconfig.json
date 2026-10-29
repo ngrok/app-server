@@ -31,5 +31,7 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*", "test/**/*", "scripts/**/*", "*.config.ts"]
+  "include": ["src/**/*", "test/**/*", "scripts/**/*", "*.config.ts"],
+  // Why: the framework fixture apps build with their own tools, and React's types are not installed.
+  "exclude": ["test/fixtures/react-router", "test/fixtures/tanstack-start"]
 }

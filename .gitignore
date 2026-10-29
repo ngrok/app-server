@@ -176,3 +176,10 @@ dist
 
 # mise (machine-local overrides; mise.toml and mise.lock are committed)
 mise.local.toml
+
+# Output of the framework fixture apps that `test/runtimes.ts` builds
+test/fixtures/react-router/build
+test/fixtures/react-router/.react-router
+test/fixtures/tanstack-start/dist
+test/fixtures/tanstack-start/src/routeTree.gen.ts
+test/fixtures/tanstack-start/.tanstack

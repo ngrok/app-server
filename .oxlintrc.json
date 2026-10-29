@@ -171,9 +171,48 @@
     },
     {
       // Why: this module exists to end the process.
-      "files": ["src/exit.ts"],
+      "files": ["src/node/exit.ts"],
       "rules": {
         "unicorn/no-process-exit": "off"
+      }
+    },
+    {
+      // Why: the core runs on each host and with each framework, so it imports Hono and nothing
+      // else. A host adapter owns the Node.js code, and a framework adapter owns the framework.
+      "files": ["src/core/**"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["node:*", "@hono/node-server", "@hono/node-server/*"],
+                "message": "The core imports no Node.js module. Put this code in a host adapter."
+              },
+              {
+                "group": ["react-router", "@tanstack/*", "vite"],
+                "message": "The core imports no framework. Put this code in a framework adapter or the Vite plugin."
+              },
+              {
+                "group": [
+                  "**/cli/**",
+                  "**/node/**",
+                  "**/react-router/**",
+                  "**/tanstack-start/**",
+                  "**/vite/**"
+                ],
+                "message": "The core imports no adapter."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // Why: tests run on Node.js and use a host to drive the core.
+      "files": ["src/core/**/*.test.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": "off"
       }
     },
     {
