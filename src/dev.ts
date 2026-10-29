@@ -4,6 +4,7 @@ import { createServer, type ServerInternals } from "./create-server.js";
 import { loadEntry } from "./load-entry.js";
 import { errorAttributes, jsonSink } from "./log.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
+import { cancelIfClosed } from "./runtimes/node.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { parsePort } from "./tcp.js";
 import { SERVER_ENTRY_ID } from "./vite.js";
@@ -59,7 +60,7 @@ export async function dev(): Promise<void> {
 				prerenderedPaths: framework.prerenderedPaths,
 				logger: internals.logger,
 			});
-			return await fetch(request, {
+			const response = await fetch(request, {
 				remoteAddress: incoming.socket.remoteAddress,
 				framework,
 				// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
@@ -67,6 +68,7 @@ export async function dev(): Promise<void> {
 					? { incoming, outgoing }
 					: {}),
 			});
+			return await cancelIfClosed(response, outgoing);
 		} catch (error) {
 			if (error instanceof Error) {
 				viteServer.ssrFixStacktrace(error);

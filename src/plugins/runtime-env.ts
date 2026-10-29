@@ -183,6 +183,8 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			if (
 				script == null ||
 				response.headers.has("Content-Encoding") ||
+				// Why: the script changes the bytes, so a `Content-Range` would no longer match them.
+				response.headers.has("Content-Range") ||
 				!(response.headers.get("Content-Type")?.startsWith("text/html") ?? false)
 			) {
 				return;

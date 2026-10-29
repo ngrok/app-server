@@ -3,6 +3,21 @@ import { createAdaptorServer } from "@hono/node-server";
 import type { FetchHandler, StartedListener } from "../types.js";
 import { listenerUrl, type ListenOptions } from "./listen-options.js";
 
+/**
+ * Cancels the body of a response whose socket closed first, and returns the
+ * response. `@hono/node-server` drops such a body with no cancel, and its
+ * producer runs on.
+ */
+export async function cancelIfClosed(
+	response: Response,
+	outgoing: { destroyed: boolean },
+): Promise<Response> {
+	if (outgoing.destroyed) {
+		await response.body?.cancel();
+	}
+	return response;
+}
+
 /** Listens with `node:http` through `@hono/node-server`. */
 export async function listen(
 	fetch: FetchHandler,
@@ -16,12 +31,7 @@ export async function listen(
 					? { incoming, outgoing }
 					: {}),
 			});
-			// Why: for a socket that closed first, such as at the drain deadline, `@hono/node-server`
-			// drops the body with no cancel, and its producer runs on.
-			if (outgoing.destroyed) {
-				await response.body?.cancel();
-			}
-			return response;
+			return cancelIfClosed(response, outgoing);
 		},
 		serverOptions: {
 			keepAliveTimeout: options.idleTimeoutMs,

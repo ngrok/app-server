@@ -119,6 +119,19 @@ describe("runtimeEnv", () => {
 		expect(await (await request("/")).text()).not.toContain("app-server-public-env");
 	});
 
+	it("leaves a partial document alone, so its Content-Range still matches the bytes", async () => {
+		const { request } = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource })],
+			render: async () =>
+				new Response("<head></head>", {
+					status: 206,
+					headers: { "Content-Type": "text/html", "Content-Range": "bytes 0-12/100" },
+				}),
+		});
+
+		expect(await (await request("/")).text()).toBe("<head></head>");
+	});
+
 	it("leaves a response that is not HTML alone", async () => {
 		const { request } = await testServer({
 			plugins: [runtimeEnv(schema, { source: validSource })],

@@ -183,6 +183,23 @@ describe("createServer", () => {
 		},
 	);
 
+	it("writes the access line when a later plugin throws a value that is not an Error", async () => {
+		const thrower: Plugin = {
+			name: "thrower",
+			middleware: () => {
+				// oxlint-disable-next-line no-throw-literal -- the test throws a string on purpose.
+				throw "boom";
+			},
+		};
+		const { request, lines } = await testServer({ plugins: [accessLog(), thrower] });
+
+		const response = await request("/");
+		await response.text();
+
+		expect(response.status).toBe(500);
+		expect(lines.map(({ message }) => message)).toEqual(["unhandled error", "request"]);
+	});
+
 	it("stops the handler's stream when the client disconnects through gzip and the access log", async () => {
 		const cancel = vi.fn<(reason: unknown) => void>();
 		const server = await listening(

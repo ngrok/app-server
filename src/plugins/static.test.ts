@@ -190,10 +190,12 @@ describe("prerendered", () => {
 		);
 	});
 
-	it("hands an encoded slash to the framework, so a file has one URL and its captured headers", async () => {
+	it("hands each other name for a file to the framework, so a file has one URL and its headers", async () => {
 		const { request } = await staticServer();
 
 		expect(await (await request("/components%2Fbutton")).text()).toBe("rendered");
+		expect(await (await request("/components//button")).text()).toBe("rendered");
+		expect(await (await request("/components/button/index.html")).text()).toBe("rendered");
 	});
 
 	it("never serves a file outside the client build", async () => {

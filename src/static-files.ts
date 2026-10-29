@@ -39,9 +39,10 @@ async function fileStats(path: string) {
  * redirect, so a prerendered page keeps its URL. Dotfiles and paths outside
  * `root` find nothing.
  *
- * Why no second decode: Hono decodes the path but keeps an encoded `/` as
- * `%2F`. A second decode makes `/a%2Fb` another name for `/a/b`, and the
- * captured headers, keyed by `/a/b`, would not apply to it.
+ * Each file has one URL, because the headers for a file are keyed by that
+ * URL. So `/a//b`, `/a/index.html`, and `/a%2Fb` find nothing. Hono decodes
+ * the path but keeps an encoded `/` as `%2F`, so this function does not
+ * decode it again.
  *
  * @example
  * await findStaticFile("/app/build/client", "/components/button");
@@ -52,6 +53,8 @@ export async function findStaticFile(root: string, path: string): Promise<Static
 		path.includes("\0") ||
 		path.includes("\\") ||
 		path.split("/").includes("..") ||
+		path.includes("//") ||
+		path.endsWith("/index.html") ||
 		hasDotSegment(path)
 	) {
 		return undefined;

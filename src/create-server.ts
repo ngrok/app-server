@@ -109,12 +109,12 @@ function withForwardedProto(request: Request): Request {
 }
 
 /**
- * Runs `next`, and rethrows a thrown value that is not an `Error` as one.
+ * Runs `step`, and rethrows a thrown value that is not an `Error` as one.
  * Hono sends only an `Error` to `onError`, and rethrows any other value.
  */
-async function asError(next: () => Promise<void>): Promise<void> {
+async function asError<Result>(step: () => Promise<Result>): Promise<Result> {
 	try {
-		await next();
+		return await step();
 	} catch (error) {
 		throw error instanceof Error
 			? error
@@ -161,19 +161,19 @@ export function createServer({
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
-		await asError(next);
+		await next();
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
 		}
 	});
-	for (const plugin of plugins) {
-		if (plugin.middleware != null) {
-			app.use(plugin.middleware);
+	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
+	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
+	for (const { middleware } of plugins) {
+		if (middleware != null) {
+			app.use((context, next) => asError(() => middleware(context, next)));
 		}
 	}
-	// Why after the plugins too: a value that a route or the framework throws becomes an `Error`
-	// here, so `onError` answers at once and each plugin still sees the 500 after its `next`.
 	app.use((_, next) => asError(next));
 	app.onError((error, context) => {
 		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
