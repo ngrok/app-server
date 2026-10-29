@@ -15,7 +15,7 @@ import { SERVER_ENTRY_ID } from "./vite.js";
  * Vite's SSR runner, so an edit to a route or to the app's `server.ts` applies
  * at once. HMR shares the port.
  *
- * The port is `PORT`, else Vite's `server.port`. When that port is in use, the
+ * The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, the
  * server tries each next port, unless Vite's `server.strictPort` is true. The
  * host is `HOST`, else Vite's `server.host`.
  */
