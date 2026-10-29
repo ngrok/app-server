@@ -4,7 +4,7 @@ A composable [Hono](https://hono.dev) app server for [React Router](https://reac
 
 What it fixes in `@react-router/serve`:
 
-- A prerendered page answers at its own URL with a 200, not a 301 to a trailing slash.
+- A prerendered page answers at its own URL with a 200. Its URL with a trailing slash gets a 301 to that URL, so each page has one URL.
 - A prerendered resource route (`llms.txt`, `sitemap.xml`, a JSON API file) and each `.data` file keep the headers their loader sent: `Content-Type`, `Cache-Control`, CORS.
 - A streamed page under gzip reaches the client chunk by chunk.
 - Each request gets one JSON log line in your format, static files included, and an `X-Request-Id`.

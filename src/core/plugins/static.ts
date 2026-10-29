@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
 import { findStaticFile, staticResponse } from "../static-files.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
@@ -45,6 +45,28 @@ export function assets(): Plugin {
 	};
 }
 
+/**
+ * The URL with no trailing slash, when the request path ends in one slash
+ * and the path with no slash finds a page (an `index.html`). Else `undefined`.
+ */
+async function pageRedirect(
+	files: StaticFiles,
+	context: Context<AppServerEnv>,
+): Promise<string | undefined> {
+	const { path } = context.req;
+	const pagePath = path.slice(0, -1);
+	if (path === "/" || !path.endsWith("/") || pagePath.endsWith("/")) {
+		return undefined;
+	}
+	const file = await findStaticFile(files, pagePath);
+	if (file == null || !file.path.endsWith("/index.html")) {
+		return undefined;
+	}
+	// Why the raw URL: Hono decodes `path`, and a decoded `?` or non-ASCII character makes a wrong `Location`.
+	const url = new URL(context.req.url);
+	return `${url.pathname.slice(0, -1)}${url.search}`;
+}
+
 /** Options for {@link prerendered}. */
 export type PrerenderedOptions = {
 	/**
@@ -66,8 +88,9 @@ export type PrerenderedOptions = {
 };
 
 /**
- * Serves the client build: prerendered pages at their own URL with a 200 and
- * no trailing-slash redirect, plus every other file in it. Each response gets
+ * Serves the client build: prerendered pages at their own URL with a 200,
+ * plus every other file in it. A page URL with one trailing slash gets a 301
+ * to the URL with no slash, so each page has one URL. Each response gets
  * the headers its loader sent at build time (the `appServer` Vite plugin
  * captures them), an ETag, and a 304 for a matching `If-None-Match`. A path
  * with no file goes on to the framework. Off in development.
@@ -104,6 +127,10 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				const { method } = context.req;
 				if (method !== "GET" && method !== "HEAD") {
 					return next();
+				}
+				const redirect = await pageRedirect(files, context);
+				if (redirect != null) {
+					return context.redirect(redirect, 301);
 				}
 				const path = options.rewrite?.(context.req.path, context) ?? context.req.path;
 				const file = await findStaticFile(files, path);

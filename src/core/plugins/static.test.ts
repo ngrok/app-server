@@ -12,6 +12,7 @@ const files: Record<string, string> = {
 	"components/button/index.html": "<h1>Button</h1>",
 	"components/button.md": "# Button",
 	"components/button.data": "[data]",
+	"café/index.html": "<h1>Café</h1>",
 	"llms.txt": "llms",
 	"llms-full.txt": "x".repeat(200_000),
 	"assets/entry-abc123.js": "export {};",
@@ -56,16 +57,73 @@ describe("prerendered", () => {
 		expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
 	});
 
+	it("redirects a page URL with a trailing slash to the URL with no slash, and keeps the query", async () => {
+		const { request } = await staticServer();
+
+		const page = await request("/components/button/");
+		const withQuery = await request("/components/button/?tab=props");
+		const head = await request("/components/button/", { method: "HEAD" });
+
+		expect(page.status).toBe(301);
+		expect(page.headers.get("Location")).toBe("/components/button");
+		expect(withQuery.headers.get("Location")).toBe("/components/button?tab=props");
+		expect(head.status).toBe(301);
+		expect(head.headers.get("Location")).toBe("/components/button");
+	});
+
+	it("keeps the URL encoding of the path in the redirect", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/caf%C3%A9/");
+
+		expect(response.status).toBe(301);
+		expect(response.headers.get("Location")).toBe("/caf%C3%A9");
+	});
+
+	it("redirects a page URL before rewrite, so rewrite never sees the trailing slash", async () => {
+		const seen: string[] = [];
+		const { request } = await staticServer({
+			rewrite: (path) => {
+				seen.push(path);
+				return path;
+			},
+		});
+
+		const response = await request("/components/button/");
+
+		expect(response.status).toBe(301);
+		expect(seen).toStrictEqual([]);
+	});
+
+	it("hands each other slash form to the framework, with no redirect", async () => {
+		const { request } = await staticServer();
+		const paths = [
+			"/components/button//",
+			"//components/button/",
+			"/components/missing/",
+			"/llms.txt/",
+		];
+
+		for (const path of paths) {
+			const response = await request(path);
+			expect(response.status).toBe(200);
+			await expect(response.text()).resolves.toBe("rendered");
+		}
+		await expect((await request("/components/button/", { method: "POST" })).text()).resolves.toBe(
+			"rendered",
+		);
+	});
+
 	it("serves the root page from index.html", async () => {
 		const { request } = await staticServer();
 
 		await expect((await request("/")).text()).resolves.toBe("<h1>Home</h1>");
 	});
 
-	it("replays the headers captured at build time, keyed with no trailing slash", async () => {
+	it("replays the headers captured at build time", async () => {
 		const { request } = await staticServer();
 
-		const page = await request("/components/button/");
+		const page = await request("/components/button");
 		const agentFile = await request("/llms.txt");
 
 		expect(page.headers.get("Content-Security-Policy")).toBe("default-src 'self'");
