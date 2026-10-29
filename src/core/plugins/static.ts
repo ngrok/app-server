@@ -66,8 +66,9 @@ export type PrerenderedOptions = {
 };
 
 /**
- * Serves the client build: prerendered pages at their own URL with a 200 and
- * no trailing-slash redirect, plus every other file in it. Each response gets
+ * Serves the client build: prerendered pages at their own URL with a 200,
+ * plus every other file in it. It sends no redirect. The `trailingSlash`
+ * plugin does. Each response gets
  * the headers its loader sent at build time (the `appServer` Vite plugin
  * captures them), an ETag, and a 304 for a matching `If-None-Match`. A path
  * with no file goes on to the framework. Off in development.

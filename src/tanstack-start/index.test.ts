@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import type { AnyRoute, Router } from "@tanstack/react-router";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { requestId } from "../core/plugins/request-id.js";
 import { testServer } from "../test-server.js";
 import { runtime } from "./index.js";
+import type { RouterTrailingSlash } from "./index.js";
 
 describe("runtime", () => {
 	it("gives Start the app server's request context on a host with no request storage", async () => {
@@ -58,5 +60,21 @@ describe("runtime", () => {
 		expect(() => runtime({ default: {} }, { mode: "production" })).toThrow(
 			"no TanStack Start server entry",
 		);
+	});
+});
+
+describe("the RouterTrailingSlash type", () => {
+	it("is the mode of the router, never by default, and every mode with no registered router", () => {
+		expectTypeOf<RouterTrailingSlash<Router<AnyRoute, "always">>>().toEqualTypeOf<"always">();
+		expectTypeOf<RouterTrailingSlash<Router<AnyRoute>>>().toEqualTypeOf<"never">();
+		expectTypeOf<RouterTrailingSlash>().toEqualTypeOf<"never" | "always" | "preserve">();
+	});
+
+	it("fails to type-check a server mode that differs from the router's mode", () => {
+		const matching = "always" satisfies RouterTrailingSlash<Router<AnyRoute, "always">>;
+		// @ts-expect-error -- the server's mode must match the router's mode.
+		const different = "never" satisfies RouterTrailingSlash<Router<AnyRoute, "always">>;
+
+		expect([matching, different]).toStrictEqual(["always", "never"]);
 	});
 });

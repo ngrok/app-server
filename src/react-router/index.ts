@@ -57,11 +57,18 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 		);
 	}
 	const handler = createRequestHandler(build, mode);
+	// Why: lazy route discovery fetches this exact path, so a redirect breaks it.
+	const manifestPath =
+		build.routeDiscovery.mode === "lazy"
+			? [build.basename ?? "", build.routeDiscovery.manifestPath || "/__manifest"]
+					.join("/")
+					.replaceAll(/\/+/gu, "/")
+			: undefined;
 	return {
 		name: "react-router",
 		clientDirectory: build.assetsBuildDirectory,
 		prerenderedPaths: build.prerender,
-		isDataRequest: (path) => path.endsWith(".data"),
+		isDataRequest: (path) => path.endsWith(".data") || path === manifestPath,
 		contentTypes: { ".data": "text/x-script" },
 		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();

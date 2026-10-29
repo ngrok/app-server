@@ -1,4 +1,28 @@
+import type { AnyRouter, RegisteredRouter } from "@tanstack/react-router";
+import type { TrailingSlash } from "../core/plugins/trailing-slash.js";
 import type { FrameworkRuntime, Mode } from "../core/types.js";
+
+/**
+ * The `trailingSlash` mode of a TanStack router: the app's registered router
+ * by default. A router with no `trailingSlash` has the mode `never`. With no
+ * registered router, it is every mode.
+ *
+ * Use it with `satisfies` on the server's mode. TypeScript then fails when the
+ * two modes differ, because different modes make the redirects loop.
+ *
+ * @example
+ * createServer({ plugins: defaultPlugins({ trailingSlash: "never" satisfies RouterTrailingSlash }) });
+ */
+export type RouterTrailingSlash<TRouter extends AnyRouter = RegisteredRouter> = ModeOf<
+	TRouter["options"]["trailingSlash"]
+>;
+
+/** A router's `trailingSlash` type as a mode. Why the `any` test: `AnyRouter` has an `any` mode, and a conditional type makes `never` of it. */
+type ModeOf<TOption> = 0 extends 1 & TOption
+	? TrailingSlash
+	: NonNullable<TOption> extends infer TMode extends TrailingSlash
+		? TMode
+		: TrailingSlash;
 
 /** The prefix of Start's server functions when the config sets none. */
 const DEFAULT_SERVER_FN_BASE = "/_serverFn/";
