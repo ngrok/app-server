@@ -70,7 +70,7 @@
     "typescript/consistent-return": "off", // `noImplicitReturns` in tsconfig.json checks this
 
     // Why off: these rules are for code that must run before ES2018, or they ban a core part of
-    // TypeScript or Node.js. The package targets Node.js 24.
+    // TypeScript or Node.js. The package targets Node.js 26.
     "oxc/no-async-await": "off",
     "oxc/no-optional-chaining": "off",
     "oxc/no-rest-spread-properties": "off",
