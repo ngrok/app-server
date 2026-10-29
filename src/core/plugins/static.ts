@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
+import { isSafeLocalPath } from "../safe-local-path.js";
 import { findStaticFile, staticResponse } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 
@@ -64,7 +65,9 @@ async function pageRedirect(
 	}
 	// Why the raw URL: Hono decodes `path`, and a decoded `?` or non-ASCII character makes a wrong `Location`.
 	const url = new URL(context.req.url);
-	return `${url.pathname.slice(0, -1)}${url.search}`;
+	const location = `${url.pathname.slice(0, -1)}${url.search}`;
+	// Why a second check: `findStaticFile` rejects `//` today, but the `Location` must never name another host.
+	return isSafeLocalPath(location) ? location : undefined;
 }
 
 /** Options for {@link prerendered}. */
