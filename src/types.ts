@@ -51,10 +51,8 @@ export type AppServerEnv = {
 		requestId?: string;
 		logger: RequestLogger;
 		/**
-		 * Values that change a response at run time, such as the public env values
-		 * that `runtimeEnv` writes into a document. The static stages add them to
-		 * each file's ETag, so a 304 never keeps a response made with old values.
-		 * Add to the list before `next`.
+		 * The `etagPart` of each plugin that the request passed, in order. The
+		 * static stages add them to each file's ETag. The server sets this list.
 		 */
 		etagParts?: readonly string[];
 	};
@@ -108,6 +106,14 @@ export type Plugin = {
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
 	onShutdown?: () => Promise<void>;
+	/**
+	 * A value that this plugin's changes to a response depend on, such as the
+	 * env values it writes into each document. The server adds it to the ETag
+	 * of each static file that the request reaches after this plugin, so a 304
+	 * never keeps a response made with an old value. Return `undefined` when
+	 * the plugin changes nothing.
+	 */
+	etagPart?: () => string | undefined;
 };
 
 /** A running listener. */

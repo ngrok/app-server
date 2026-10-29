@@ -58,7 +58,11 @@ Run it:
 }
 ```
 
-`serverEntry` bundles `server.ts` into `build/server/index.js` with the rest of the app, so the server gets its path aliases and the app's one copy of `react-router`. The file stays a valid React Router server build. `serverEntry()` with no argument uses the default plugins. An app with no `serverEntry` also works: `app-server start` reads a plain React Router build.
+`serverEntry` bundles `server.ts` into `build/server/index.js` with the rest of the app, so the server gets its path aliases and the app's one copy of `react-router`. The file stays a valid React Router server build. `serverEntry()` with no argument uses the default plugins.
+
+The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
+
+An app with no `serverEntry` also works: `app-server start` reads a plain React Router build and runs it with the CLI's copy and the default plugins. In that build, a route that calls `shutdownSignal()` or `eventStream()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
 
 ## Commands
 
@@ -76,7 +80,7 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js start`. On Deno, run
 3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses.
 4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
 5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `prerendered({ headers, markdownTwins })`: every file in `build/client`, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to React Router. With `markdownTwins: true`, a client that prefers `text/markdown` gets the page's `.md` file, such as `/components/button.md` for `/components/button`, and each page that has one gets `Vary: Accept`. In `entry.server`, `prefersMarkdown(request.headers.get("Accept"))` gives the same answer for a rendered page.
+6. `prerendered({ headers, rewrite })`: every file in `build/client`, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to React Router. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to React Router.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
@@ -94,13 +98,64 @@ const securityHeaders: Plugin = {
 };
 ```
 
-A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, adds that value to `c.var.etagParts` before `next`. The static stages put it in each file's ETag, so a 304 never keeps a response made with an old value.
+A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
+
+```ts
+const version: Plugin = {
+	name: "version",
+	etagPart: () => process.env.APP_VERSION,
+	middleware: async (c, next) => {
+		await next();
+		c.header("X-App-Version", process.env.APP_VERSION);
+	},
+};
+```
+
+## Content negotiation
+
+`rewrite` maps a request path to the file to serve. A rewritten path follows the same rules as a request path. This serves a prerendered markdown twin, such as `/components/button.md` for `/components/button`, to a client that asks for markdown:
+
+```ts
+import { readdirSync } from "node:fs";
+
+const markdownPaths = new Set(
+	readdirSync("build/client", { recursive: true, encoding: "utf8" })
+		.filter((file) => file.endsWith(".md"))
+		.map((file) => `/${file}`),
+);
+const twin = (path: string) => `${path.replace(/\/+$/, "") || "/index"}.md`;
+
+// Why a plugin: one URL answers HTML or markdown, so a shared cache must key on `Accept`.
+const varyOnAccept: Plugin = {
+	name: "vary-on-accept",
+	middleware: async (c, next) => {
+		await next();
+		if (markdownPaths.has(twin(c.req.path))) {
+			c.header("Vary", "Accept", { append: true });
+		}
+	},
+};
+
+createServer({
+	plugins: defaultPlugins({
+		beforeStatic: [varyOnAccept],
+		prerendered: {
+			rewrite: (path, c) =>
+				markdownPaths.has(twin(path)) && c.req.header("Accept")?.includes("text/markdown")
+					? twin(path)
+					: path,
+		},
+	}),
+});
+```
+
+Parse the `Accept` quality values when a client can send `text/markdown;q=0`.
 
 ## Prerendered headers
 
 During React Router's prerender pass, `serverEntry` records the response headers of each prerendered file that is not an HTML document into `build/client/.headers.json`, and `prerendered()` replays them. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`.
 
-A document's headers are not recorded, because `entry.server` sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. A CSP nonce must be the one in the prerendered file, not a new one for each request.
+A document's headers are not recorded, because `entry.server` sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. For its CSP, use a `script-src` with the hash of each inline script, not a nonce. The prerender writes one nonce into the file, and every visitor can read it, so it protects nothing.
 
 ## Logs
 

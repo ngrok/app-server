@@ -38,9 +38,16 @@ const UNCAPTURED_HEADERS = new Set([
 export function serverEntrySource(appModule: string | undefined): string {
 	return [
 		`export * from "virtual:react-router/server-build";`,
-		// Why from the bundle: the adapter must use the same `react-router` copy as the routes.
-		`export { createAdapter as appServerAdapter } from "@ngrok/app-server/react-router";`,
-		...(appModule == null ? [] : [`export { default as app } from ${JSON.stringify(appModule)};`]),
+		`import * as build from "virtual:react-router/server-build";`,
+		// Why from the bundle: the CLI calls this export, so the server runs on the bundle's copy of
+		// this package and of `react-router`, the same copies as the app and the routes.
+		`import { appServerEntry } from "@ngrok/app-server/react-router";`,
+		...(appModule == null
+			? [`export const appServer = appServerEntry(build);`]
+			: [
+					`import app from ${JSON.stringify(appModule)};`,
+					`export const appServer = appServerEntry(build, app);`,
+				]),
 	].join("\n");
 }
 

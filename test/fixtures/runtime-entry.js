@@ -1,7 +1,7 @@
 // A server build entry for `test/runtimes.ts`: the built package with a stub framework, so the
 // same checks run on Node, Bun, and Deno.
 import { fileURLToPath } from "node:url";
-import { createServer, eventStream, tcp } from "../../dist/index.js";
+import { createEntry, createServer, eventStream, tcp } from "../../dist/index.js";
 
 const encoder = new TextEncoder();
 const clientDirectory = fileURLToPath(new URL("client", import.meta.url));
@@ -9,7 +9,7 @@ const clientDirectory = fileURLToPath(new URL("client", import.meta.url));
 let releaseStream = () => {};
 let holdCancelled = false;
 
-export const app = createServer({
+const app = createServer({
 	listeners: [tcp({ port: 0, host: "127.0.0.1" })],
 	shutdownDeadlineMs: 3_000,
 });
@@ -80,8 +80,10 @@ const routes = {
 		}),
 };
 
-export function appServerAdapter() {
-	return {
+// Why `createEntry`: the CLI calls this export, so this copy of the package runs the server.
+export const appServer = createEntry({
+	app,
+	framework: () => ({
 		clientDirectory,
 		prerenderedPaths: ["/cpu", "/gone"],
 		fetch: async (request) => {
@@ -90,5 +92,5 @@ export function appServerAdapter() {
 				? new Response("rendered", { headers: { "Content-Type": "text/html" } })
 				: route(request);
 		},
-	};
-}
+	}),
+});

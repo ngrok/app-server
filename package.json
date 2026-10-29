@@ -2,13 +2,15 @@
   "name": "@ngrok/app-server",
   "version": "0.0.0",
   "description": "A composable Hono app server for React Router: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, and Deno.",
-  "homepage": "https://github.com/ngrok/mantle/tree/main/packages/app-server#readme",
+  "homepage": "https://github.com/ngrok/app-server#readme",
+  "bugs": {
+    "url": "https://github.com/ngrok/app-server/issues"
+  },
   "license": "MIT",
   "author": "ngrok",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ngrok/mantle",
-    "directory": "packages/app-server"
+    "url": "https://github.com/ngrok/app-server"
   },
   "bin": {
     "app-server": "./dist/cli.js"
@@ -21,41 +23,47 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "@ngrok/src-live-types": "./src/index.ts",
       "import": "./dist/index.js"
     },
     "./react-router": {
       "types": "./dist/react-router.d.ts",
-      "@ngrok/src-live-types": "./src/react-router.ts",
       "import": "./dist/react-router.js"
     },
     "./vite": {
       "types": "./dist/vite.d.ts",
-      "@ngrok/src-live-types": "./src/vite.ts",
       "import": "./dist/vite.js"
     },
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsdown",
-    "prepack": "node ../../scripts/clean-publish-manifest.js clean",
-    "postpack": "node ../../scripts/clean-publish-manifest.js restore",
+    "changeset": "changeset",
+    "fmt": "oxfmt --write .",
+    "fmt:check": "oxfmt --check .",
+    "lint": "oxlint --type-aware --deny-warnings",
+    "lint:fix": "oxlint --type-aware --fix",
+    "prepublishOnly": "pnpm run build",
     "test": "vitest run",
     "test:runtimes": "node ./test/runtimes.ts",
     "test:watch": "vitest watch",
-    "typecheck": "tsrs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@hono/node-server": "2.1.5",
     "hono": "4.13.14"
   },
   "devDependencies": {
-    "@cfg/tsconfig": "workspace:*",
-    "@types/node": "catalog:",
+    "@changesets/changelog-github": "1.0.1",
+    "@changesets/cli": "3.0.3",
+    "@types/node": "24.19.2",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
+    "oxlint-tsgolint": "7.0.2005",
     "react-router": "8.5.1",
-    "tsdown": "catalog:",
-    "typescript": "catalog:",
-    "vite": "catalog:",
+    "tsdown": "0.23.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
     "zod": "4.6.7"
   },
   "peerDependencies": {
@@ -72,5 +80,6 @@
   },
   "engines": {
     "node": "^24.0.0"
-  }
+  },
+  "packageManager": "pnpm@12.16.1"
 }

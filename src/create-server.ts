@@ -16,8 +16,8 @@ import type {
 	SetupInfo,
 } from "./types.js";
 
-// Why a global symbol: the app comes from the bundled copy of this package, and the CLI is another copy.
-const INTERNALS_KEY = Symbol.for("@ngrok/app-server/internals");
+// Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
+const appInternals = new WeakMap<AppServer, ServerInternals>();
 
 /** A Hono app from {@link createServer}. Add routes to it before you export it. */
 export type AppServer = Hono<AppServerEnv>;
@@ -33,14 +33,14 @@ export type RunningServer = {
 	shutdown: () => Promise<void>;
 };
 
-/** What the CLI calls on an app. Both copies of the package share this shape. */
+/** What `createEntry` calls on an app. */
 export type ServerInternals = {
 	logger: LogSink;
 	/** Runs each plugin's `setup` once and adds the framework handler after the app's routes. */
 	prepare: (info: SetupInfo) => Promise<void>;
 	/** Starts the listeners. Call `prepare` first. */
 	listen: (framework: FrameworkAdapter) => Promise<RunningServer>;
-	/** Runs each plugin's `onShutdown`, and stops waiting for them at the shutdown deadline. */
+	/** Runs each plugin's `onShutdown` once, and stops waiting for them at the shutdown deadline. */
 	stopPlugins: () => Promise<void>;
 };
 
@@ -169,10 +169,14 @@ export function createServer({
 	});
 	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
 	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
-	for (const { middleware } of plugins) {
-		if (middleware != null) {
-			app.use((context, next) => asError(() => middleware(context, next)));
-		}
+	for (const { middleware, etagPart } of plugins) {
+		app.use((context, next) => {
+			const part = etagPart?.();
+			if (part != null) {
+				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
+			}
+			return asError(async () => (middleware == null ? next() : middleware(context, next)));
+		});
 	}
 	app.use((_, next) => asError(next));
 	app.onError((error, context) => {
@@ -189,6 +193,7 @@ export function createServer({
 
 	let prepared: Promise<void> | undefined;
 	let running: RunningServer | undefined;
+	let stoppingPlugins: Promise<void> | undefined;
 	const internals: ServerInternals = {
 		logger,
 		prepare: (info) => {
@@ -250,47 +255,32 @@ export function createServer({
 			};
 			return running;
 		},
-		stopPlugins: async () => {
-			const hooks = (async () => {
-				const results = await Promise.allSettled(
-					plugins.map(async (plugin) => plugin.onShutdown?.()),
-				);
-				for (const result of results) {
-					if (result.status === "rejected") {
-						logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+		stopPlugins: () => {
+			stoppingPlugins ??= (async () => {
+				const hooks = (async () => {
+					const results = await Promise.allSettled(
+						plugins.map(async (plugin) => plugin.onShutdown?.()),
+					);
+					for (const result of results) {
+						if (result.status === "rejected") {
+							logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+						}
 					}
+				})();
+				if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
+					logger.log("warn", "plugin shutdown passed the deadline", {
+						"app_server.deadline_ms": shutdownDeadlineMs,
+					});
 				}
 			})();
-			if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
-				logger.log("warn", "plugin shutdown passed the deadline", {
-					"app_server.deadline_ms": shutdownDeadlineMs,
-				});
-			}
+			return stoppingPlugins;
 		},
 	};
-	Object.defineProperty(app, INTERNALS_KEY, { value: internals });
+	appInternals.set(app, internals);
 	return app;
 }
 
-function isServerInternals(value: unknown): value is ServerInternals {
-	return (
-		typeof value === "object" &&
-		value != null &&
-		"prepare" in value &&
-		typeof value.prepare === "function" &&
-		"listen" in value &&
-		typeof value.listen === "function" &&
-		"stopPlugins" in value &&
-		typeof value.stopPlugins === "function" &&
-		"logger" in value
-	);
-}
-
-/** The internals of an app from {@link createServer}, from either copy of the package, else `undefined`. */
-export function serverInternals(value: unknown): ServerInternals | undefined {
-	if (typeof value !== "object" || value == null) {
-		return undefined;
-	}
-	const internals: unknown = Reflect.get(value, INTERNALS_KEY);
-	return isServerInternals(internals) ? internals : undefined;
+/** The internals of an app from {@link createServer} of this copy of the package, else `undefined`. */
+export function serverInternals(app: AppServer): ServerInternals | undefined {
+	return appInternals.get(app);
 }

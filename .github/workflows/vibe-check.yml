@@ -1,0 +1,176 @@
+name: Vibe Check
+
+on:
+  # Run on PRs (one run per PR; superseded pushes auto-cancel) and on `main` for
+  # post-merge validation. Plain feature-branch pushes do not trigger CI; open a PR.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  # On pull_request, github.ref is refs/pull/<n>/merge (shared shape across PRs), so
+  # key on the PR number; fall back to the ref for push/dispatch. Never cancel main so
+  # a post-merge run always completes.
+  group: vibe-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: 1
+
+jobs:
+  mise-lock-check:
+    name: Mise Lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Cache mise binary 🗃️
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/bin/mise
+          key: mise-${{ runner.os }}-${{ hashFiles('scripts/install-mise') }}
+
+      - name: Install mise 🔧
+        run: |
+          # Put the cached binary on PATH first so install-mise's version check finds it
+          # and skips re-downloading the pinned release on a cache hit.
+          export PATH="${HOME}/.local/bin:${PATH}"
+          ./scripts/install-mise
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Verify mise.lock is in sync 🔒
+        # mise lock looks up release metadata on api.github.com. The token lifts
+        # the anonymous per-IP rate limit shared by the runner pool. mise lock
+        # runs the PR's exec helper, so the workflow-level permissions must stay
+        # contents: read.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mise trust ./mise.toml
+          mise lock
+          if ! git diff --exit-code mise.lock; then
+            echo "::error::mise.lock is out of sync with .nvmrc / package.json#packageManager."
+            echo "::error::Run 'mise run relock' locally and commit the result."
+            exit 1
+          fi
+
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Use pnpm version from root package.json#packageManager
+      - name: Install pnpm 📦
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+
+      - name: Install Dependencies 📥
+        run: pnpm install --frozen-lockfile
+
+      - name: Format Check 🎨
+        run: pnpm run fmt:check
+
+      - name: Lint 🔍
+        run: pnpm run lint
+
+      - name: Type Check 🔎
+        run: pnpm run typecheck
+
+      - name: Test 🧪
+        run: pnpm run test
+
+      - name: Ensure Package is Publishable 🧐
+        # Run the prepublish hook to confirm the package builds and package.json is up to date.
+        run: |
+          pnpm run prepublishOnly
+          git diff --exit-code
+
+  # Runs the built CLI on Node, Bun, and Deno against one fixture, so support
+  # for all three runtimes stays true. The check fails when a runtime is
+  # missing, so it cannot pass by skipping one.
+  runtimes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Use pnpm version from root package.json#packageManager
+      - name: Install pnpm 📦
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: 2.9.8
+
+      - name: Install Dependencies 📥
+        run: pnpm install --frozen-lockfile
+
+      - name: Build 🏗️
+        run: pnpm run build
+
+      - name: Runtime check 🧪
+        run: pnpm run test:runtimes
+
+  vibe-check:
+    name: vibe-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - mise-lock-check
+      - checks
+      - runtimes
+    if: ${{ always() && !cancelled() }}
+    steps:
+      - name: Verify all vibe check jobs passed
+        env:
+          MISE_LOCK_CHECK_RESULT: ${{ needs.mise-lock-check.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          RUNTIMES_RESULT: ${{ needs.runtimes.result }}
+        run: |
+          echo "mise-lock-check: $MISE_LOCK_CHECK_RESULT"
+          echo "checks: $CHECKS_RESULT"
+          echo "runtimes: $RUNTIMES_RESULT"
+
+          if [[ "$MISE_LOCK_CHECK_RESULT" != "success" || "$CHECKS_RESULT" != "success" || "$RUNTIMES_RESULT" != "success" ]]; then
+            echo "One or more vibe check jobs did not succeed."
+            exit 1
+          fi

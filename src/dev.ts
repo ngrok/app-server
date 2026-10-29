@@ -1,11 +1,10 @@
 import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
-import { createServer, type ServerInternals } from "./create-server.js";
-import { loadEntry } from "./load-entry.js";
+import { loadEntry } from "./entry.js";
 import { errorAttributes, jsonSink } from "./log.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
 import { cancelIfClosed } from "./runtimes/node.js";
-import { abortShutdownSignal } from "./shutdown.js";
+import { servedApps } from "./served-apps.js";
 import { parsePort } from "./tcp.js";
 import { SERVER_ENTRY_ID } from "./vite.js";
 
@@ -38,36 +37,25 @@ export async function dev(): Promise<void> {
 		? SERVER_ENTRY_ID
 		: "virtual:react-router/server-build";
 	const sink = jsonSink();
-	let fallback: unknown;
-	// Why keep each one: an edit to `server.ts` makes a new app, and the old app's plugins still
-	// hold what their `setup` opened. A stop signal runs the `onShutdown` hooks of every app once.
-	const preparedApps = new Set<ServerInternals>();
+	const apps = servedApps();
 
 	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
 		try {
-			const { framework, internals, fetch } = await loadEntry(await ssrRunner().import(entryId), {
-				mode: "development",
-				fallbackApp: () => {
-					fallback ??= createServer({ logger: sink });
-					return fallback;
-				},
-			});
-			preparedApps.add(internals);
-			await internals.prepare({
-				mode: "development",
-				viteMiddleware: viteServer.middlewares,
-				clientDirectory: framework.clientDirectory,
-				prerenderedPaths: framework.prerenderedPaths,
-				logger: internals.logger,
-			});
-			const response = await fetch(request, {
-				remoteAddress: incoming.socket.remoteAddress,
-				framework,
-				// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
-				...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
-					? { incoming, outgoing }
-					: {}),
-			});
+			const response = await apps.serve(
+				await loadEntry(await ssrRunner().import(entryId)),
+				(entry) =>
+					entry.fetchDev(
+						request,
+						{
+							remoteAddress: incoming.socket.remoteAddress,
+							// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
+							...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
+								? { incoming, outgoing }
+								: {}),
+						},
+						viteServer.middlewares,
+					),
+			);
 			return await cancelIfClosed(response, outgoing);
 		} catch (error) {
 			if (error instanceof Error) {
@@ -100,10 +88,7 @@ export async function dev(): Promise<void> {
 
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {
-			abortShutdownSignal();
-			for (const internals of preparedApps) {
-				void internals.stopPlugins();
-			}
+			apps.stopAll();
 			httpServer.closeAllConnections();
 			httpServer.close();
 			viteServer.close().catch((error: unknown) => {

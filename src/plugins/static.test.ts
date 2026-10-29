@@ -81,49 +81,44 @@ describe("prerendered", () => {
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
 	});
 
-	it("serves a page's markdown file to a client that prefers markdown", async () => {
-		const { request } = await staticServer({ markdownTwins: true });
-
-		const response = await request("/components/button/", {
-			headers: { Accept: "text/markdown, text/html;q=0.9" },
+	it("serves the file that rewrite names, with that file's headers", async () => {
+		const { request } = await staticServer({
+			rewrite: (path, context) =>
+				context.req.header("Accept") === "text/markdown" ? `${path}.md` : path,
 		});
 
-		expect(await response.text()).toBe("# Button");
-		expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
-		expect(response.headers.get("Vary")).toBe("Accept");
+		const markdown = await request("/components/button", { headers: { Accept: "text/markdown" } });
+		const page = await request("/components/button");
+
+		expect(await markdown.text()).toBe("# Button");
+		expect(markdown.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+		expect(await page.text()).toBe("<h1>Button</h1>");
 	});
 
-	it("serves HTML, with Vary, to a client that refuses markdown or does not name it", async () => {
-		const { request } = await staticServer({ markdownTwins: true });
+	it("puts the etagPart of each earlier plugin in the ETag", async () => {
+		const withPart = (part: string) =>
+			testServer({
+				plugins: [{ name: "versioned", etagPart: () => part }, prerendered()],
+				clientDirectory,
+			});
+		const etag = async (part: string) =>
+			(await (await withPart(part)).request("/llms.txt")).headers.get("ETag");
 
-		const refuses = await request("/components/button", {
-			headers: { Accept: "text/html, text/markdown;q=0" },
-		});
-		const browser = await request("/components/button", {
-			headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" },
-		});
-
-		expect(await refuses.text()).toBe("<h1>Button</h1>");
-		expect(await browser.text()).toBe("<h1>Button</h1>");
-		expect(browser.headers.get("Vary")).toBe("Accept");
+		expect(await etag("v1")).toBe(await etag("v1"));
+		expect(await etag("v1")).not.toBe(await etag("v2"));
 	});
 
-	it("sends Vary: Accept only for a page with a markdown file", async () => {
-		const { request } = await staticServer({ markdownTwins: true });
+	it("applies the request-path rules to a rewritten path", async () => {
+		const rewrites: Record<string, string> = {
+			"/secret": "/.env",
+			"/alias": "/components//button",
+			"/escape": "/../outside.txt",
+		};
+		const { request } = await staticServer({ rewrite: (path) => rewrites[path] ?? path });
 
-		const response = await request("/llms.txt", { headers: { Accept: "text/markdown" } });
-
-		expect(await response.text()).toBe("llms");
-		expect(response.headers.get("Vary")).toBeNull();
-	});
-
-	it("serves the page itself when markdownTwins is off", async () => {
-		const { request } = await staticServer();
-
-		const response = await request("/components/button", { headers: { Accept: "text/markdown" } });
-
-		expect(await response.text()).toBe("<h1>Button</h1>");
-		expect(response.headers.get("Vary")).toBeNull();
+		for (const path of Object.keys(rewrites)) {
+			expect(await (await request(path)).text()).toBe("rendered");
+		}
 	});
 
 	it("serves a React Router data file as text/x-script", async () => {

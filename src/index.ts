@@ -5,16 +5,16 @@ export {
 } from "./create-server.js";
 export {
 	//,
+	createEntry,
+} from "./entry.js";
+export {
+	//,
 	eventStream,
 } from "./event-stream.js";
 export {
 	//,
 	jsonSink,
 } from "./log.js";
-export {
-	//,
-	prefersMarkdown,
-} from "./markdown-twins.js";
 export {
 	//,
 	accessLog,
@@ -57,6 +57,10 @@ export type {
 	DefaultPluginsOptions,
 	RunningServer,
 } from "./create-server.js";
+export type {
+	//,
+	AppServerEntry,
+} from "./entry.js";
 export type {
 	//,
 	EventStreamOptions,
