@@ -1,13 +1,10 @@
 import { resolve } from "node:path";
-import {
-	//,
-	createContext,
-	createRequestHandler,
-	RouterContextProvider,
-	type ServerBuild,
-} from "react-router";
-import { createServer, type AppServer } from "./create-server.js";
-import { createEntry, type AppServerEntry } from "./entry.js";
+import { createContext, createRequestHandler, RouterContextProvider } from "react-router";
+import type { ServerBuild } from "react-router";
+import { createServer } from "./create-server.js";
+import type { AppServer } from "./create-server.js";
+import { createEntry } from "./entry.js";
+import type { AppServerEntry } from "./entry.js";
 import { jsonSink, sinkLogger } from "./log.js";
 import type { FrameworkAdapter, RequestLogger, SetupInfo } from "./types.js";
 
@@ -71,7 +68,7 @@ export function createAdapter(
 	return {
 		clientDirectory: resolve(build.assetsBuildDirectory),
 		prerenderedPaths: build.prerender,
-		fetch: (request, context) => {
+		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();
 			routerContext.set(appServerContext, {
 				requestId: context.var.requestId,

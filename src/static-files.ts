@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { open, stat, type FileHandle } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { open, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
@@ -25,12 +27,8 @@ function hasDotSegment(path: string): boolean {
 		);
 }
 
-async function fileStats(path: string) {
-	try {
-		return await stat(path);
-	} catch {
-		return undefined;
-	}
+async function fileStats(path: string): Promise<Stats | undefined> {
+	return stat(path).catch(() => undefined);
 }
 
 /**
@@ -64,13 +62,13 @@ export async function findStaticFile(root: string, path: string): Promise<Static
 		return undefined;
 	}
 	const stats = await fileStats(candidate);
-	if (stats?.isFile()) {
+	if (stats?.isFile() === true) {
 		return { path: candidate, size: stats.size, mtimeMs: stats.mtimeMs };
 	}
-	if (stats?.isDirectory()) {
+	if (stats?.isDirectory() === true) {
 		const index = join(candidate, "index.html");
 		const indexStats = await fileStats(index);
-		if (indexStats?.isFile()) {
+		if (indexStats?.isFile() === true) {
 			return { path: index, size: indexStats.size, mtimeMs: indexStats.mtimeMs };
 		}
 	}
@@ -97,7 +95,7 @@ function fileStream(handle: FileHandle): ReadableStream<Uint8Array> {
 				throw error;
 			}
 		},
-		cancel: () => handle.close(),
+		cancel: async () => handle.close(),
 	});
 }
 
@@ -114,7 +112,7 @@ function contentType(path: string): string {
 
 /** An ETag without its weak prefix, for the weak comparison that `If-None-Match` uses. */
 function opaqueTag(etag: string): string {
-	return etag.trim().replace(/^W\//, "");
+	return etag.trim().replace(/^W\//u, "");
 }
 
 /** Whether an `If-None-Match` header lists an ETag. */

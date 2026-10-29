@@ -2,6 +2,20 @@ import type { AppServerEntry } from "./entry.js";
 
 type ServedApp = { entry: AppServerEntry; pending: number; replaced: boolean };
 
+/** What {@link servedApps} returns. */
+type ServedApps = {
+	/** Runs `handle` for a request that `entry` serves. */
+	serve: <Result>(
+		entry: AppServerEntry,
+		handle: (entry: AppServerEntry) => Promise<Result>,
+	) => Promise<Result>;
+	/**
+	 * At exit: aborts `shutdownSignal()` and runs the `onShutdown` hooks of each
+	 * app still held. Resolves when the hooks finish or pass the deadline.
+	 */
+	stopAll: () => Promise<void>;
+};
+
 /**
  * Tracks the apps that `app-server start` serves. An edit to `server.ts` makes a
  * new app, and the old app's plugins still hold what their `setup` opened.
@@ -9,21 +23,20 @@ type ServedApp = { entry: AppServerEntry; pending: number; replaced: boolean };
  * run, and the tracker lets go of it. A route edit makes a new entry with the
  * same app, which keeps its plugins.
  */
-export function servedApps() {
+export function servedApps(): ServedApps {
 	let current: ServedApp | undefined;
 	const served = new Set<ServedApp>();
 	// Why keep the app until its hooks settle: `stopAll` must wait for hooks that already run.
 	// `stopPlugins` runs the hooks once, so a second call only waits.
-	const retire = (app: ServedApp) =>
-		app.entry.stopPlugins().finally(() => {
+	const retire = async (app: ServedApp) => {
+		try {
+			await app.entry.stopPlugins();
+		} finally {
 			served.delete(app);
-		});
+		}
+	};
 	return {
-		/** Runs `handle` for a request that `entry` serves. */
-		serve: async <Result>(
-			entry: AppServerEntry,
-			handle: (entry: AppServerEntry) => Promise<Result>,
-		): Promise<Result> => {
+		serve: async (entry, handle) => {
 			if (current?.entry.app === entry.app) {
 				current.entry = entry;
 			} else {
@@ -47,15 +60,11 @@ export function servedApps() {
 				}
 			}
 		},
-		/**
-		 * At exit: aborts `shutdownSignal()` and runs the `onShutdown` hooks of each
-		 * app still held. Resolves when the hooks finish or pass the deadline.
-		 */
 		stopAll: async () => {
 			await Promise.all(
-				Array.from(served, (app) => {
+				Array.from(served, async (app) => {
 					app.entry.abortShutdownSignal();
-					return retire(app);
+					await retire(app);
 				}),
 			);
 		},

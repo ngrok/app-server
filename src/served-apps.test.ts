@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "./create-server.js";
-import { createEntry, type AppServerEntry } from "./entry.js";
+import { createEntry } from "./entry.js";
+import type { AppServerEntry } from "./entry.js";
 import { servedApps } from "./served-apps.js";
 import { renderedFramework } from "./test-server.js";
 
@@ -26,7 +27,7 @@ describe("servedApps", () => {
 		const apps = servedApps();
 		const old = entryFor();
 		const { promise: held, resolve: release } = Promise.withResolvers<string>();
-		const pending = apps.serve(old, () => held);
+		const pending = apps.serve(old, async () => held);
 
 		await apps.serve(entryFor(), async () => "new app");
 		expect(old.stopPlugins).not.toHaveBeenCalled();
@@ -73,7 +74,7 @@ describe("servedApps", () => {
 		const current = entryFor();
 		let finishHooks = () => {};
 		current.stopPlugins.mockImplementation(
-			() =>
+			async () =>
 				new Promise<void>((resolve) => {
 					finishHooks = resolve;
 				}),
@@ -81,17 +82,17 @@ describe("servedApps", () => {
 		await apps.serve(current, async () => "current app");
 
 		const stopping = apps.stopAll().then(() => "stopped");
-		expect(await Promise.race([stopping, Promise.resolve("pending")])).toBe("pending");
+		await expect(Promise.race([stopping, Promise.resolve("pending")])).resolves.toBe("pending");
 
 		finishHooks();
-		expect(await stopping).toBe("stopped");
+		await expect(stopping).resolves.toBe("stopped");
 	});
 
 	it("at exit, waits for the hooks of a replaced app that still run", async () => {
 		const apps = servedApps();
 		const { promise: hookFinished, resolve: finishHook } = Promise.withResolvers<undefined>();
 		const old = entryFor(
-			createServer({ plugins: [{ name: "slow-hook", onShutdown: () => hookFinished }] }),
+			createServer({ plugins: [{ name: "slow-hook", onShutdown: async () => hookFinished }] }),
 		);
 		await apps.serve(old, async () => "old app");
 		await apps.serve(entryFor(), async () => "new app");
@@ -100,9 +101,9 @@ describe("servedApps", () => {
 		const stopping = apps.stopAll().then(() => "stopped");
 		// Why wait: without the hook, `stopAll` resolves within a few microtasks.
 		await sleep(20);
-		expect(await Promise.race([stopping, Promise.resolve("pending")])).toBe("pending");
+		await expect(Promise.race([stopping, Promise.resolve("pending")])).resolves.toBe("pending");
 
 		finishHook(undefined);
-		expect(await stopping).toBe("stopped");
+		await expect(stopping).resolves.toBe("stopped");
 	});
 });

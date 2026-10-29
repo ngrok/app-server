@@ -2,12 +2,13 @@ import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
-import { createServer, defaultPlugins, serverInternals, type AppServer } from "./create-server.js";
+import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
+import type { AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import { accessLog } from "./plugins/access-log.js";
 import { tcp } from "./tcp.js";
 import { renderedFramework, testServer } from "./test-server.js";
-import type { FrameworkAdapter, LogSink, Plugin, StartedListener } from "./types.js";
+import type { FrameworkAdapter, Listener, LogSink, Plugin, StartedListener } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
 async function listening(render: FrameworkAdapter["fetch"], plugins: Plugin[] = defaultPlugins()) {
@@ -45,8 +46,8 @@ describe("createServer", () => {
 			},
 		});
 
-		expect(await (await request("/livez")).text()).toBe("ok");
-		expect(await (await request("/page")).text()).toBe("rendered");
+		await expect((await request("/livez")).text()).resolves.toBe("ok");
+		await expect((await request("/page")).text()).resolves.toBe("rendered");
 	});
 
 	it("runs plugins in list order, around the framework", async () => {
@@ -63,7 +64,7 @@ describe("createServer", () => {
 
 		await request("/");
 
-		expect(order).toEqual(["first in", "second in", "second out", "first out"]);
+		expect(order).toStrictEqual(["first in", "second in", "second out", "first out"]);
 	});
 
 	it("reads the scheme from X-Forwarded-Proto only when trustForwardedProto is set", async () => {
@@ -82,10 +83,10 @@ describe("createServer", () => {
 		});
 		const untrusted = await testServer({ plugins: [], render, routes });
 
-		expect(await (await trusted.request("/", init)).text()).toBe("https: form");
-		expect(await (await trusted.request("/route", { headers })).text()).toBe("https:");
-		expect(await (await untrusted.request("/", init)).text()).toBe("http: form");
-		expect(await (await untrusted.request("/route", { headers })).text()).toBe("http:");
+		await expect((await trusted.request("/", init)).text()).resolves.toBe("https: form");
+		await expect((await trusted.request("/route", { headers })).text()).resolves.toBe("https:");
+		await expect((await untrusted.request("/", init)).text()).resolves.toBe("http: form");
+		await expect((await untrusted.request("/route", { headers })).text()).resolves.toBe("http:");
 	});
 
 	it("answers an HTTPException with its own response, not a 500", async () => {
@@ -100,7 +101,7 @@ describe("createServer", () => {
 
 		expect(response.status).toBe(401);
 		expect(response.headers.get("WWW-Authenticate")).toContain("Basic");
-		expect(lines).toEqual([]);
+		expect(lines).toStrictEqual([]);
 	});
 
 	it("cancels the body of a HEAD response, so a stream stops", async () => {
@@ -133,13 +134,15 @@ describe("createServer", () => {
 	it("logs an unhandled error and answers 500", async () => {
 		const { request, lines } = await testServer({
 			plugins: [],
-			render: () => Promise.reject(new TypeError("boom")),
+			render: async () => {
+				throw new TypeError("boom");
+			},
 		});
 
 		const response = await request("/");
 
 		expect(response.status).toBe(500);
-		expect(lines).toEqual([
+		expect(lines).toStrictEqual([
 			{
 				level: "error",
 				message: "unhandled error",
@@ -158,6 +161,7 @@ describe("createServer", () => {
 				plugins: [accessLog()],
 				routes: (app) => {
 					app.get("/throws", () => {
+						// oxlint-disable-next-line typescript/only-throw-error -- the test throws a value that is not an Error on purpose.
 						throw thrown;
 					});
 				},
@@ -167,7 +171,7 @@ describe("createServer", () => {
 			await response.text();
 
 			expect(response.status).toBe(500);
-			expect(lines).toEqual([
+			expect(lines).toStrictEqual([
 				{
 					level: "error",
 					message: "unhandled error",
@@ -188,7 +192,7 @@ describe("createServer", () => {
 		const thrower: Plugin = {
 			name: "thrower",
 			middleware: () => {
-				// oxlint-disable-next-line no-throw-literal -- the test throws a string on purpose.
+				// oxlint-disable-next-line no-throw-literal, typescript/only-throw-error -- the test throws a string on purpose.
 				throw "boom";
 			},
 		};
@@ -198,7 +202,7 @@ describe("createServer", () => {
 		await response.text();
 
 		expect(response.status).toBe(500);
-		expect(lines.map(({ message }) => message)).toEqual(["unhandled error", "request"]);
+		expect(lines.map(({ message }) => message)).toStrictEqual(["unhandled error", "request"]);
 	});
 
 	it("stops the handler's stream when the client disconnects through gzip and the access log", async () => {
@@ -264,7 +268,7 @@ describe("createServer", () => {
 		const onShutdown = vi.fn<() => Promise<void>>(async () => {});
 		const server = await listening(
 			async () =>
-				eventStream({}, ({ send }) => {
+				eventStream({}, async ({ send }) => {
 					send({ data: "hello" });
 					return new Promise(() => {});
 				}),
@@ -302,14 +306,27 @@ describe("createServer", () => {
 		expect(onShutdown).toHaveBeenCalledTimes(1);
 	});
 
-	it("stops the started listeners when another listener fails to start", async () => {
+	it.each<{ failure: string; start: Listener["start"] }>([
+		{
+			failure: "rejects",
+			start: async () => {
+				throw new Error("address in use");
+			},
+		},
+		{
+			failure: "throws before it returns a promise",
+			start: () => {
+				throw new Error("address in use");
+			},
+		},
+	])("stops the started listeners when another listener $failure", async ({ start }) => {
 		const stop = vi.fn<StartedListener["stop"]>(async () => {});
 		const app = createServer({
 			plugins: [],
 			logger: { log: () => {} },
 			listeners: [
 				{ name: "ok", start: async () => ({ url: "http://localhost:1", stop }) },
-				{ name: "taken", start: () => Promise.reject(new Error("address in use")) },
+				{ name: "taken", start },
 			],
 		});
 
@@ -341,7 +358,9 @@ describe("createServer", () => {
 					name: "broken",
 					start: async () => ({
 						url: "http://localhost:1",
-						stop: () => Promise.reject(new Error("stop failed")),
+						stop: async () => {
+							throw new Error("stop failed");
+						},
 					}),
 				},
 			],
@@ -354,12 +373,12 @@ describe("createServer", () => {
 		});
 
 		await expect(server?.shutdown()).rejects.toThrow("stop failed");
-		expect(finished).toEqual(["hook"]);
+		expect(finished).toStrictEqual(["hook"]);
 	});
 
 	it("stops the listeners at the deadline when a plugin's onShutdown hangs", async () => {
 		const server = await listening(renderedFramework, [
-			{ name: "stuck", onShutdown: () => new Promise(() => {}) },
+			{ name: "stuck", onShutdown: async () => new Promise(() => {}) },
 		]);
 
 		await server.shutdown();

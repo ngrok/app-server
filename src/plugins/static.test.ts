@@ -9,7 +9,8 @@ import { tcp } from "../tcp.js";
 import type { NodeMiddleware } from "../types.js";
 import { accessLog } from "./access-log.js";
 import { requestId } from "./request-id.js";
-import { assets, prerendered, type PrerenderedOptions } from "./static.js";
+import { assets, prerendered } from "./static.js";
+import type { PrerenderedOptions } from "./static.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
 const files: Record<string, string> = {
@@ -39,8 +40,13 @@ afterAll(() => {
 	rmSync(clientDirectory, { recursive: true, force: true });
 });
 
-const staticServer = (options: PrerenderedOptions = {}, prerenderedPaths: string[] = []) =>
-	testServer({ plugins: [assets(), prerendered(options)], clientDirectory, prerenderedPaths });
+async function staticServer(options: PrerenderedOptions = {}, prerenderedPaths: string[] = []) {
+	return testServer({
+		plugins: [assets(), prerendered(options)],
+		clientDirectory,
+		prerenderedPaths,
+	});
+}
 
 describe("prerendered", () => {
 	it("serves a prerendered page at its own URL with a 200 and no redirect", async () => {
@@ -49,14 +55,14 @@ describe("prerendered", () => {
 		const response = await request("/components/button");
 
 		expect(response.status).toBe(200);
-		expect(await response.text()).toBe("<h1>Button</h1>");
+		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
 		expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
 	});
 
 	it("serves the root page from index.html", async () => {
 		const { request } = await staticServer();
 
-		expect(await (await request("/")).text()).toBe("<h1>Home</h1>");
+		await expect((await request("/")).text()).resolves.toBe("<h1>Home</h1>");
 	});
 
 	it("replays the headers captured at build time, keyed with no trailing slash", async () => {
@@ -90,13 +96,13 @@ describe("prerendered", () => {
 		const markdown = await request("/components/button", { headers: { Accept: "text/markdown" } });
 		const page = await request("/components/button");
 
-		expect(await markdown.text()).toBe("# Button");
+		await expect(markdown.text()).resolves.toBe("# Button");
 		expect(markdown.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
-		expect(await page.text()).toBe("<h1>Button</h1>");
+		await expect(page.text()).resolves.toBe("<h1>Button</h1>");
 	});
 
 	it("puts the etagPart of each earlier plugin in the ETag", async () => {
-		const withPart = (part: string) =>
+		const withPart = async (part: string) =>
 			testServer({
 				plugins: [{ name: "versioned", etagPart: () => part }, prerendered()],
 				clientDirectory,
@@ -104,8 +110,8 @@ describe("prerendered", () => {
 		const etag = async (part: string) =>
 			(await (await withPart(part)).request("/llms.txt")).headers.get("ETag");
 
-		expect(await etag("v1")).toBe(await etag("v1"));
-		expect(await etag("v1")).not.toBe(await etag("v2"));
+		await expect(etag("v1")).resolves.toBe(await etag("v1"));
+		await expect(etag("v1")).resolves.not.toBe(await etag("v2"));
 	});
 
 	it("applies the request-path rules to a rewritten path", async () => {
@@ -117,7 +123,7 @@ describe("prerendered", () => {
 		const { request } = await staticServer({ rewrite: (path) => rewrites[path] ?? path });
 
 		for (const path of Object.keys(rewrites)) {
-			expect(await (await request(path)).text()).toBe("rendered");
+			await expect((await request(path)).text()).resolves.toBe("rendered");
 		}
 	});
 
@@ -147,9 +153,9 @@ describe("prerendered", () => {
 
 		const response = await request("/llms.txt", { headers: { "If-None-Match": etag } });
 
-		expect(etag).toMatch(/^W\/"[\da-f]+-[\da-f]+"$/);
+		expect(etag).toMatch(/^W\/"[\da-f]+-[\da-f]+"$/u);
 		expect(response.status).toBe(304);
-		expect(await response.text()).toBe("");
+		await expect(response.text()).resolves.toBe("");
 	});
 
 	it("streams a large file in chunks, not as one buffer", async () => {
@@ -170,17 +176,17 @@ describe("prerendered", () => {
 		const response = await request("/llms.txt", { method: "HEAD" });
 
 		expect(response.headers.get("Content-Length")).toBe("4");
-		expect(await response.text()).toBe("");
+		await expect(response.text()).resolves.toBe("");
 	});
 
 	it("never serves a dotfile or the captured headers, but serves /.well-known/", async () => {
 		const { request } = await staticServer();
 
-		expect(await (await request("/.env")).text()).toBe("rendered");
-		expect(await (await request("/%2eenv")).text()).toBe("rendered");
-		expect(await (await request("/%E0%A4%A")).text()).toBe("rendered");
-		expect(await (await request("/.headers.json")).text()).toBe("rendered");
-		expect(await (await request("/.well-known/security.txt")).text()).toBe(
+		await expect((await request("/.env")).text()).resolves.toBe("rendered");
+		await expect((await request("/%2eenv")).text()).resolves.toBe("rendered");
+		await expect((await request("/%E0%A4%A")).text()).resolves.toBe("rendered");
+		await expect((await request("/.headers.json")).text()).resolves.toBe("rendered");
+		await expect((await request("/.well-known/security.txt")).text()).resolves.toBe(
 			"Contact: security@example.com",
 		);
 	});
@@ -188,9 +194,9 @@ describe("prerendered", () => {
 	it("hands each other name for a file to the framework, so a file has one URL and its headers", async () => {
 		const { request } = await staticServer();
 
-		expect(await (await request("/components%2Fbutton")).text()).toBe("rendered");
-		expect(await (await request("/components//button")).text()).toBe("rendered");
-		expect(await (await request("/components/button/index.html")).text()).toBe("rendered");
+		await expect((await request("/components%2Fbutton")).text()).resolves.toBe("rendered");
+		await expect((await request("/components//button")).text()).resolves.toBe("rendered");
+		await expect((await request("/components/button/index.html")).text()).resolves.toBe("rendered");
 	});
 
 	it("never serves a file outside the client build", async () => {
@@ -204,14 +210,14 @@ describe("prerendered", () => {
 	it("hands a path with no file and a POST to the framework", async () => {
 		const { request } = await staticServer();
 
-		expect(await (await request("/components/missing")).text()).toBe("rendered");
-		expect(await (await request("/llms.txt", { method: "POST" })).text()).toBe("rendered");
+		await expect((await request("/components/missing")).text()).resolves.toBe("rendered");
+		await expect((await request("/llms.txt", { method: "POST" })).text()).resolves.toBe("rendered");
 	});
 
 	it("warns at startup about each prerendered path that has no file", async () => {
 		const { lines } = await staticServer({}, ["/components/button", "/llms.txt", "/gone"]);
 
-		expect(lines).toEqual([
+		expect(lines).toStrictEqual([
 			{
 				level: "warn",
 				message: "prerendered paths with no file",
@@ -228,7 +234,7 @@ describe("assets", () => {
 		const response = await request("/assets/entry-abc123.js");
 
 		expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
-		expect(await response.text()).toBe("export {};");
+		await expect(response.text()).resolves.toBe("export {};");
 	});
 
 	it("answers a missing asset with a plain 404, not a rendered page", async () => {
@@ -237,7 +243,7 @@ describe("assets", () => {
 		const response = await request("/assets/entry-old.js");
 
 		expect(response.status).toBe(404);
-		expect(await response.text()).toBe("Not Found");
+		await expect(response.text()).resolves.toBe("Not Found");
 	});
 });
 
@@ -246,7 +252,11 @@ describe("assets in development", () => {
 		const lines: LoggedLine[] = [];
 		const app = createServer({
 			plugins: [requestId(), accessLog(), assets()],
-			logger: { log: (level, message, attributes) => lines.push({ level, message, attributes }) },
+			logger: {
+				log: (level, message, attributes) => {
+					lines.push({ level, message, attributes });
+				},
+			},
 			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
 		});
 		const viteMiddleware: NodeMiddleware = (_, response) => {
@@ -270,7 +280,7 @@ describe("assets in development", () => {
 		await server?.shutdown();
 
 		expect(response.status).toBe(418);
-		expect(await response.text()).toBe("teapot");
+		await expect(response.text()).resolves.toBe("teapot");
 		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
 		expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
 			"http.status_code": 418,

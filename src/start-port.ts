@@ -1,4 +1,5 @@
-import { createServer, type Server } from "node:net";
+import { createServer } from "node:net";
+import type { Server } from "node:net";
 
 const MAX_PORT = 65_535;
 
@@ -7,7 +8,7 @@ export type ListenFromPortOptions = {
 	/** The first port to try. 0 lets the OS pick one. */
 	port: number;
 	/** @default every interface */
-	hostname?: string;
+	hostname?: string | undefined;
 	/** When true, a port in use throws and no other port is tried. */
 	strictPort: boolean;
 	/** Runs for each port in use before the next port is tried. */
@@ -61,16 +62,16 @@ export async function listenFromPort(
 	throw new Error(`No open port from ${port} to ${MAX_PORT}.`);
 }
 
-function bind(server: Server, port: number, hostname: string | undefined): Promise<void> {
+async function bind(server: Server, port: number, hostname: string | undefined): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
-		const onError = (error: Error) => {
+		function onError(error: Error) {
 			server.off("listening", onListening);
 			reject(error);
-		};
-		const onListening = () => {
+		}
+		function onListening() {
 			server.off("error", onError);
 			resolve();
-		};
+		}
 		server.once("error", onError);
 		server.once("listening", onListening);
 		server.listen(port, hostname);

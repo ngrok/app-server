@@ -21,7 +21,7 @@ export function loggedUrl(url: URL, { redact }: { redact: boolean }): string {
 	if (!redact || url.search === "") {
 		return `${url.pathname}${url.search}`;
 	}
-	const query = Array.from(url.searchParams.keys())
+	const query = [...url.searchParams.keys()]
 		.map((key) => `${encodeURIComponent(key)}=REDACTED`)
 		.join("&");
 	return `${url.pathname}?${query}`;

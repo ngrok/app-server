@@ -4,11 +4,11 @@ import type { Plugin } from "../types.js";
 // zod, valibot, and arktype schemas all work with no dependency on any of them.
 type StandardIssue = {
 	readonly message: string;
-	readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined;
+	readonly path?: readonly (PropertyKey | { readonly key: PropertyKey })[] | undefined;
 };
 type StandardResult<Output> =
 	| { readonly value: Output; readonly issues?: undefined }
-	| { readonly issues: ReadonlyArray<StandardIssue> };
+	| { readonly issues: readonly StandardIssue[] };
 
 /** A schema that follows the Standard Schema interface, such as a zod object. */
 export type StandardSchemaV1<Input = unknown, Output = Input> = {
@@ -59,7 +59,7 @@ function formatIssue(issue: StandardIssue): string {
 
 /** A JSON data block. Escaping `<` keeps a value from closing the `<script>`. */
 function publicEnvScript(values: Readonly<Record<string, unknown>>): string {
-	const json = JSON.stringify(values).replaceAll("<", "\\u003c");
+	const json = JSON.stringify(values).replaceAll("<", String.raw`\u003c`);
 	return `<script id="${PUBLIC_ENV_SCRIPT_ID}" type="application/json">${json}</script>`;
 }
 
@@ -81,7 +81,7 @@ function injectBeforeHeadEnd(
 					return;
 				}
 				pending += text;
-				const index = pending.search(/<\/head>/i);
+				const index = pending.search(/<\/head>/iu);
 				if (index !== -1) {
 					controller.enqueue(
 						encoder.encode(`${pending.slice(0, index)}${html}${pending.slice(index)}`),

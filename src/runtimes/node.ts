@@ -1,7 +1,8 @@
 import { IncomingMessage, ServerResponse } from "node:http";
 import { createAdaptorServer } from "@hono/node-server";
 import type { FetchHandler, StartedListener } from "../types.js";
-import { listenerUrl, type ListenOptions } from "./listen-options.js";
+import { listenerUrl } from "./listen-options.js";
+import type { ListenOptions } from "./listen-options.js";
 
 /**
  * Cancels the body of a response whose socket closed first, and returns the
@@ -51,7 +52,7 @@ export async function listen(
 	const port = typeof address === "object" && address != null ? address.port : options.port;
 	return {
 		url: listenerUrl(options.hostname, port),
-		stop: ({ deadlineMs }) =>
+		stop: async ({ deadlineMs }) =>
 			new Promise<void>((resolve, reject) => {
 				const deadline = setTimeout(() => {
 					if ("closeAllConnections" in server) {

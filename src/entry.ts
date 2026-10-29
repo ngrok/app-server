@@ -1,4 +1,5 @@
-import { serverInternals, type AppServer } from "./create-server.js";
+import { serverInternals } from "./create-server.js";
+import type { AppServer } from "./create-server.js";
 import { exitAfterFlush } from "./exit.js";
 import { errorAttributes } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";

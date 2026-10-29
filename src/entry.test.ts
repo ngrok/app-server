@@ -1,19 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { createServer, type AppServer } from "./create-server.js";
+import { createServer } from "./create-server.js";
+import type { AppServer } from "./create-server.js";
 import { createEntry, ENTRY_PROTOCOL, loadEntry } from "./entry.js";
 import { renderedFramework } from "./test-server.js";
 
-const framework = () => ({
-	clientDirectory: "/nonexistent",
-	prerenderedPaths: [],
-	fetch: renderedFramework,
-});
+function framework() {
+	return {
+		clientDirectory: "/nonexistent",
+		prerenderedPaths: [],
+		fetch: renderedFramework,
+	};
+}
 
 describe("loadEntry", () => {
 	it("runs the build's own entry, not one from this copy", async () => {
 		const appServer = createEntry({ app: createServer({ plugins: [] }), framework });
 
-		expect(await loadEntry({ appServer })).toBe(appServer);
+		await expect(loadEntry({ appServer })).resolves.toBe(appServer);
 	});
 
 	it("refuses an entry from another protocol version", async () => {
@@ -43,6 +46,6 @@ describe("createEntry", () => {
 			next();
 		});
 
-		expect(await response.text()).toBe("rendered");
+		await expect(response.text()).resolves.toBe("rendered");
 	});
 });
