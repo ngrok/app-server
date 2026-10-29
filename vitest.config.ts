@@ -4,7 +4,7 @@ export default defineConfig({
 	test: {
 		include: ["src/**/*.test.ts"],
 		environment: "node",
-		// See `packages/mantle/vitest.config.ts`: docs/testing.md § Determinism documents this as repo-wide.
+		// Why: each test starts with fresh mocks, env, and globals, and a fixed time zone.
 		clearMocks: true,
 		restoreMocks: true,
 		unstubEnvs: true,

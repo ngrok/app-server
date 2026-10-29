@@ -1,8 +1,26 @@
 {
-  "extends": "@cfg/tsconfig/tsconfig.client-package.json",
+  "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
+    "skipLibCheck": true,
+    "target": "ES2025",
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "resolvePackageJsonExports": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+
+    "module": "NodeNext",
+    "sourceMap": true,
+    "declaration": true,
+
+    "lib": ["ES2025", "DOM"],
     "types": ["node"],
-    "customConditions": ["@ngrok/src-live-types"]
+    "noEmit": true
   },
   "include": ["src/**/*", "test/**/*", "*.config.ts"]
 }
