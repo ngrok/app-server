@@ -21,27 +21,39 @@ export type StaleBuildNavigationOptions = {
 };
 
 /**
- * How long a click or a history step stays the target of the router's next
- * data request. Why a limit: an app can cancel a click without a
- * navigation, and a later data request must not go to that link.
+ * How long a link click, a history step, or a history update stays the
+ * target of the data requests that start after it. Why a limit: an app can
+ * cancel a click with no navigation, and a later data request must not go to
+ * that link.
  */
 const PENDING_MS = 10_000;
 
-/** The build in the `Server-Timing` of the first of `entries` that has one. */
+/** A navigation that the router started, and the data requests that it claims. */
+type Navigation = { url: string; at: number; answered: boolean };
+
+/** Whether `url` is on the origin of this page. */
+function isOwn(url: string): boolean {
+	return new URL(url, location.href).origin === location.origin;
+}
+
+/** The build in the `Server-Timing` of the first of `entries` that has one, from this origin only. */
 function timingBuild(entries: PerformanceEntryList): string | undefined {
 	return entries
-		.filter((entry): entry is PerformanceResourceTiming => "serverTiming" in entry)
+		.filter(
+			(entry): entry is PerformanceResourceTiming => "serverTiming" in entry && isOwn(entry.name),
+		)
 		.flatMap((entry) => entry.serverTiming)
 		.find((metric) => metric.name === BUILD_ID_METRIC)?.description;
 }
 
-/** Loads `url` as a new document. */
-function loadDocument(url: string): void {
-	location.assign(url);
+/** The page of `url`: the router renders a new route for a new path or query, not for a new fragment. */
+function pageOf(url: string): string {
+	const { origin, pathname, search } = new URL(url, location.href);
+	return `${origin}${pathname}${search}`;
 }
 
 /**
- * The URL that a click opens as a new document, or `undefined` when the click
+ * The URL that a click opens as a new page, or `undefined` when the click
  * does not leave the page: a modified click, a link to a new window or a
  * download, a link to another origin, or a link to a part of this page.
  */
@@ -66,12 +78,15 @@ function followedLink(event: MouseEvent): string | undefined {
 		return undefined;
 	}
 	const url = new URL(anchor.href, location.href);
-	const here = new URL(location.href);
-	if (url.origin !== here.origin) {
+	if (url.origin !== location.origin) {
 		return undefined;
 	}
-	const samePage = url.pathname === here.pathname && url.search === here.search;
-	return samePage && url.hash !== "" ? undefined : url.href;
+	return pageOf(url.href) === pageOf(location.href) && url.hash !== "" ? undefined : url.href;
+}
+
+/** The URL of a `fetch` call. */
+function urlOf(input: RequestInfo | URL): string {
+	return input instanceof Request ? input.url : String(input);
 }
 
 /** The method of a `fetch` call. */
@@ -85,14 +100,16 @@ function methodOf(input: RequestInfo | URL, init: RequestInit | undefined): stri
  * reads never reloads.
  *
  * It reads the build of each data response that the router fetches, and of
- * each prefetch that the browser makes. When the server runs a new build:
+ * each response from this origin that the browser makes, such as a
+ * prefetch. When the server runs a new build:
  *
- * - If the visitor started the navigation (a link click or a history step),
- *   the browser loads the target URL as a document. The old code never sees
- *   the new data.
- * - Each later link click, history step, and `history.pushState` loads the
- *   target URL as a document, so the visitor gets the new build at the next
- *   page change.
+ * - If a navigation (a link click, a history step, or a history update to a
+ *   new page) started the data request, the browser loads the target URL as
+ *   a document. The old code never sees the new data.
+ * - After that, each `history.pushState` and `history.replaceState` to a new
+ *   page loads the target URL as a document, so the visitor gets the new
+ *   build at the next page change.
+ * - The app's click handlers and the router's blockers still run first.
  *
  * It sends no request of its own. It needs `buildId()` in the server's
  * pipeline, and it does nothing on a document with no build. Call it before
@@ -117,7 +134,8 @@ export function staleBuildNavigation({
 	const listening = new AbortController();
 	const { signal } = listening;
 	let stale = false;
-	let pending: { url: string; at: number } | undefined;
+	let navigation: Navigation | undefined;
+	let page = pageOf(location.href);
 	const see = (served: string | null | undefined) => {
 		if (served == null || served === build || stale) {
 			return;
@@ -125,8 +143,12 @@ export function staleBuildNavigation({
 		stale = true;
 		onNewBuild?.(served);
 	};
+	const start = (url: string) => {
+		navigation = { url, at: Date.now(), answered: false };
+	};
 	// Why resource timing: it shows the build of a response that no script fetched, such as a
-	// prefetch on hover, so the tab can find a new build before the click.
+	// prefetch on hover, so the tab can find a new build before the click. Why buffered: a prefetch
+	// can finish before this module runs.
 	const observer =
 		typeof PerformanceObserver === "function"
 			? new PerformanceObserver((list) => {
@@ -135,34 +157,29 @@ export function staleBuildNavigation({
 					}
 				})
 			: undefined;
-	observer?.observe({ type: "resource" });
+	observer?.observe({ type: "resource", buffered: true });
 
+	// Why no stop after a new build: the app's handlers and the router's blockers must run first.
+	// The router then fetches data or updates history, and those calls load the document.
 	addEventListener(
 		"click",
 		(event) => {
 			const url = followedLink(event);
-			if (url == null) {
-				return;
+			if (url != null) {
+				start(url);
 			}
-			if (stale) {
-				// Why stop it: the router's click handler never runs, so the browser follows the link as a document load.
-				event.stopImmediatePropagation();
-				return;
-			}
-			pending = { url, at: Date.now() };
 		},
 		{ capture: true, signal },
 	);
 
 	addEventListener(
 		"popstate",
-		(event) => {
-			if (stale) {
-				event.stopImmediatePropagation();
-				loadDocument(location.href);
-				return;
+		() => {
+			const before = page;
+			page = pageOf(location.href);
+			if (page !== before) {
+				start(location.href);
 			}
-			pending = { url: location.href, at: Date.now() };
 		},
 		{ signal },
 	);
@@ -170,33 +187,58 @@ export function staleBuildNavigation({
 	const pushState = history.pushState.bind(history);
 	const replaceState = history.replaceState.bind(history);
 	const send = globalThis.fetch;
-	history.pushState = (data: unknown, unused: string, url?: string | URL | null) => {
-		pending = undefined;
-		if (stale && url != null) {
-			loadDocument(new URL(url, location.href).href);
-			return;
-		}
-		pushState(data, unused, url);
-	};
-	history.replaceState = (data: unknown, unused: string, url?: string | URL | null) => {
-		pending = undefined;
-		replaceState(data, unused, url);
-	};
+	const update =
+		(native: typeof history.pushState, load: (url: string) => void) =>
+		(data: unknown, unused: string, url?: string | URL | null) => {
+			const target = url == null ? undefined : new URL(url, location.href);
+			// Why the native call for another origin: it throws the `SecurityError` that the app expects.
+			if (target == null || target.origin !== location.origin || pageOf(target.href) === page) {
+				native(data, unused, url);
+				return;
+			}
+			if (stale) {
+				load(target.href);
+				return;
+			}
+			if (navigation?.url !== target.href) {
+				start(target.href);
+			} else if (navigation.answered) {
+				// Why: a router that updates history after its data request ends that navigation here.
+				navigation = undefined;
+			}
+			native(data, unused, url);
+			page = pageOf(location.href);
+		};
+	history.pushState = update(pushState, (url) => {
+		location.assign(url);
+	});
+	history.replaceState = update(replaceState, (url) => {
+		location.replace(url);
+	});
 
 	globalThis.fetch = async (input, init) => {
+		// Why at the start: a slow data request still belongs to the navigation that started it.
+		const claimed =
+			navigation != null && !navigation.answered && Date.now() - navigation.at < PENDING_MS
+				? navigation
+				: undefined;
 		const response = await send.call(globalThis, input, init);
-		const served = response.headers.get(header);
-		if (served == null || served === build) {
+		// Why the final URL: a redirect can end on another origin.
+		const url = response.url === "" ? urlOf(input) : response.url;
+		const served = isOwn(url) ? response.headers.get(header) : null;
+		if (served == null) {
 			return response;
+		}
+		if (claimed != null) {
+			claimed.answered = true;
 		}
 		see(served);
-		const target =
-			pending != null && Date.now() - pending.at < PENDING_MS ? pending.url : undefined;
-		if (target == null || methodOf(input, init) !== "GET") {
+		if (served === build || claimed == null || methodOf(input, init) !== "GET") {
 			return response;
 		}
-		await response.body?.cancel();
-		loadDocument(target);
+		// Why no wait: the cancel of a cloned body waits for the other branch.
+		response.body?.cancel().catch(() => undefined);
+		location.assign(claimed.url);
 		// Why a promise that never settles: the page unloads, and the old code must not render the new build's data.
 		return new Promise<Response>(() => {});
 	};

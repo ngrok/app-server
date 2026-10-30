@@ -16,7 +16,7 @@ A client-side navigation makes the requests that the router makes, and no more. 
 **In this repo:**
 
 - `buildId()` puts the build on the document, on the data responses that the router already fetches, and on the responses of the app's proxy routes in `paths`.
-- `staleBuildNavigation()` reads that header from those responses. It sends no request. After a deploy, it turns one navigation into a document load, which also makes one request.
+- `staleBuildNavigation()` reads that header from those responses. It sends no request. After a deploy, one navigation also loads its target as a document: one more request, once for each deploy.
 - The document's build travels in `Server-Timing`, so the client reads it with no request.
 
 **Enforced by:** the `staleBuildNavigation()` tests, which count the requests of each navigation; review for the rest.

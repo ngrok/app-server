@@ -45,23 +45,54 @@ describe("buildId", () => {
 		expect((await request("/api.json")).headers.get("Server-Timing")).toBeNull();
 	});
 
-	it("stamps the responses of the paths option, but not a response that a shared cache can keep", async () => {
+	it("puts the build in the Server-Timing of the paths option, but not a response that a cache can use again", async () => {
+		const headers: Record<string, Record<string, string>> = {
+			"/api/keys": {},
+			"/api/no-store": { "Cache-Control": "private, no-store, max-age=60" },
+			"/api/public": { "Cache-Control": "public" },
+			"/api/fresh": { "Cache-Control": "max-age=60" },
+			"/api/private": { "Cache-Control": "private, max-age=60" },
+			"/api/stale": { "Cache-Control": "max-age=0, stale-while-revalidate=30" },
+			"/api/modified": { "Last-Modified": "Tue, 01 Jan 2030 00:00:00 GMT" },
+		};
 		const { request } = await testServer({
 			plugins: [buildId({ value: "v42", paths: (path) => path.startsWith("/api/") })],
 			render: async (incoming) =>
-				new URL(incoming.url).pathname === "/api/cached"
-					? Response.json({}, { headers: { "Cache-Control": "public, max-age=60" } })
-					: Response.json({}),
+				Response.json({}, { headers: headers[new URL(incoming.url).pathname] ?? {} }),
 		});
 
-		const proxied = await request("/api/keys");
-		const cached = await request("/api/cached");
-		const other = await request("/status.json");
+		const responses = await Promise.all(
+			[...Object.keys(headers), "/status.json"].map(async (path) => request(path)),
+		);
 
-		expect(
-			[proxied, cached, other].map((response) => response.headers.get("X-Build-Id")),
-		).toStrictEqual(["v42", null, null]);
-		expect(proxied.headers.get("Server-Timing")).toBe('build;desc="v42"');
+		expect(responses.map((response) => response.headers.get("Server-Timing"))).toStrictEqual([
+			'build;desc="v42"',
+			'build;desc="v42"',
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+		]);
+		expect(responses.map((response) => response.headers.get("X-Build-Id"))).toStrictEqual(
+			Array.from(responses, () => null),
+		);
+	});
+
+	it("replaces a build metric from upstream, and keeps the other metrics", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42", paths: (path) => path.startsWith("/api/") })],
+			render: async () =>
+				Response.json(
+					{},
+					{ headers: { "Server-Timing": 'db;dur=5, build;desc="api-v7", cache;desc="a, b"' } },
+				),
+		});
+
+		expect((await request("/api/keys")).headers.get("Server-Timing")).toBe(
+			'db;dur=5, cache;desc="a, b", build;desc="v42"',
+		);
 	});
 
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {

@@ -286,9 +286,10 @@ hydrateRoot(document, <StartClient />);
 ```
 
 - `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
-- The module reads the build from the responses that the router fetches, and from the responses that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click.
-- When a data response comes from a new build and the visitor started that navigation with a link click or a history step, the browser loads the target URL as a document. The old code never gets the new data.
-- After that, each link click, history step, and `history.pushState` loads its target as a document.
+- The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
+- When a data response comes from a new build and a navigation started that request, the browser loads the target URL as a document. A navigation is a link click, a history step, or a history update to a new page. The old code never gets the new data.
+- After that, each `history.pushState` and `history.replaceState` to a new page loads its target as a document. A change to the fragment or to the state only stays in the page.
+- A click and a history step still go to the router first, so the app's click handlers and the router's blockers can cancel them.
 - A link to a new window, a download, a modified click, and a link to another origin do not change.
 - Call `staleBuildNavigation()` before the router starts, so its listeners run first.
 - `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
@@ -312,10 +313,10 @@ const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] 
 - The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
 - Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
 - The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
-- The client reads the build from the `fetch` response, and also from resource timing. So a fetch client that keeps its own copy of `fetch` still reports the build.
-- A response that a shared cache can keep (`public` or `s-maxage`) gets no build, so a cached copy never reports an old build.
+- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build. The build replaces a `build` metric from the upstream API.
+- A response that a cache can use again without the server gets no build, so a cached copy never reports an old build. That is a response with `public`, a `max-age`, an `s-maxage`, a stale time, a future `Expires`, or a `Last-Modified`, and with no `no-cache` or `no-store`.
 
-`staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation is a document load, which is also one request. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
+`staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation also loads its target as a document: one more request, once for each deploy. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 
 ## Trailing slashes
 

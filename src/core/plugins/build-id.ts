@@ -1,5 +1,5 @@
 import { withHeaderHook } from "../header-hook.js";
-import type { Plugin, SetupInfo } from "../types.js";
+import type { Plugin, ResponseHeaders, SetupInfo } from "../types.js";
 
 /** The header that {@link buildId} sets by default. */
 export const BUILD_ID_HEADER = "X-Build-Id";
@@ -18,11 +18,12 @@ export type BuildIdOptions = {
 	/** The deployed build, such as the image tag. Read it from the runtime env, not the build. */
 	value: string;
 	/**
-	 * More request paths whose responses carry the build, such as the app's
-	 * proxy routes to its API. A tab then finds a new build in the requests
-	 * that it already sends. A response that a shared cache can keep
-	 * (`public` or `s-maxage`) gets no build, so a cached copy never reports
-	 * an old build.
+	 * More request paths whose responses carry the build in `Server-Timing`,
+	 * such as the app's proxy routes to its API. A tab then finds a new build
+	 * in the requests that it already sends. They get no build header, because
+	 * the header marks the router's own responses. A response that a cache can
+	 * use again without the server gets no build, so a cached copy never
+	 * reports an old build.
 	 *
 	 * @example
 	 * buildId({ value, paths: (path) => path.startsWith("/api/") });
@@ -30,9 +31,34 @@ export type BuildIdOptions = {
 	paths?: (path: string) => boolean;
 };
 
-/** Whether a `Cache-Control` lets a shared cache keep the response. */
-function isShared(cacheControl: string | null): boolean {
-	return /\b(?:public|s-maxage)\b/iu.test(cacheControl ?? "");
+/**
+ * Whether a cache can use the response again without the server: it has a
+ * fresh time, a stale time, or a date that a cache can guess a fresh time from.
+ */
+function isReusable(response: ResponseHeaders): boolean {
+	const cacheControl = response.get("Cache-Control") ?? "";
+	if (/\b(?:no-store|no-cache)\b/iu.test(cacheControl)) {
+		return false;
+	}
+	return (
+		/\b(?:max-age|s-maxage|stale-while-revalidate|stale-if-error)\s*=\s*"?0*[1-9]/iu.test(
+			cacheControl,
+		) ||
+		/\bpublic\b/iu.test(cacheControl) ||
+		Date.parse(response.get("Expires") ?? "") > Date.now() ||
+		response.has("Last-Modified")
+	);
+}
+
+/** The `Server-Timing` metrics of `header` that are not a build. */
+function otherMetrics(header: string | null): string[] {
+	// Why the lookahead: a comma in a quoted description does not end a metric.
+	return (header ?? "")
+		.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/u)
+		.map((metric) => metric.trim())
+		.filter(
+			(metric) => metric !== "" && metric.split(";")[0]?.trim().toLowerCase() !== BUILD_ID_METRIC,
+		);
 }
 
 /** The data check before `setup` runs. */
@@ -48,11 +74,12 @@ function quoted(value: string): string {
 /**
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
- * happened under it. The `paths` option adds more routes, such as API
- * proxy routes. Each of them also gets the build as
- * `Server-Timing: build;desc="<value>"`. `staleBuildNavigation()` from
- * `@ngrok/app-server/client` reads it from the document, and from a data
- * response that the browser fetches with no script, such as a prefetch.
+ * happened under it. Each of them also gets the build as
+ * `Server-Timing: build;desc="<value>"`, in place of a `build` metric from
+ * upstream. The `paths` option adds the metric to more routes, such as API
+ * proxy routes. `staleBuildNavigation()` from `@ngrok/app-server/client`
+ * reads the metric from the document, and from a response that the browser
+ * fetches with no script, such as a prefetch.
  *
  * @example
  * buildId({ value: env.values.PUBLIC_APP_VERSION });
@@ -71,12 +98,18 @@ export function buildId({ header = BUILD_ID_HEADER, value, paths }: BuildIdOptio
 		middleware: async (context, next) =>
 			withHeaderHook(context, next, (response) => {
 				const { path } = context.req;
-				const isDocument = response.get("Content-Type")?.startsWith("text/html") ?? false;
-				const isPath = paths?.(path) === true && !isShared(response.get("Cache-Control"));
-				if (isDocument || isDataRequest(path) || isPath) {
-					response.set(header, value);
-					response.append("Server-Timing", timing);
+				const isRouter =
+					(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
+				if (!isRouter && (paths?.(path) !== true || isReusable(response))) {
+					return;
 				}
+				if (isRouter) {
+					response.set(header, value);
+				}
+				response.set(
+					"Server-Timing",
+					[...otherMetrics(response.get("Server-Timing")), timing].join(", "),
+				);
 			}),
 	};
 }
