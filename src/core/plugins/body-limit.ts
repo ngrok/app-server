@@ -1,4 +1,8 @@
+import { HTTPException } from "hono/http-exception";
 import type { Plugin } from "../types.js";
+
+// Why: GET and HEAD have no body, and the Fetch `Request` constructor rejects the other three.
+const NO_BODY_METHODS = new Set(["GET", "HEAD", "CONNECT", "TRACE", "TRACK"]);
 
 /** Options for {@link bodyLimit}. */
 export type BodyLimitOptions = {
@@ -14,8 +18,8 @@ function tooLarge(): Response {
 /**
  * Sends a 413 for a request body that is larger than `maxBytes`. A request
  * whose `Content-Length` is too large gets the 413 before the app reads the
- * body. A streamed body with no `Content-Length` errors when it passes the
- * limit. When the app reads the body before it answers, the response
+ * body, and a request whose `Content-Length` fits goes on unchanged. A
+ * streamed body with no `Content-Length` errors when it passes the limit. When the app reads the body before it answers, the response
  * becomes a 413. When the app streams the body into its response, the
  * response stream errors. A `maxBytes` that is not a whole number of 0 or
  * more stops startup.
@@ -34,12 +38,18 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 		name: "body-limit",
 		middleware: async (context, next) => {
 			const { raw } = context.req;
-			if (raw.method === "GET" || raw.method === "HEAD") {
+			if (NO_BODY_METHODS.has(raw.method)) {
 				return next();
 			}
 			const length = context.req.header("Content-Length");
-			if (length != null && Number(length) > maxBytes) {
-				return tooLarge();
+			// Why no stream count: the host's HTTP parser ends the body at its `Content-Length`. The
+			// original request also keeps the fast body reads of `@hono/node-server`.
+			if (
+				length != null &&
+				/^\d+$/u.test(length) &&
+				context.req.header("Transfer-Encoding") == null
+			) {
+				return Number(length) > maxBytes ? tooLarge() : next();
 			}
 			let bytes = 0;
 			let exceeded = false;
@@ -58,7 +68,12 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 						bytes += chunk.value.byteLength;
 						if (bytes > maxBytes) {
 							exceeded = true;
-							controller.error(new Error("The request body is larger than the body limit."));
+							// Why an `HTTPException`: `onError` sends its 413 and logs no error.
+							controller.error(
+								new HTTPException(413, {
+									message: "The request body is larger than the body limit.",
+								}),
+							);
 							await reader?.cancel();
 							return;
 						}

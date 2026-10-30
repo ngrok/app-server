@@ -114,6 +114,47 @@ describe("redirects", () => {
 		);
 	});
 
+	it("matches the bare prefix of a * rule, and the root with /*", async () => {
+		const rules: RedirectRule[] = [
+			{ from: "/docs/*", to: "https://docs.example.com/*" },
+			{ from: "/*", to: "https://new.example.com/*" },
+		];
+
+		await expect(redirected(rules, "/docs")).resolves.toStrictEqual({
+			status: 301,
+			location: "https://docs.example.com/",
+		});
+		await expect(redirected(rules, "/?x=1")).resolves.toStrictEqual({
+			status: 301,
+			location: "https://new.example.com/?x=1",
+		});
+	});
+
+	it("percent-encodes an absolute target as UTF-8", async () => {
+		await expect(
+			redirected(
+				[{ from: "/de/about", to: "https://example.de/über-uns?city=Zürich" }],
+				"/de/about",
+			),
+		).resolves.toStrictEqual({
+			status: 301,
+			location: "https://example.de/%C3%BCber-uns?city=Z%C3%BCrich",
+		});
+	});
+
+	it("drops the trailing slash of a local target in the never mode, so no redirect loops", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ redirects: [{ from: "/tags/:tag", to: "/tags/:tag/" }] }),
+		});
+
+		const atTarget = await request("/tags/a");
+		const withSlash = await request("/tags/a/");
+
+		expect(atTarget.status).toBe(200);
+		expect(withSlash.status).toBe(301);
+		expect(withSlash.headers.get("Location")).toBe("/tags/a");
+	});
+
 	it("sends one redirect from a path with a trailing slash to the final URL", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({ redirects: [{ from: "/old", to: "/new" }] }),

@@ -1,18 +1,21 @@
 import { isSafeLocalPath } from "../safe-local-path.js";
 import type { Plugin } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
+import type { TrailingSlash } from "./trailing-slash.js";
 
 /** One redirect of a {@link redirects} table. */
 export type RedirectRule = {
 	/**
 	 * The old URL path. A `:name` segment matches one path segment, and a `*`
-	 * last segment matches the rest of the path. A trailing slash does not
-	 * change the match. Write the path as it is in the URL, percent-encoded.
+	 * last segment matches the rest of the path, or nothing: `/docs/*` also
+	 * matches `/docs`. A trailing slash does not change the match. Write the
+	 * path as it is in the URL, percent-encoded.
 	 */
 	from: string;
 	/**
 	 * The new URL: a local path, or an absolute `http` or `https` URL. It can
-	 * use each `:name` and the `*` of `from`.
+	 * use each `:name` and the `*` of `from`. An absolute URL is
+	 * percent-encoded as UTF-8.
 	 */
 	to: string;
 	/** @default 301 */
@@ -51,20 +54,21 @@ function compilePattern(from: string): { pattern: RegExp | undefined; names: Set
 				throw new Error(`The redirect from ${from} uses :${name} twice.`);
 			}
 			names.add(name);
-			return `(?<${name}>[^/]+)`;
+			return `/(?<${name}>[^/]+)`;
 		}
 		if (segment === "*") {
 			if (index !== segments.length - 1) {
 				throw new Error(`The redirect from ${from} has a * that is not the last segment.`);
 			}
 			names.add("*");
-			// Why `$`: a `:name` cannot have it, so the group name is free.
-			return "(?<$splat>.+)";
+			// Why `$`: a `:name` cannot have it, so the group name is free. Why optional: `/docs/*`
+			// also moves `/docs`.
+			return "(?:/(?<$splat>.*))?";
 		}
-		return segment.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
+		return `/${segment.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`)}`;
 	});
 	return {
-		pattern: names.size === 0 ? undefined : new RegExp(`^/${parts.join("/")}$`, "u"),
+		pattern: names.size === 0 ? undefined : new RegExp(`^${parts.join("")}$`, "u"),
 		names,
 	};
 }
@@ -93,7 +97,8 @@ function compileRule({ from, to, status = 301 }: RedirectRule, index: number): C
 	if (url == null || (url.protocol !== "https:" && url.protocol !== "http:")) {
 		throw new Error(`A redirect must go to a local path or an http(s) URL, not ${to}.`);
 	}
-	return { key: matchKey(from), pattern, to, status, origin: url.origin, index };
+	// Why `href`: a `Location` must be ASCII, and it percent-encodes the rest as UTF-8.
+	return { key: matchKey(from), pattern, to: url.href, status, origin: url.origin, index };
 }
 
 /** The target of `rule` for the values that its pattern matched. */
@@ -106,6 +111,14 @@ function fill(to: string, groups: Readonly<Record<string, string | undefined>>):
 			? value.replaceAll(/[&+=]/gu, (char) => encodeURIComponent(char))
 			: value;
 	});
+}
+
+/** `target` with no trailing slash on its path, as the `never` mode of `trailingSlash` wants. */
+function withoutTrailingSlash(target: string): string {
+	const pathEnd = target.search(/[#?]/u);
+	const path = pathEnd === -1 ? target : target.slice(0, pathEnd);
+	const rest = pathEnd === -1 ? "" : target.slice(pathEnd);
+	return `${trimTrailingSlashes(path) || "/"}${rest}`;
 }
 
 /** `target` with the query string of the request added, before the fragment of `target`. */
@@ -131,7 +144,9 @@ function withQuery(target: string, search: string): string {
  * target. It applies to GET and HEAD only.
  *
  * Put it before `trailingSlash`, so `/old/` gets one redirect to the final
- * URL. `defaultPlugins({ redirects })` does that.
+ * URL, and give it the same `trailingSlash` mode. In `never` mode, a local
+ * target loses its trailing slash, so `trailingSlash` does not redirect it
+ * again. `defaultPlugins({ redirects })` does both.
  *
  * @example
  * redirects([
@@ -139,7 +154,10 @@ function withQuery(target: string, search: string): string {
  * 	{ from: "/docs/*", to: "https://docs.example.com/*", status: 308 },
  * ]);
  */
-export function redirects(rules: readonly RedirectRule[]): Plugin {
+export function redirects(
+	rules: readonly RedirectRule[],
+	{ trailingSlash = "preserve" }: { trailingSlash?: TrailingSlash } = {},
+): Plugin {
 	const compiled = rules.map((rule, index) => compileRule(rule, index));
 	const exact = new Map<string, CompiledRule>();
 	for (const rule of compiled.toReversed()) {
@@ -175,7 +193,11 @@ export function redirects(rules: readonly RedirectRule[]): Plugin {
 			if (found == null) {
 				return next();
 			}
-			const location = withQuery(found.target, url.search);
+			const target =
+				trailingSlash === "never" && found.rule.origin == null
+					? withoutTrailingSlash(found.target)
+					: found.target;
+			const location = withQuery(target, url.search);
 			// Why: a rule such as `/tags/:tag` to `/tags/:tag/` also matches its own target.
 			if (new URL(location, url).href === url.href) {
 				return next();

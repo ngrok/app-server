@@ -61,8 +61,44 @@ describe("bodyLimit", () => {
 		await expect(response.text()).resolves.toBe("10");
 	});
 
-	it("answers a streamed body with no Content-Length that passes the limit with a 413", async () => {
+	it("passes a request whose Content-Length fits on unchanged", async () => {
+		let seen: Request | undefined;
 		const { request } = await testServer({
+			plugins: [
+				{
+					name: "record",
+					middleware: async (context, next) => {
+						seen = context.req.raw;
+						return next();
+					},
+				},
+				bodyLimit({ maxBytes: 10 }),
+			],
+			render: async (incoming) => new Response(String(incoming === seen)),
+		});
+
+		const response = await request("/upload", {
+			method: "POST",
+			headers: { "Content-Length": "5" },
+			body: "hello",
+		});
+
+		await expect(response.text()).resolves.toBe("true");
+	});
+
+	it("passes a TRACE request on, which the Fetch Request constructor rejects", async () => {
+		const { app, framework } = await testServer({ plugins: [bodyLimit({ maxBytes: 10 })] });
+		// Why a changed method: `new Request` throws for TRACE, but a host such as Node passes it on.
+		const trace = new Request("http://localhost/");
+		Object.defineProperty(trace, "method", { get: () => "TRACE" });
+
+		const response = await app.fetch(trace, { framework });
+
+		expect(response.status).toBe(200);
+	});
+
+	it("answers a streamed body with no Content-Length that passes the limit with a 413", async () => {
+		const { request, lines } = await testServer({
 			plugins: [bodyLimit({ maxBytes: 25 })],
 			render: readBody,
 		});
@@ -73,6 +109,7 @@ describe("bodyLimit", () => {
 		await expect(small.text()).resolves.toBe("20");
 		expect(large.status).toBe(413);
 		await expect(large.text()).resolves.toBe("Payload Too Large");
+		expect(lines.filter((line) => line.level === "error")).toStrictEqual([]);
 	});
 
 	it("errors the response stream when the app streams a body that passes the limit into its response", async () => {

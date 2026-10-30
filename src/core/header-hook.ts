@@ -23,15 +23,30 @@ export async function withHeaderHook(
 ): Promise<void> {
 	context.set("headerHooks", [...(context.get("headerHooks") ?? []), hook]);
 	await next();
+	let copied = false;
+	const write = (name: string, value: string, { append }: { append: boolean }) => {
+		if (copied) {
+			if (append) {
+				context.res.headers.append(name, value);
+			} else {
+				context.res.headers.set(name, value);
+			}
+			return;
+		}
+		// Why `context.header` once: it copies the response, so it works on immutable headers and
+		// keeps the framework's object unchanged. It copies again on each call, so the later writes
+		// go to the copy.
+		context.header(name, value, { append });
+		copied = true;
+	};
 	const headers: ResponseHeaders = {
 		get: (name) => context.res.headers.get(name),
 		has: (name) => context.res.headers.has(name),
-		// Why `context.header`: it also works on a framework response with immutable headers.
 		set: (name, value) => {
-			context.header(name, value);
+			write(name, value, { append: false });
 		},
 		append: (name, value) => {
-			context.header(name, value, { append: true });
+			write(name, value, { append: true });
 		},
 	};
 	hook(headers);

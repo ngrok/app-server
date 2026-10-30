@@ -55,13 +55,13 @@ export type SecurityHeadersOptions = {
  * });
  */
 export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): Plugin {
-	const values = Object.entries({ ...DEFAULT_SECURITY_HEADERS, ...headers }).filter(
-		(entry): entry is [string, string] => typeof entry[1] === "string",
-	);
+	const values = Object.entries({ ...DEFAULT_SECURITY_HEADERS, ...headers })
+		.filter((entry): entry is [string, string] => typeof entry[1] === "string")
+		.map(([name, value]) => [name, oneLine(value)] as const);
 	return {
 		name: "security-headers",
 		middleware: async (context, next) => {
-			const isHttps = new URL(context.req.url).protocol === "https:";
+			const isHttps = context.req.url.startsWith("https:");
 			await withHeaderHook(context, next, (response) => {
 				for (const [name, value] of values) {
 					if (name === "Content-Security-Policy") {
@@ -73,6 +73,14 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 			});
 		},
 	};
+}
+
+/**
+ * `value` on one line. Why: a header value cannot hold a line break, and a
+ * policy written over several lines treats each run of whitespace as one space.
+ */
+function oneLine(value: string): string {
+	return value.replaceAll(/\s+/gu, " ").trim();
 }
 
 /** Options for {@link cspNonce}. */
@@ -116,7 +124,7 @@ export function cspNonce({ policy }: CspNonceOptions): Plugin {
 				!headers.has("Content-Security-Policy") &&
 				(headers.get("Content-Type")?.startsWith("text/html") ?? false)
 			) {
-				context.header("Content-Security-Policy", policy(nonce));
+				context.header("Content-Security-Policy", oneLine(policy(nonce)));
 			}
 		},
 	};

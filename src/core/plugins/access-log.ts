@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { errorAttributes } from "../log.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 /** Options for {@link accessLog}. */
@@ -70,8 +71,17 @@ export function accessLog({
 				const duration = (performance.now() - started).toFixed(1);
 				context.header("Server-Timing", `app;dur=${duration}`, { append: true });
 			}
+			// Why a catch: a log line must never change the response or stop its stream.
 			const write = ({ bytes, aborted }: { bytes: number; aborted: boolean }) => {
-				context.var.logger.info("request", lineAttributes(context, { bytes, aborted, started }));
+				const line = lineAttributes(context, { bytes, aborted, started });
+				try {
+					context.var.logger.info("request", { ...line, ...attributes?.(context) });
+				} catch (error) {
+					context.var.logger.error("access log attributes failed", {
+						...line,
+						...errorAttributes(error),
+					});
+				}
 			};
 			const response = context.res;
 			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
@@ -107,8 +117,11 @@ export function accessLog({
 					controller.enqueue(value);
 				},
 				async cancel(reason) {
-					write({ bytes, aborted: true });
-					await reader.cancel(reason);
+					try {
+						write({ bytes, aborted: true });
+					} finally {
+						await reader.cancel(reason);
+					}
 				},
 			});
 			context.res = new Response(counted, response);
@@ -129,7 +142,6 @@ export function accessLog({
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),
 			...(aborted ? { "http.client_aborted": true } : {}),
-			...attributes?.(context),
 		};
 	}
 }

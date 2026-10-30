@@ -100,6 +100,30 @@ describe("accessLog", () => {
 		expect(response.headers.get("Server-Timing")).toMatch(/^app;dur=\d+\.\d$/u);
 	});
 
+	it("keeps the response and logs one error line when the attributes callback throws", async () => {
+		const { request, lines } = await testServer({
+			plugins: [
+				accessLog({
+					attributes: () => {
+						throw new Error("no user");
+					},
+				}),
+			],
+		});
+
+		const head = await request("/", { method: "HEAD" });
+		const get = await request("/");
+		await get.text();
+
+		expect([head.status, get.status]).toStrictEqual([200, 200]);
+		expect(
+			lines.map((line) => [line.level, line.message, line.attributes["error.message"]]),
+		).toStrictEqual([
+			["error", "access log attributes failed", "no user"],
+			["error", "access log attributes failed", "no user"],
+		]);
+	});
+
 	it("redacts the query of the Referer", async () => {
 		const { request, lines } = await testServer({ plugins: [accessLog()] });
 

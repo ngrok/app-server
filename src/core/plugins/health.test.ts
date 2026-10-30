@@ -34,6 +34,34 @@ describe("health", () => {
 		expect((await throwing.request("/readyz")).status).toBe(503);
 	});
 
+	it("logs one line when the app check starts to fail, and one when it passes again", async () => {
+		let up = false;
+		const { request, lines } = await testServer({
+			plugins: [
+				health({
+					ready: () => {
+						if (!up) {
+							throw new Error("The database is down.");
+						}
+						return true;
+					},
+				}),
+			],
+		});
+
+		await request("/readyz");
+		await request("/readyz");
+		up = true;
+		await request("/readyz");
+
+		expect(
+			lines.map((line) => [line.level, line.message, line.attributes["error.message"]]),
+		).toStrictEqual([
+			["warn", "readiness check failed", "The database is down."],
+			["info", "readiness check passed", undefined],
+		]);
+	});
+
 	it("is not ready when a stop signal comes while the app check runs", async () => {
 		const { request } = await testServer({
 			plugins: [

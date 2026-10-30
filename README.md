@@ -119,8 +119,8 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 7. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 8. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
 9. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-10. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
-11. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page that the server rendered for one user. A document with its own `Cache-Control` keeps it.
+10. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+11. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
@@ -315,11 +315,11 @@ defaultPlugins({
 });
 ```
 
-- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path. The target can use each of them. In the query of the target, a value gets `&`, `=`, and `+` encoded, so it stays one value.
+- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path, or nothing, so `/docs/*` also matches `/docs`. The target can use each of them. An absolute target is percent-encoded as UTF-8. In the query of the target, a value gets `&`, `=`, and `+` encoded, so it stays one value.
 - The status is 301 by default, or 308 to keep the method. The redirect keeps the query string, and puts it before the fragment of the target. It applies to GET and HEAD only.
-- The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`.
+- The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`. In the `never` mode, a local target loses its trailing slash, so `trailingSlash` does not redirect it again.
 - The rules compile at startup. A rule that is not valid stops startup. A local target must be a safe local path, and an absolute target must keep the origin that its rule names. A request whose values break either check gets no redirect.
-- A request that is already at the target of its rule gets no redirect, so `{ from: "/tags/:tag", to: "/tags/:tag/" }` does not loop.
+- A request that is already at the target of its rule gets no redirect, so `{ from: "/tags/:tag", to: "/tags/:tag/" }` with `trailingSlash: "always"` does not loop.
 
 ### Preview deploys
 
@@ -452,7 +452,7 @@ defaultPlugins({
 
 ## Health checks
 
-`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. A stop signal during the check also gives 503. Put the plugin first, so a probe skips the access log:
+`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. When the check starts to fail, one warn line goes to the log, and when it passes again, one info line. A stop signal during the check also gives 503. Put the plugin first, so a probe skips the access log:
 
 ```ts
 export default createServer({
@@ -521,7 +521,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206.
 
 ## Options
 

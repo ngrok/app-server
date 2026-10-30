@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { defaultPlugins } from "../create-server.js";
+import { withHeaderHook } from "../header-hook.js";
+import type { Plugin } from "../types.js";
 import { cspNonce, securityHeaders } from "./security-headers.js";
 
 describe("securityHeaders", () => {
@@ -74,6 +76,45 @@ describe("securityHeaders", () => {
 		expect((await on.request("/")).headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect((await off.request("/")).headers.get("X-Content-Type-Options")).toBeNull();
 	});
+
+	it("puts a policy written over several lines on one line", async () => {
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({
+					headers: {
+						"Content-Security-Policy": "\n  default-src 'self';\n  frame-ancestors 'none'\n",
+					},
+				}),
+			],
+		});
+
+		const response = await request("/");
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			"default-src 'self'; frame-ancestors 'none'",
+		);
+	});
+
+	it("does not change a response object that the framework sends again", async () => {
+		const shared = new Response(null, {
+			headers: { "Content-Type": "text/html", "Content-Security-Policy": "img-src 'self'" },
+		});
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({ headers: { "Content-Security-Policy": "frame-ancestors 'none'" } }),
+			],
+			render: async () => shared,
+		});
+
+		await request("/");
+		const second = await request("/");
+
+		expect(second.headers.get("Content-Security-Policy")).toBe(
+			"img-src 'self', frame-ancestors 'none'",
+		);
+		expect(shared.headers.get("Content-Security-Policy")).toBe("img-src 'self'");
+	});
 });
 
 describe("cspNonce", () => {
@@ -103,5 +144,19 @@ describe("cspNonce", () => {
 		});
 
 		expect((await request("/api")).headers.get("Content-Security-Policy")).toBeNull();
+	});
+});
+
+describe("withHeaderHook", () => {
+	it("rejects an async hook at type check", () => {
+		const async: Plugin = {
+			name: "async",
+			middleware: async (context, next) =>
+				// @ts-expect-error -- Why: an async hook would set its header after the head goes out.
+				withHeaderHook(context, next, async (response) => {
+					response.set("X-Async", "1");
+				}),
+		};
+		expect(async.name).toBe("async");
 	});
 });

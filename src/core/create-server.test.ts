@@ -185,6 +185,17 @@ describe("createServer", () => {
 		);
 	});
 
+	it("stops startup for a shutdown time that a timer cannot hold", () => {
+		for (const shutdownDeadlineMs of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+			expect(() => createServer({ shutdownDeadlineMs })).toThrow(
+				"shutdownDeadlineMs must be an integer from 0 to 2147483647",
+			);
+		}
+		expect(() => createServer({ shutdownDelayMs: 2_147_483_648 })).toThrow(
+			"shutdownDelayMs must be an integer from 0 to 2147483647",
+		);
+	});
+
 	it("logs an unhandled error and answers 500", async () => {
 		const { request, lines } = await testServer({
 			plugins: [],

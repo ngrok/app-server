@@ -103,9 +103,9 @@ export type PrerenderedOptions = {
 	 * `/about/index.html`. `undefined` sends none. A header that the build
 	 * captured, and the `headers` option, win over it.
 	 *
-	 * The default gives an HTML page and a data file of the framework
-	 * `public, max-age=0, must-revalidate`, so a visitor always sees the newest
-	 * page, and a 304 keeps it fast. It gives every other file
+	 * The default gives an HTML page, a markdown file, and a data file of the
+	 * framework `public, max-age=0, must-revalidate`, so a visitor always sees
+	 * the newest page and its markdown twin, and a 304 keeps it fast. It gives every other file
 	 * `public, max-age=3600, stale-while-revalidate=86400`.
 	 *
 	 * @example
@@ -195,10 +195,14 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			const twinOf = twinOfOption(options.markdownTwins);
 			const cacheControl =
 				options.cacheControl ??
-				((path: string) =>
-					contentType(path, contentTypes).startsWith("text/html") || info.isDataRequest(path)
+				((path: string) => {
+					const type = contentType(path, contentTypes);
+					return type.startsWith("text/html") ||
+						type.startsWith("text/markdown") ||
+						info.isDataRequest(path)
 						? REVALIDATE
-						: ONE_HOUR);
+						: ONE_HOUR;
+				});
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				const value = cacheControl(file.path);
 				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });

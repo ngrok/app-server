@@ -247,6 +247,14 @@ describe("prerendered", () => {
 });
 
 describe("prerendered cacheControl", () => {
+	it("revalidates a markdown file, as it does the page of its twin", async () => {
+		const { request } = await testServer({ plugins: [prerendered()], clientDirectory });
+
+		const response = await request("/index.md");
+
+		expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+	});
+
 	it("revalidates pages and data files, caches other files for an hour, and keeps a captured value", async () => {
 		const { request } = await testServer({
 			plugins: [prerendered()],

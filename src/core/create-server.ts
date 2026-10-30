@@ -126,7 +126,7 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		assets(),
 		...(options.redirects == null || options.redirects.length === 0
 			? []
-			: [redirects(options.redirects)]),
+			: [redirects(options.redirects, { trailingSlash: options.trailingSlash ?? "never" })]),
 		// Why after `assets`: in development, the dev server there answers Vite's paths, such as `/@vite/client`.
 		trailingSlash({ mode: options.trailingSlash ?? "never" }),
 		prerendered(options.prerendered),
@@ -185,10 +185,14 @@ function forwardedClient(header: string | undefined, hops: number): string | und
 	return addresses[Math.max(0, addresses.length - hops)];
 }
 
-/** Throws for a value that is not an integer of 0 or more, so a bad option stops startup. */
-function checkCount(name: string, value: number): void {
-	if (!Number.isInteger(value) || value < 0) {
-		throw new Error(`${name} must be an integer of 0 or more, not ${value}.`);
+/** Why: `setTimeout` turns a longer delay into 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Throws for a value that is not an integer from 0 to `max`, so a bad option stops startup. */
+function checkCount(name: string, value: number, max = Number.MAX_SAFE_INTEGER): void {
+	if (!Number.isInteger(value) || value < 0 || value > max) {
+		const range = max === Number.MAX_SAFE_INTEGER ? "of 0 or more" : `from 0 to ${max}`;
+		throw new Error(`${name} must be an integer ${range}, not ${value}.`);
 	}
 }
 
@@ -251,7 +255,8 @@ export function createServer({
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
 	checkCount("trustedProxyHops", trustedProxyHops);
-	checkCount("shutdownDelayMs", shutdownDelayMs);
+	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
+	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
 	const app = new Hono<AppServerEnv>();
 	let requestStore: RequestStore | undefined;
 	if (trustForwardedProto) {

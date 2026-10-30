@@ -167,8 +167,8 @@ export type AppServerEnv = {
 export type ResponseHeaders = {
 	get: (name: string) => string | null;
 	has: (name: string) => boolean;
-	set: (name: string, value: string) => void;
-	append: (name: string, value: string) => void;
+	set: (name: string, value: string) => undefined;
+	append: (name: string, value: string) => undefined;
 };
 
 /**
@@ -176,7 +176,8 @@ export type ResponseHeaders = {
  * response. The stage runs it after the later stages, and a dev server
  * middleware that sends its own response runs it before it sends the head.
  */
-export type HeaderHook = (headers: ResponseHeaders) => void;
+// Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
+export type HeaderHook = (headers: ResponseHeaders) => undefined;
 
 /** The request handler that a listener calls. */
 export type FetchHandler = (
