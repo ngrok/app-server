@@ -99,6 +99,21 @@ describe("staleBuildNavigation", () => {
 		expect(requests).toStrictEqual(["http://localhost:3000/poll.data"]);
 	});
 
+	it("never reloads the page that the visitor reads when a query after a navigation finds a new build", async () => {
+		const { documentLoads, routed, click } = page({ serverBuild: "v2" });
+		stop = staleBuildNavigation({ build: "v1" });
+		const here = location.href;
+		dispatchEvent(new PopStateEvent("popstate"));
+		history.pushState({}, "", here);
+
+		const query = await fetch("/api/keys");
+		click("settings");
+
+		expect(query.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+		expect(routed).toStrictEqual([]);
+	});
+
 	it("loads the target of pushState and of a history step as a document after a new build", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		stop = staleBuildNavigation({ build: "v1" });

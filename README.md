@@ -293,7 +293,27 @@ hydrateRoot(document, <StartClient />);
 - Call `staleBuildNavigation()` before the router starts, so its listeners run first.
 - `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
 
-The module sees a build only in a response from this server: a document, a data request of the router, or a route discovery request. An app that loads its data in the browser from another service, such as with TanStack Query, sends few such requests. The module then finds a new build later, and the other service must stay compatible with old clients.
+The module sees a build only in a response from this server. By default, that is a document, a data request of the router, or a route discovery request. An app that loads its data in the browser, such as with TanStack Query, sends few of those. Send its queries through proxy routes on this server, as the next section shows, and each query also carries the build. A request that goes to another service directly carries no build, and that service must stay compatible with old clients.
+
+### Proxy routes
+
+A proxy route on this server forwards a request from the browser to the app's API, such as `/api/*`. The request makes the round trip anyway, so its response can carry the build at no cost. Add the routes to `paths`:
+
+```ts
+// server.ts
+const build = buildId({
+	value: env.values.PUBLIC_APP_VERSION,
+	paths: (path) => path.startsWith("/api/"),
+});
+
+const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] }) });
+```
+
+- The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
+- Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
+- The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
+- The client reads the build from the `fetch` response, and also from resource timing. So a fetch client that keeps its own copy of `fetch` still reports the build.
+- A response that a shared cache can keep (`public` or `s-maxage`) gets no build, so a cached copy never reports an old build.
 
 `staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation is a document load, which is also one request. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 

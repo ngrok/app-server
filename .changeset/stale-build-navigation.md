@@ -10,3 +10,5 @@ Add `staleBuildNavigation()` from the new `@ngrok/app-server/client` entry. Afte
 - `onNewBuild(served)` runs once when the tab first sees another build, for the app's RUM tool.
 
 It sends no request of its own, so a client navigation makes the same requests as before. Call it in the client entry before the router starts, and keep `buildId()` in the server's pipeline. `buildId()` now also sends the build as `Server-Timing: build;desc="<value>"` on each document and data response, so the client can read the build with no request.
+
+Add the `paths` option of `buildId()`. The responses of those request paths, such as the app's API proxy routes, also carry the build. Each query and mutation through them then tells an open tab about a new deploy, with no extra request. A response that a shared cache can keep gets no build.
