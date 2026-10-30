@@ -2,16 +2,16 @@
 "@ngrok/app-server": minor
 ---
 
-Add the `securityHeaders()` plugin to `defaultPlugins()`, and add the `cspNonce({ policy })` plugin.
+Add the `securityHeaders()` plugin to `defaultPlugins()`, and add the opt-in `cspNonce({ policy })` plugin.
 
-`securityHeaders()` sets these headers on each response, prerendered pages included. A response that has one of them keeps its own value.
+`securityHeaders()` sets these headers on each response, prerendered pages included. If a response already has one of them, it keeps its own value.
 
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
 
-Breaking change: with `defaultPlugins()`, each response now gets these headers. Before, it got none. `same-origin` breaks a pop-up that uses `window.opener`, such as some OAuth and payment pop-ups. To change a value or turn a header off:
+Breaking change: with `defaultPlugins()`, each response now gets these headers. Before, it got none. `same-origin` breaks a pop-up that uses `window.opener`, such as some OAuth and payment pop-ups. To change a value, set it in the option. `false` turns one header off, and `securityHeaders: false` turns them all off.
 
 ```ts
 defaultPlugins({
@@ -19,6 +19,6 @@ defaultPlugins({
 });
 ```
 
-Set `securityHeaders: false` to turn them all off. `Content-Security-Policy` has no default. Set `frame-ancestors 'none'` in it to stop other sites from putting the page in a frame.
+`Content-Security-Policy` has no default. To stop other sites from putting a page in a frame, set `frame-ancestors 'none'` in it.
 
-`cspNonce({ policy })` makes a random nonce for each request that reaches the app or the framework, and sets the `Content-Security-Policy` on each HTML document. Read the nonce from `requestContext()?.cspNonce`, from `appServerContext` in React Router, or from `context.appServer` in TanStack Start, and give it to the render.
+`cspNonce({ policy })` sets a `Content-Security-Policy` with a new nonce on each HTML document. Read the nonce from `requestContext()?.cspNonce`, from `appServerContext` in React Router, or from `context.appServer` in TanStack Start. Give it to the render.

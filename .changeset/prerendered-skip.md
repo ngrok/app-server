@@ -2,4 +2,4 @@
 "@ngrok/app-server": patch
 ---
 
-Add the `skip` option of `prerendered()`. A request path that `skip` matches goes to the framework with no file lookup, so the app's auth check runs for a private page. The README has a new "Protect pages" section: a prerendered file answers before the app's routes, so an auth check goes in `beforeStatic` or the page goes in `skip`.
+Add the `skip` option of `prerendered()`. A path that `skip` matches goes to the app with no file lookup, so the app's auth check runs. A prerendered file answers before the app's routes, so a private page needs `skip` or an auth check in `beforeStatic`. The new "Protect pages" README section shows both.

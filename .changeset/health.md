@@ -2,4 +2,4 @@
 "@ngrok/app-server": patch
 ---
 
-Add the `health()` plugin and the `shutdownDelayMs` option of `createServer`. `health()` answers `/livez` with 200, and `/readyz` with 200 until the server gets a stop signal, then 503. With `shutdownDelayMs`, the listeners serve on for that time after the signal, so a load balancer removes the server before the drain starts. The drain deadline starts after the delay. `health()` is not in `defaultPlugins()`: put it first, with `[health(), ...defaultPlugins()]`.
+Add the `health()` plugin and the `shutdownDelayMs` option of `createServer`. `health()` answers `/livez` with 200. It answers `/readyz` with 200, and with 503 after a stop signal. With `shutdownDelayMs`, the server serves requests for that time after the signal, so the load balancer removes it before the drain. The drain deadline starts after the delay. `health()` is not in `defaultPlugins()`, so put it first: `[health(), ...defaultPlugins()]`.
