@@ -1,4 +1,5 @@
 // Test helper: a prepared app server with a recording log sink and a stub framework.
+import { onTestFinished } from "vitest";
 import { readBuildManifest } from "./core/build-manifest.js";
 import { createServer, serverInternals } from "./core/create-server.js";
 import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
@@ -123,6 +124,16 @@ export async function testServer({
 		internals,
 		framework,
 		lines,
-		request: async (path: string, init?: RequestInit) => app.request(path, init, { framework }),
+		request: async (path: string, init?: RequestInit) => {
+			const response = await app.request(path, init, { framework });
+			// Why cancel an unread body: it can hold an open file, and Node.js 26 throws when garbage
+			// collection closes a `FileHandle`.
+			onTestFinished(async () => {
+				if (response.body?.locked === false) {
+					await response.body.cancel();
+				}
+			});
+			return response;
+		},
 	};
 }

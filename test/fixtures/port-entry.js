@@ -1,5 +1,5 @@
 // A server build entry for `test/runtimes.ts` that reads its port from the CLI: `--port`, else `PORT`.
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { createEntry, createServer } from "../../dist/index.js";
 import { host, tcp } from "../../dist/node.js";
 
@@ -8,7 +8,7 @@ export const appServer = createEntry({
 	host,
 	framework: () => ({
 		name: "stub",
-		clientDirectory: fileURLToPath(new URL("client", import.meta.url)),
+		clientDirectory: join(import.meta.dirname, "client"),
 		fetch: async () => new Response("ok"),
 	}),
 });

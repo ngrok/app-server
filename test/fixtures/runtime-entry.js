@@ -1,11 +1,11 @@
 // A server build entry for `test/runtimes.ts`: the built package with a stub framework, so the
 // same checks run on Node, Bun, and Deno.
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { createEntry, createServer, eventStream, jsonSink } from "../../dist/index.js";
 import { host, tcp } from "../../dist/node.js";
 
 const encoder = new TextEncoder();
-const clientDirectory = fileURLToPath(new URL("client", import.meta.url));
+const clientDirectory = join(import.meta.dirname, "client");
 
 let releaseStream = () => {};
 let holdCancelled = false;

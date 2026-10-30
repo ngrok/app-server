@@ -8,17 +8,17 @@ import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { createServer } from "node:net";
 import type { Server } from "node:net";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { constants, createGunzip } from "node:zlib";
 
-const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
+const packageDirectory = join(import.meta.dirname, "..");
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
 const portArgs = ["dist/cli.js", "serve", "test/fixtures/port-entry.js"];
-const devDirectory = fileURLToPath(new URL("fixtures/dev", import.meta.url));
-const reactRouterDirectory = fileURLToPath(new URL("fixtures/react-router", import.meta.url));
-const tanstackStartDirectory = fileURLToPath(new URL("fixtures/tanstack-start", import.meta.url));
-const binDirectory = fileURLToPath(new URL("../node_modules/.bin", import.meta.url));
-const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const devDirectory = join(import.meta.dirname, "fixtures/dev");
+const reactRouterDirectory = join(import.meta.dirname, "fixtures/react-router");
+const tanstackStartDirectory = join(import.meta.dirname, "fixtures/tanstack-start");
+const binDirectory = join(import.meta.dirname, "../node_modules/.bin");
+const cliPath = join(import.meta.dirname, "../dist/cli.js");
 const commands: Record<string, (args: string[]) => [string, string[]]> = {
 	node: (args) => ["node", args],
 	bun: (args) => ["bun", args],
