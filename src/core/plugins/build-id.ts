@@ -74,12 +74,13 @@ function quoted(value: string): string {
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
  * happened under it. Each of them also gets the build as
- * `Server-Timing: build;desc="<value>"`. Each other response loses the
- * build header and the `build` metric of an upstream API, so the client
- * reads only this app's build. The `paths` option adds the metric to more routes, such as API
- * proxy routes. `staleBuildNavigation()` from `@ngrok/app-server/client`
- * reads the metric from the document, and from a response that the browser
- * fetches with no script, such as a prefetch.
+ * `Server-Timing: build;desc="<value>"`. The `paths` option adds the metric
+ * to more routes, such as API proxy routes. The plugin removes the build
+ * header and the `build` metric of an upstream API from each other
+ * response, so the client reads only this app's build.
+ * `staleBuildNavigation()` from `@ngrok/app-server/client` reads the metric
+ * from the document, and from a response that the browser fetches with no
+ * script, such as a prefetch.
  *
  * @example
  * buildId({ value: env.values.PUBLIC_APP_VERSION });

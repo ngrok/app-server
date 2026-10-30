@@ -58,6 +58,9 @@ function page({ serverBuild, router = "react-router" }: { serverBuild: string; r
 	vi.spyOn(location, "replace").mockImplementation((url) => {
 		documentLoads.push(`replace ${String(url)}`);
 	});
+	vi.spyOn(location, "reload").mockImplementation(() => {
+		documentLoads.push(`reload ${location.href}`);
+	});
 	const click = (id: string, init: MouseEventInit = {}) => {
 		const event = new MouseEvent("click", { bubbles: true, cancelable: true, ...init });
 		document.querySelector(`#${id}`)?.dispatchEvent(event);
@@ -129,19 +132,32 @@ describe("staleBuildNavigation", () => {
 		expect(documentLoads).toStrictEqual([]);
 	});
 
-	it.each<Router>(["react-router", "tanstack"])(
+	it.each<[Router, string]>([
+		["react-router", "http://localhost:3000/settings"],
+		["tanstack", "reload http://localhost:3000/settings"],
+	])(
 		"with %s, loads the target as a document when the click's data comes from a new build, and the old code never gets it",
-		async (router) => {
+		async (router, load) => {
 			const { requests, documentLoads, click, loaded } = page({ serverBuild: "v2", router });
 			stop = staleBuildNavigation({ build: "v1" });
 
 			click("settings");
 
 			await expect(settles(loaded())).resolves.toBe(false);
-			expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+			expect(documentLoads).toStrictEqual([load]);
 			expect(requests).toStrictEqual(["http://localhost:3000/settings.data"]);
 		},
 	);
+
+	it("reloads the document when the router updated history to the target with a fragment first", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		stop = staleBuildNavigation({ build: "v1" });
+		history.replaceState(null, "", "/settings#usage");
+		dispatchEvent(new PopStateEvent("popstate"));
+
+		await expect(settles(fetch("/settings.data"))).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings#usage"]);
+	});
 
 	it("keeps a slow data request with the navigation that started it", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
@@ -315,7 +331,6 @@ describe("staleBuildNavigation", () => {
 		const { documentLoads, click } = page({ serverBuild: "v1" });
 		const { report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
-		stop = staleBuildNavigation({ build: "v1", onNewBuild });
 		vi.stubGlobal(
 			"fetch",
 			vi.fn<typeof fetch>(async () => {
@@ -324,6 +339,7 @@ describe("staleBuildNavigation", () => {
 				return response;
 			}),
 		);
+		stop = staleBuildNavigation({ build: "v1", onNewBuild });
 
 		report("https://api.ngrok.com/keys", "api-v7");
 		click("settings");

@@ -245,7 +245,13 @@ export function staleBuildNavigation({
 		}
 		// Why no wait: the cancel of a cloned body waits for the other branch.
 		response.body?.cancel().catch(() => undefined);
-		location.assign(claimed.url);
+		// Why reload on this page: a router can update history first, and `assign` to the same page
+		// with a fragment scrolls with no document load.
+		if (pageOf(claimed.url) === pageOf(location.href)) {
+			location.reload();
+		} else {
+			location.assign(claimed.url);
+		}
 		// Why a promise that never settles: the page unloads, and the old code must not render the new build's data.
 		return new Promise<Response>(() => {});
 	};
