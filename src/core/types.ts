@@ -169,6 +169,7 @@ export type ResponseHeaders = {
 	has: (name: string) => boolean;
 	set: (name: string, value: string) => undefined;
 	append: (name: string, value: string) => undefined;
+	delete: (name: string) => undefined;
 };
 
 /**

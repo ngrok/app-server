@@ -141,7 +141,7 @@ const frameOptions: Plugin = {
 };
 ```
 
-A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, and `append` a header.
+A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -313,7 +313,8 @@ const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] 
 - The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
 - Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
 - The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
-- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build. The build replaces a `build` metric from the upstream API.
+- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build.
+- `buildId()` removes the `X-Build-Id` header and the `build` metric of the upstream API from each response, so the client reads only this app's build.
 - A response that a cache can use again without the server gets no build, so a cached copy never reports an old build. That is a response with `public`, a `max-age`, an `s-maxage`, a stale time, a future `Expires`, or a `Last-Modified`, and with no `no-cache` or `no-store`.
 
 `staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation also loads its target as a document: one more request, once for each deploy. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).

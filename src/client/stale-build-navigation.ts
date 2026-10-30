@@ -233,7 +233,14 @@ export function staleBuildNavigation({
 			claimed.answered = true;
 		}
 		see(served);
-		if (served === build || claimed == null || methodOf(input, init) !== "GET") {
+		// Why the current navigation only: a late response of a navigation that a newer one replaced
+		// must not move the visitor away from the page that they read.
+		if (
+			served === build ||
+			claimed == null ||
+			claimed !== navigation ||
+			methodOf(input, init) !== "GET"
+		) {
 			return response;
 		}
 		// Why no wait: the cancel of a cloned body waits for the other branch.

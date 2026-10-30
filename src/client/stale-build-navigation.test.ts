@@ -164,6 +164,26 @@ describe("staleBuildNavigation", () => {
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
 	});
 
+	it("never loads the target of a navigation that a newer one replaced", async () => {
+		const { documentLoads, click } = page({ serverBuild: "v2", router: "tanstack" });
+		stop = staleBuildNavigation({ build: "v1" });
+		const answer = Promise.withResolvers<Response>();
+		const server = fetch;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<typeof fetch>(async () => answer.promise),
+		);
+		stop();
+		stop = staleBuildNavigation({ build: "v1" });
+
+		click("settings");
+		history.pushState({}, "", "/usage");
+		answer.resolve(await server("/settings.data"));
+		await settles(Promise.resolve());
+
+		expect(documentLoads).toStrictEqual([]);
+	});
+
 	it("lets the app and the router's blockers cancel a click after a new build", async () => {
 		const { routed, documentLoads, click, block } = page({ serverBuild: "v2" });
 		stop = staleBuildNavigation({ build: "v1" });

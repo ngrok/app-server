@@ -52,9 +52,8 @@ function isReusable(response: ResponseHeaders): boolean {
 
 /** The `Server-Timing` metrics of `header` that are not a build. */
 function otherMetrics(header: string | null): string[] {
-	// Why the lookahead: a comma in a quoted description does not end a metric.
-	return (header ?? "")
-		.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/u)
+	// Why match the quoted strings: a comma or an escaped quote in a description does not end a metric.
+	return (header?.match(/(?:[^",]|"(?:[^"\\]|\\.)*")+/gu) ?? [])
 		.map((metric) => metric.trim())
 		.filter(
 			(metric) => metric !== "" && metric.split(";")[0]?.trim().toLowerCase() !== BUILD_ID_METRIC,
@@ -75,8 +74,9 @@ function quoted(value: string): string {
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
  * happened under it. Each of them also gets the build as
- * `Server-Timing: build;desc="<value>"`, in place of a `build` metric from
- * upstream. The `paths` option adds the metric to more routes, such as API
+ * `Server-Timing: build;desc="<value>"`. Each other response loses the
+ * build header and the `build` metric of an upstream API, so the client
+ * reads only this app's build. The `paths` option adds the metric to more routes, such as API
  * proxy routes. `staleBuildNavigation()` from `@ngrok/app-server/client`
  * reads the metric from the document, and from a response that the browser
  * fetches with no script, such as a prefetch.
@@ -100,16 +100,20 @@ export function buildId({ header = BUILD_ID_HEADER, value, paths }: BuildIdOptio
 				const { path } = context.req;
 				const isRouter =
 					(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
-				if (!isRouter && (paths?.(path) !== true || isReusable(response))) {
-					return;
+				const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
+				// Why remove the build of an upstream API: the client must read only this app's build.
+				const before = response.get("Server-Timing");
+				const metrics = [...otherMetrics(before), ...(isStamped ? [timing] : [])].join(", ");
+				if (metrics === "") {
+					response.delete("Server-Timing");
+				} else if (metrics !== before) {
+					response.set("Server-Timing", metrics);
 				}
 				if (isRouter) {
 					response.set(header, value);
+				} else {
+					response.delete(header);
 				}
-				response.set(
-					"Server-Timing",
-					[...otherMetrics(response.get("Server-Timing")), timing].join(", "),
-				);
 			}),
 	};
 }

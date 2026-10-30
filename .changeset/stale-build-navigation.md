@@ -13,4 +13,6 @@ Add `staleBuildNavigation()` from the new `@ngrok/app-server/client` entry. Afte
 
 It sends no request of its own, so a client navigation makes the same requests as before. Call it in the client entry before the router starts, and keep `buildId()` in the server's pipeline. `buildId()` now also sends the build as `Server-Timing: build;desc="<value>"` on each document and data response, so the client can read the build with no request.
 
-Add the `paths` option of `buildId()`. The responses of those request paths, such as the app's API proxy routes, also carry the build in `Server-Timing`. Each query and mutation through them then tells an open tab about a new deploy, with no extra request. A response that a cache can use again without the server gets no build. The build replaces a `build` metric from the upstream API.
+Add the `paths` option of `buildId()`. The responses of those request paths, such as the app's API proxy routes, also carry the build in `Server-Timing`. Each query and mutation through them then tells an open tab about a new deploy, with no extra request. A response that a cache can use again without the server gets no build. `buildId()` removes the build header and the `build` metric of an upstream API from each response, so the client reads only this app's build.
+
+A header hook can now `delete` a header, with `response.delete(name)`.
