@@ -23,6 +23,10 @@ export type RequestContext = {
 	requestId: string | undefined;
 	/** The request's logger. Its lines carry the request ID. */
 	logger: RequestLogger;
+	/** The nonce for the request's inline scripts, when the `cspNonce` plugin runs. */
+	cspNonce: string | undefined;
+	/** The client's IP address, from `X-Forwarded-For` when `trustedProxyHops` is set, else from the socket. */
+	clientAddress: string | undefined;
 };
 
 /** The server mode. */
@@ -67,6 +71,9 @@ export type FileInfo = {
 	mtimeMs: number;
 };
 
+/** A range of bytes in a file. `start` and `end` are both inclusive. */
+export type ByteRange = { start: number; end: number };
+
 /**
  * The files of the client build. Each path is a URL path that the static
  * stages checked: it starts with `/`, and it has no `..`, no `//`, and no
@@ -75,8 +82,12 @@ export type FileInfo = {
 export type StaticFiles = {
 	/** What is at `path`, or `undefined` when nothing is there. */
 	stat: (path: string) => Promise<FileInfo | undefined>;
-	/** The bytes of the file at `path`. */
-	open: (path: string) => Promise<ReadableStream<Uint8Array>>;
+	/**
+	 * The bytes of the file at `path`. With `range`, only the bytes from
+	 * `start` to `end`, both inclusive. A host must honor `range`, because the
+	 * static stages answer a `Range` request with these bytes.
+	 */
+	open: (path: string, range?: ByteRange) => Promise<ReadableStream<Uint8Array>>;
 };
 
 /** Request-scoped storage, such as `AsyncLocalStorage`. */
@@ -136,13 +147,37 @@ export type AppServerEnv = {
 		/** The request ID, set by the `requestId` plugin. */
 		requestId?: string;
 		logger: RequestLogger;
+		/** The nonce for the request's inline scripts, set by the `cspNonce` plugin. */
+		cspNonce?: string;
+		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
+		clientAddress?: string | undefined;
+		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
+		logAttributes?: Readonly<Record<string, unknown>>;
 		/**
 		 * The `etagPart` of each plugin that the request passed, in order. The
 		 * static stages add them to each file's ETag. The server sets this list.
 		 */
 		etagParts?: readonly string[];
+		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
+		headerHooks?: readonly HeaderHook[];
 	};
 };
+
+/** The headers of a response, for a {@link HeaderHook}. */
+export type ResponseHeaders = {
+	get: (name: string) => string | null;
+	has: (name: string) => boolean;
+	set: (name: string, value: string) => undefined;
+	append: (name: string, value: string) => undefined;
+};
+
+/**
+ * A change to the headers of a response, from a stage that runs before the
+ * response. The stage runs it after the later stages, and a dev server
+ * middleware that sends its own response runs it before it sends the head.
+ */
+// Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
+export type HeaderHook = (headers: ResponseHeaders) => undefined;
 
 /** The request handler that a listener calls. */
 export type FetchHandler = (

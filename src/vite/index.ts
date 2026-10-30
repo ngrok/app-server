@@ -109,7 +109,7 @@ export function serverEntrySource({
 		`import { host } from ${JSON.stringify(host.runtimeModule)};`,
 		...(appModule == null
 			? [
-					`const app = createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1" });`,
+					`const app = createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1", trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0) });`,
 				]
 			: [`import app from ${JSON.stringify(appModule)};`]),
 		`export const appServer = createEntry({`,

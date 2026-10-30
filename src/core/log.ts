@@ -47,12 +47,13 @@ export function sinkLogger(
 	return { debug: line("debug"), info: line("info"), warn: line("warn"), error: line("error") };
 }
 
-/** A logger whose lines carry the request's ID, method, and path. */
+/** A logger whose lines carry the request's ID, method, path, and `logAttributes`. */
 export function requestLogger(sink: LogSink, context: Context<AppServerEnv>): RequestLogger {
 	// Why read at call time: the `requestId` plugin runs after this logger is made.
 	return sinkLogger(sink, () => ({
 		"http.request_id": context.get("requestId"),
 		"http.method": context.req.method,
 		"http.url_details.path": context.req.path,
+		...context.get("logAttributes"),
 	}));
 }

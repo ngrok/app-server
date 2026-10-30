@@ -88,6 +88,42 @@ describe("accessLog", () => {
 		expect(lines[0]?.attributes["network.bytes_written"]).toBe(0);
 	});
 
+	it("adds the app's attributes to the line, and Server-Timing to a document when asked", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog({ attributes: () => ({ "usr.id": "user-1" }), serverTiming: true })],
+		});
+
+		const response = await request("/");
+		await response.text();
+
+		expect(lines[0]?.attributes).toMatchObject({ "usr.id": "user-1" });
+		expect(response.headers.get("Server-Timing")).toMatch(/^app;dur=\d+\.\d$/u);
+	});
+
+	it("keeps the response and logs one error line when the attributes callback throws", async () => {
+		const { request, lines } = await testServer({
+			plugins: [
+				accessLog({
+					attributes: () => {
+						throw new Error("no user");
+					},
+				}),
+			],
+		});
+
+		const head = await request("/", { method: "HEAD" });
+		const get = await request("/");
+		await get.text();
+
+		expect([head.status, get.status]).toStrictEqual([200, 200]);
+		expect(
+			lines.map((line) => [line.level, line.message, line.attributes["error.message"]]),
+		).toStrictEqual([
+			["error", "access log attributes failed", "no user"],
+			["error", "access log attributes failed", "no user"],
+		]);
+	});
+
 	it("redacts the query of the Referer", async () => {
 		const { request, lines } = await testServer({ plugins: [accessLog()] });
 

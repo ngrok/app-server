@@ -1,3 +1,4 @@
+import { withHeaderHook } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 
 /** Options for {@link buildId}. */
@@ -31,12 +32,12 @@ export function buildId({ header = "X-Build-Id", value }: BuildIdOptions): Plugi
 		// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
 		// answer 200 when the build ID changes.
 		etagPart: () => value,
-		middleware: async (context, next) => {
-			await next();
-			const isDocument = context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false;
-			if (isDocument || isDataRequest(context.req.path)) {
-				context.header(header, value);
-			}
-		},
+		middleware: async (context, next) =>
+			withHeaderHook(context, next, (response) => {
+				const isDocument = response.get("Content-Type")?.startsWith("text/html") ?? false;
+				if (isDocument || isDataRequest(context.req.path)) {
+					response.set(header, value);
+				}
+			}),
 	};
 }

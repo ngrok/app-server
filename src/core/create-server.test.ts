@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
@@ -106,6 +109,30 @@ describe("createServer", () => {
 		expect(cancel).toHaveBeenCalledTimes(1);
 	});
 
+	it("sends the security headers with a 413 from the body limit", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ bodyLimit: 10 }),
+			render: async (incoming) => new Response(await incoming.arrayBuffer()),
+		});
+
+		const declared = await request("/upload", {
+			method: "POST",
+			headers: { "Content-Length": "11" },
+			body: "x".repeat(11),
+		});
+		const init: RequestInit & { duplex: "half" } = {
+			method: "POST",
+			duplex: "half",
+			body: new Blob(["x".repeat(11)]).stream(),
+		};
+		const streamed = await request("/upload", init);
+
+		for (const response of [declared, streamed]) {
+			expect(response.status).toBe(413);
+			expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		}
+	});
+
 	it("adds its headers to a response whose headers are immutable", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins(),
@@ -119,6 +146,54 @@ describe("createServer", () => {
 		expect(response.status).toBe(302);
 		expect(response.headers.get("X-Request-Id")).not.toBeNull();
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+	});
+
+	it("marks a rendered document private by default, but not a prerendered page", async () => {
+		const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-private-"));
+		onTestFinished(() => {
+			rmSync(clientDirectory, { recursive: true, force: true });
+		});
+		writeFileSync(join(clientDirectory, "about.html"), "<h1>About</h1>");
+		const { request } = await testServer({ plugins: defaultPlugins(), clientDirectory });
+
+		const rendered = await request("/dashboard");
+		const prerendered = await request("/about.html");
+
+		expect(rendered.headers.get("Cache-Control")).toBe("private, no-cache");
+		expect(prerendered.headers.get("Cache-Control")).not.toBe("private, no-cache");
+	});
+
+	it("logs the client address from X-Forwarded-For with trustedProxyHops", async () => {
+		const logged = async (trustedProxyHops: number, forwardedFor: string) => {
+			const { request, lines } = await testServer({
+				plugins: [accessLog()],
+				options: { trustedProxyHops },
+			});
+			await (await request("/", { headers: { "X-Forwarded-For": forwardedFor } })).text();
+			return lines[0]?.attributes["network.client.ip"];
+		};
+
+		await expect(logged(1, "1.1.1.1, 2.2.2.2")).resolves.toBe("2.2.2.2");
+		await expect(logged(2, "1.1.1.1, 2.2.2.2")).resolves.toBe("1.1.1.1");
+		await expect(logged(3, "1.1.1.1, 2.2.2.2")).resolves.toBe("1.1.1.1");
+		await expect(logged(0, "1.1.1.1, 2.2.2.2")).resolves.toBeUndefined();
+	});
+
+	it("stops startup for a trustedProxyHops that is not a count", () => {
+		expect(() => createServer({ trustedProxyHops: Number.NaN })).toThrow(
+			"trustedProxyHops must be an integer of 0 or more, not NaN.",
+		);
+	});
+
+	it("stops startup for a shutdown time that a timer cannot hold", () => {
+		for (const shutdownDeadlineMs of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+			expect(() => createServer({ shutdownDeadlineMs })).toThrow(
+				"shutdownDeadlineMs must be an integer from 0 to 2147483647",
+			);
+		}
+		expect(() => createServer({ shutdownDelayMs: 2_147_483_648 })).toThrow(
+			"shutdownDelayMs must be an integer from 0 to 2147483647",
+		);
 	});
 
 	it("logs an unhandled error and answers 500", async () => {

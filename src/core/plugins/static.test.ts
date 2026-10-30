@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
+import type { Plugin } from "../types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
 const files: Record<string, string> = {
@@ -15,6 +16,9 @@ const files: Record<string, string> = {
 	"docs/rendered.md": "# Rendered",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
+	"digits.bin": "0123456789",
+	"legacy.htm": "<h1>Legacy</h1>",
+	"images/logo.svg": "<svg></svg>",
 	"llms-full.txt": "x".repeat(200_000),
 	"assets/entry-abc123.js": "export {};",
 	".env": "SECRET=1",
@@ -85,6 +89,17 @@ describe("prerendered", () => {
 		const response = await request("/llms.txt");
 
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
+	});
+
+	it("lets the headers option replace a captured header in any case", async () => {
+		const { request } = await staticServer({
+			headers: (path) =>
+				path === "/components/button.md" ? { "Cache-Control": "private, no-cache" } : undefined,
+		});
+
+		const response = await request("/components/button.md");
+
+		expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
 	});
 
 	it("serves the file that rewrite names, with that file's headers", async () => {
@@ -231,6 +246,141 @@ describe("prerendered", () => {
 	});
 });
 
+describe("prerendered cacheControl", () => {
+	it("revalidates a markdown file, as it does the page of its twin", async () => {
+		const { request } = await testServer({ plugins: [prerendered()], clientDirectory });
+
+		const response = await request("/index.md");
+
+		expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+	});
+
+	it("revalidates pages and data files, caches other files for an hour, and keeps a captured value", async () => {
+		const { request } = await testServer({
+			plugins: [prerendered()],
+			clientDirectory,
+			framework: { isDataRequest: (path) => path.endsWith(".data") },
+		});
+		const cacheControl = async (path: string) => (await request(path)).headers.get("Cache-Control");
+
+		await expect(cacheControl("/components/button")).resolves.toBe(
+			"public, max-age=0, must-revalidate",
+		);
+		await expect(cacheControl("/components/button.data")).resolves.toBe(
+			"public, max-age=0, must-revalidate",
+		);
+		await expect(cacheControl("/legacy.htm")).resolves.toBe("public, max-age=0, must-revalidate");
+		await expect(cacheControl("/images/logo.svg")).resolves.toBe(
+			"public, max-age=3600, stale-while-revalidate=86400",
+		);
+		await expect(cacheControl("/components/button.md")).resolves.toBe("max-age=60");
+	});
+
+	it("uses the cacheControl option, and sends none for undefined", async () => {
+		const { request } = await staticServer({
+			cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined),
+		});
+
+		expect((await request("/images/logo.svg")).headers.get("Cache-Control")).toBe(
+			"public, max-age=86400",
+		);
+		expect((await request("/llms.txt")).headers.get("Cache-Control")).toBeNull();
+	});
+});
+
+describe("prerendered ranges", () => {
+	const ranged = async (range: string, extra: Record<string, string> = {}) => {
+		const { request } = await staticServer();
+		const response = await request("/digits.bin", { headers: { Range: range, ...extra } });
+		return {
+			status: response.status,
+			contentRange: response.headers.get("Content-Range"),
+			contentLength: response.headers.get("Content-Length"),
+			body: await response.text(),
+		};
+	};
+
+	it("answers one byte range with a 206 and those bytes", async () => {
+		await expect(ranged("bytes=0-3")).resolves.toStrictEqual({
+			status: 206,
+			contentRange: "bytes 0-3/10",
+			contentLength: "4",
+			body: "0123",
+		});
+		await expect(ranged("bytes=-3")).resolves.toMatchObject({ status: 206, body: "789" });
+		await expect(ranged("bytes=7-")).resolves.toMatchObject({ status: 206, body: "789" });
+		await expect(ranged("bytes=8-99")).resolves.toMatchObject({
+			contentRange: "bytes 8-9/10",
+			body: "89",
+		});
+	});
+
+	it("answers a range after the end of the file with a 416", async () => {
+		await expect(ranged("bytes=999999-")).resolves.toStrictEqual({
+			status: 416,
+			contentRange: "bytes */10",
+			contentLength: null,
+			body: "",
+		});
+	});
+
+	it("sends the full file for several ranges, a bad header, and an If-Range", async () => {
+		await expect(ranged("bytes=0-1,4-5")).resolves.toMatchObject({
+			status: 200,
+			body: "0123456789",
+		});
+		await expect(ranged("bytes=5-2")).resolves.toMatchObject({ status: 200 });
+		await expect(ranged("bytes=0-3", { "If-Range": 'W/"x"' })).resolves.toMatchObject({
+			status: 200,
+			body: "0123456789",
+		});
+	});
+
+	it("advertises byte ranges on a file", async () => {
+		const { request } = await staticServer();
+
+		expect((await request("/digits.bin")).headers.get("Accept-Ranges")).toBe("bytes");
+	});
+
+	it("sends the full page for a range of an HTML file, because a later stage can change it", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/components/button", { headers: { Range: "bytes=0-3" } });
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Accept-Ranges")).toBeNull();
+		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
+	});
+});
+
+describe("prerendered skip", () => {
+	it("lets a plugin before it block a prerendered page and its data file", async () => {
+		const auth: Plugin = {
+			name: "auth",
+			middleware: async (context, next) =>
+				context.req.path.startsWith("/components/") ? context.text("Unauthorized", 401) : next(),
+		};
+		const { request } = await testServer({
+			plugins: [auth, assets(), prerendered()],
+			clientDirectory,
+		});
+
+		expect((await request("/components/button")).status).toBe(401);
+		expect((await request("/components/button.data")).status).toBe(401);
+		expect((await request("/llms.txt")).status).toBe(200);
+	});
+
+	it("sends a path that skip matches to the framework, with no file lookup", async () => {
+		const { request } = await staticServer({
+			skip: (path) => path.startsWith("/components/button"),
+		});
+
+		await expect((await request("/components/button")).text()).resolves.toBe("rendered");
+		await expect((await request("/components/button.data")).text()).resolves.toBe("rendered");
+		await expect((await request("/llms.txt")).text()).resolves.toBe("llms");
+	});
+});
+
 describe("assets", () => {
 	it("serves a hashed asset with an immutable one-year cache", async () => {
 		const { request } = await staticServer();
@@ -241,12 +391,13 @@ describe("assets", () => {
 		await expect(response.text()).resolves.toBe("export {};");
 	});
 
-	it("answers a missing asset with a plain 404, not a rendered page", async () => {
+	it("answers a missing asset with a plain 404 that no cache keeps, not a rendered page", async () => {
 		const { request } = await staticServer();
 
 		const response = await request("/assets/entry-old.js");
 
 		expect(response.status).toBe(404);
+		expect(response.headers.get("Cache-Control")).toBe("no-store");
 		await expect(response.text()).resolves.toBe("Not Found");
 	});
 });

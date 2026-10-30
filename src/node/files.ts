@@ -2,21 +2,29 @@ import { open, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { StaticFiles } from "../core/types.js";
+import type { ByteRange, StaticFiles } from "../core/types.js";
 
 /**
  * A file's bytes, one chunk for each pull, so a slow client holds one chunk,
- * not the whole file. The handle closes at the end, on an error, or on cancel.
+ * not the whole file. With `range`, it reads only those bytes. The handle
+ * closes at the end, on an error, or on cancel.
  */
-function fileStream(handle: FileHandle): ReadableStream<Uint8Array> {
+function fileStream(handle: FileHandle, range: ByteRange | undefined): ReadableStream<Uint8Array> {
+	let position = range?.start ?? 0;
+	const end = range == null ? Number.POSITIVE_INFINITY : range.end + 1;
 	return new ReadableStream<Uint8Array>({
 		async pull(controller) {
 			try {
-				const { bytesRead, buffer } = await handle.read({ buffer: new Uint8Array(65_536) });
+				const length = Math.min(65_536, end - position);
+				const { bytesRead, buffer } =
+					length <= 0
+						? { bytesRead: 0, buffer: new Uint8Array(0) }
+						: await handle.read({ buffer: new Uint8Array(length), position });
 				if (bytesRead === 0) {
 					await handle.close();
 					controller.close();
 				} else {
+					position += bytesRead;
 					controller.enqueue(buffer.subarray(0, bytesRead));
 				}
 			} catch (error) {
@@ -59,6 +67,6 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
 				: undefined;
 		},
-		open: async (path) => fileStream(await open(filePath(path))),
+		open: async (path, range) => fileStream(await open(filePath(path)), range),
 	};
 }

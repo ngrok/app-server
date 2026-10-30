@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { errorAttributes } from "../log.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 /** Options for {@link accessLog}. */
@@ -9,6 +10,14 @@ export type AccessLogOptions = {
 	 * @default true
 	 */
 	redactQuery?: boolean;
+	/** More attributes for each request line, such as the app's user ID. */
+	attributes?: (context: Context<AppServerEnv>) => Readonly<Record<string, unknown>>;
+	/**
+	 * Set `Server-Timing: app;dur=<ms>` on each HTML document: the time until
+	 * the response headers were ready. The browser's DevTools show it.
+	 * @default false
+	 */
+	serverTiming?: boolean;
 };
 
 /**
@@ -45,14 +54,34 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
  * // {"level":"info","message":"request","http.status_code":200,"network.bytes_written":5120,"duration":1830000,...}
  */
-export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin {
+export function accessLog({
+	redactQuery = true,
+	attributes,
+	serverTiming = false,
+}: AccessLogOptions = {}): Plugin {
 	return {
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
 			await next();
+			if (
+				serverTiming &&
+				(context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false)
+			) {
+				const duration = (performance.now() - started).toFixed(1);
+				context.header("Server-Timing", `app;dur=${duration}`, { append: true });
+			}
+			// Why a catch: a log line must never change the response or stop its stream.
 			const write = ({ bytes, aborted }: { bytes: number; aborted: boolean }) => {
-				context.var.logger.info("request", lineAttributes(context, { bytes, aborted, started }));
+				const line = lineAttributes(context, { bytes, aborted, started });
+				try {
+					context.var.logger.info("request", { ...line, ...attributes?.(context) });
+				} catch (error) {
+					context.var.logger.error("access log attributes failed", {
+						...line,
+						...errorAttributes(error),
+					});
+				}
 			};
 			const response = context.res;
 			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
@@ -88,8 +117,11 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 					controller.enqueue(value);
 				},
 				async cancel(reason) {
-					write({ bytes, aborted: true });
-					await reader.cancel(reason);
+					try {
+						write({ bytes, aborted: true });
+					} finally {
+						await reader.cancel(reason);
+					}
 				},
 			});
 			context.res = new Response(counted, response);
@@ -105,7 +137,7 @@ export function accessLog({ redactQuery = true }: AccessLogOptions = {}): Plugin
 			"http.status_code": context.res.status,
 			"http.useragent": context.req.header("User-Agent"),
 			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
-			"network.client.ip": context.env.remoteAddress,
+			"network.client.ip": context.var.clientAddress,
 			"network.bytes_written": bytes,
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),

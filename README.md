@@ -113,26 +113,35 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
 3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
-4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
-5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-7. `prerendered({ headers, rewrite })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to the framework.
+4. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
+5. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 MiB by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
+6. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, and an auth check go here.
+7. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
+8. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
+9. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
+10. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+11. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
+
+A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
 ```ts
+import { withHeaderHook } from "@ngrok/app-server";
 import type { Plugin } from "@ngrok/app-server";
 
-const securityHeaders: Plugin = {
-	name: "security-headers",
-	middleware: async (c, next) => {
-		await next();
-		c.header("X-Frame-Options", "DENY"); // `c.header` also works on a response with immutable headers
-	},
+const frameOptions: Plugin = {
+	name: "frame-options",
+	middleware: async (c, next) =>
+		withHeaderHook(c, next, (response) => {
+			response.set("X-Frame-Options", "DENY");
+		}),
 	setup: (info) => {}, // once, before the first request; a throw stops startup
 	onShutdown: async () => {}, // at shutdown, while the listeners drain, up to the deadline
 };
 ```
+
+A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, and `append` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -140,12 +149,112 @@ A plugin that changes a response with a value it reads at run time, as `runtimeE
 const version: Plugin = {
 	name: "version",
 	etagPart: () => process.env.APP_VERSION,
-	middleware: async (c, next) => {
-		await next();
-		c.header("X-App-Version", process.env.APP_VERSION);
-	},
+	middleware: async (c, next) =>
+		withHeaderHook(c, next, (response) => {
+			response.set("X-App-Version", process.env.APP_VERSION ?? "dev");
+		}),
 };
 ```
+
+## Protect pages
+
+`prerendered()` answers before the app's own routes and before the framework. So an auth check in a loader or in a `server.ts` route never runs for a prerendered file. A prerendered app shell at `/app` goes to a visitor with no session.
+
+Use one of these two fixes:
+
+- Put the auth check in `beforeStatic`. It then runs before each prerendered file and its data file.
+- Send the private paths to the framework with `prerendered({ skip })`, and keep the auth check in the app.
+
+An auth plugin sets `Cache-Control: private` on each response that it lets through. Else a CDN can give a protected file to every visitor.
+
+```ts
+import { createServer, defaultPlugins, withHeaderHook } from "@ngrok/app-server";
+import type { Plugin } from "@ngrok/app-server";
+
+const auth: Plugin = {
+	name: "auth",
+	middleware: async (c, next) => {
+		if (!c.req.path.startsWith("/app")) {
+			return next();
+		}
+		if (!(await hasSession(c.req.raw))) {
+			return c.redirect("/login", 302);
+		}
+		await withHeaderHook(c, next, (response) => {
+			response.set("Cache-Control", "private, no-cache");
+		});
+	},
+};
+
+export default createServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) });
+```
+
+`hasSession` stands for the app's own session check.
+
+## Security headers
+
+`defaultPlugins()` runs `securityHeaders()`. It sets these headers on each response, prerendered pages included:
+
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
+
+A response that has one of these headers keeps its own value. `false` turns a header off, and `defaultPlugins({ securityHeaders: false })` turns them all off.
+
+```ts
+defaultPlugins({
+	securityHeaders: {
+		headers: {
+			"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+			"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+			"Content-Security-Policy": "frame-ancestors 'none'",
+		},
+	},
+});
+```
+
+- `Cross-Origin-Opener-Policy: same-origin` breaks a pop-up that talks to the page through `window.opener`, such as some OAuth and payment pop-ups. Set `same-origin-allow-popups` for such a site.
+- A browser keeps `Strict-Transport-Security` for its `max-age`. Add `includeSubDomains` only when each subdomain serves HTTPS. Behind a proxy that ends TLS, set `trustForwardedProto`, else the server sees an HTTP request and sends no HSTS.
+- `Content-Security-Policy` has no default, so another site can put the page in a frame. Set `frame-ancestors 'none'` to stop that. The plugin adds the value as a second policy, next to the response's own policy, and a browser enforces both.
+
+### A CSP nonce for each request
+
+`cspNonce({ policy })` makes a random nonce for each request that reaches the app's routes or the framework. It sets the `Content-Security-Policy` from `policy` on each HTML document that has none. Put it after the static stages. A prerendered page has one nonce in its file for every visitor, so it uses script hashes instead. See [Prerendered headers](#prerendered-headers).
+
+```ts
+createServer({
+	plugins: [
+		...defaultPlugins(),
+		cspNonce({
+			policy: (nonce) =>
+				`script-src 'nonce-${nonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
+		}),
+	],
+});
+```
+
+Give the nonce to the framework's render. `requestContext()?.cspNonce` has it. In React Router, do it in `app/entry.server.tsx`:
+
+```tsx
+const nonce = requestContext()?.cspNonce;
+const { pipe } = renderToPipeableStream(
+	<ServerRouter context={routerContext} url={request.url} nonce={nonce} />,
+	{ nonce /* , … */ },
+);
+```
+
+In TanStack Start, give it to the router:
+
+```ts
+export function getRouter() {
+	return createRouter({ routeTree, ssr: { nonce: requestContext()?.cspNonce } });
+}
+```
+
+## Deploys and open tabs
+
+After a deploy, an open tab still runs the old build. When the visitor goes to a new route, the browser asks for an old chunk, such as `/assets/route-3f9a1c.js`. The new server does not have it, so the navigation fails. Keep the old `/assets/*` files at the CDN or in the image for 7 days after a deploy. Then the old tab keeps working. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404. `buildId()` sends the deployed build on each document and data response. The app's client code can compare it with its own build, and load the next page as a document after a change.
 
 ## Trailing slashes
 
@@ -191,6 +300,34 @@ createServer({
 ```
 
 `"never" satisfies RouterTrailingSlash` fails to type-check here. With no registered router, `RouterTrailingSlash` allows each mode. The server mode wins for each page, because the server redirects first. The router's 307 is temporary, and its `Location` uses the request's host, so a proxy's internal host can leak into it.
+
+## Redirects
+
+A site that moves pages sends a permanent redirect from each old URL. `defaultPlugins({ redirects })` takes a table:
+
+```ts
+defaultPlugins({
+	redirects: [
+		{ from: "/pricing-old", to: "/pricing" },
+		{ from: "/blog/:slug", to: "/articles/:slug" },
+		{ from: "/docs/*", to: "https://docs.example.com/*", status: 308 },
+	],
+});
+```
+
+- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path, or nothing, so `/docs/*` also matches `/docs`. The target can use each of them. An absolute target is percent-encoded as UTF-8. In the query of the target, a value gets `&`, `=`, and `+` encoded, so it stays one value.
+- The status is 301 by default, or 308 to keep the method. The redirect keeps the query string, and puts it before the fragment of the target. It applies to GET and HEAD only.
+- The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`. In the `never` mode, a local target loses its trailing slash, so `trailingSlash` does not redirect it again.
+- The rules compile at startup. A rule that is not valid stops startup. A local target must be a safe local path, and an absolute target must keep the origin that its rule names. A request whose values break either check gets no redirect.
+- A request that is already at the target of its rule gets no redirect, so `{ from: "/tags/:tag", to: "/tags/:tag/" }` with `trailingSlash: "always"` does not loop.
+
+### Preview deploys
+
+`noindex()` sets `X-Robots-Tag: noindex, nofollow` on each response, so a search engine does not index a preview deploy. Turn it on from the environment:
+
+```ts
+defaultPlugins({ beforeStatic: process.env.PREVIEW === "1" ? [noindex()] : [] });
+```
 
 ## Content negotiation
 
@@ -302,6 +439,42 @@ export async function loader({ context }: Route.LoaderArgs) {
 }
 ```
 
+A request with a valid W3C `traceparent` header logs `trace_id` and `span_id` on each line. `requestId({ datadogTraceIds: true })` also logs `dd.trace_id` and `dd.span_id`, the lower 64 bits in decimal, so Datadog connects each line to its trace.
+
+`accessLog({ attributes })` adds the app's own attributes to each request line. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
+
+```ts
+defaultPlugins({
+	requestId: { datadogTraceIds: true },
+	accessLog: { attributes: (c) => ({ "usr.id": c.get("userId") }) },
+});
+```
+
+## Health checks
+
+`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. When the check starts to fail, one warn line goes to the log, and when it passes again, one info line. A stop signal during the check also gives 503. Put the plugin first, so a probe skips the access log:
+
+```ts
+export default createServer({
+	plugins: [health({ ready: async () => db.ping() }), ...defaultPlugins()],
+	shutdownDelayMs: 5_000,
+});
+```
+
+On a stop signal, a load balancer removes the server some seconds later. Without a delay, the requests that it sends in that time fail. With `shutdownDelayMs`, the server answers 503 on `/readyz` and serves the other requests for that time. Then it drains. In Kubernetes, set `terminationGracePeriodSeconds` to more than the delay plus `shutdownDeadlineMs`:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 20 # 5 s delay + 10 s drain + margin
+  containers:
+    - name: app
+      readinessProbe:
+        httpGet: { path: /readyz, port: 3000 }
+        periodSeconds: 2
+      livenessProbe:
+        httpGet: { path: /livez, port: 3000 }
+```
+
 ## Environment
 
 `runtimeEnv(schema)` validates the environment once, at startup, with any [Standard Schema](https://standardschema.dev) (zod, valibot, arktype). A bad value stops the server with a message that names it.
@@ -348,7 +521,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206.
 
 ## Options
 
@@ -358,11 +531,14 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `logger`: default `jsonSink()`.
 - `listeners`: default the host's listeners. A listener decides how connections arrive. On the node host, the default is `[tcp()]` from `@ngrok/app-server/node`. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
 - `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
-- `shutdownDeadlineMs`: default `10000`.
+- `trustedProxyHops`: how many proxies in front of the server add to `X-Forwarded-For`, such as `1` behind the ngrok edge. With N, the client address is the Nth address from the right of that header. The access log and `requestContext()?.clientAddress` use it. Default `0`, the address of the socket. Set it only to the number of proxies that you run, else a client can spoof its address. For a build with no `server.ts`, set `TRUSTED_PROXY_HOPS`.
+- `shutdownDelayMs`: how long the listeners serve on after a stop signal, before the drain starts. See [Health checks](#health-checks). Default `0`.
+- `shutdownDeadlineMs`: how long open requests get to finish after the drain starts. Default `10000`.
 
 ## Limits
 
 - The build must serve at `/` (Vite `base`). The Vite plugin fails the build for another base.
 - `appServer` does not support React Router `serverBundles`.
+- One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
 - The package has one host adapter, `node`. A serverless host, such as Cloudflare Workers or Vercel, needs its own adapter. See `HostRuntime` and `HostBuild`.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.

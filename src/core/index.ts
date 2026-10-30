@@ -13,6 +13,10 @@ export {
 } from "./event-stream.js";
 export {
 	//,
+	withHeaderHook,
+} from "./header-hook.js";
+export {
+	//,
 	jsonSink,
 } from "./log.js";
 export {
@@ -21,8 +25,28 @@ export {
 } from "./plugins/access-log.js";
 export {
 	//,
+	bodyLimit,
+} from "./plugins/body-limit.js";
+export {
+	//,
 	buildId,
 } from "./plugins/build-id.js";
+export {
+	//,
+	health,
+} from "./plugins/health.js";
+export {
+	//,
+	noindex,
+} from "./plugins/noindex.js";
+export {
+	//,
+	privateDocuments,
+} from "./plugins/private-documents.js";
+export {
+	//,
+	redirects,
+} from "./plugins/redirects.js";
 export {
 	//,
 	requestId,
@@ -32,6 +56,11 @@ export {
 	PUBLIC_ENV_SCRIPT_ID,
 	runtimeEnv,
 } from "./plugins/runtime-env.js";
+export {
+	//,
+	cspNonce,
+	securityHeaders,
+} from "./plugins/security-headers.js";
 export {
 	//,
 	assets,
@@ -82,8 +111,20 @@ export type {
 } from "./plugins/access-log.js";
 export type {
 	//,
+	BodyLimitOptions,
+} from "./plugins/body-limit.js";
+export type {
+	//,
 	BuildIdOptions,
 } from "./plugins/build-id.js";
+export type {
+	//,
+	HealthOptions,
+} from "./plugins/health.js";
+export type {
+	//,
+	RedirectRule,
+} from "./plugins/redirects.js";
 export type {
 	//,
 	RequestIdOptions,
@@ -97,6 +138,12 @@ export type {
 } from "./plugins/runtime-env.js";
 export type {
 	//,
+	CspNonceOptions,
+	SecurityHeadersOptions,
+	SecurityHeaderValues,
+} from "./plugins/security-headers.js";
+export type {
+	//,
 	PrerenderedOptions,
 } from "./plugins/static.js";
 export type {
@@ -107,10 +154,12 @@ export type {
 export type {
 	//,
 	AppServerEnv,
+	ByteRange,
 	FetchHandler,
 	FileInfo,
 	FrameworkRuntime,
 	FrameworkRuntimeFactory,
+	HeaderHook,
 	HostRuntime,
 	Lifecycle,
 	Listener,
@@ -122,6 +171,7 @@ export type {
 	RequestContext,
 	RequestLogger,
 	RequestStore,
+	ResponseHeaders,
 	ServerBindings,
 	SetupInfo,
 	StartedListener,

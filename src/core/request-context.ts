@@ -7,6 +7,16 @@ import type { AppServerEnv, RequestContext, RequestStore } from "./types.js";
  */
 const stores = new Set<RequestStore>();
 
+/** The {@link RequestContext} values of a request. */
+export function requestContextValues(context: Context<AppServerEnv>): RequestContext {
+	return {
+		requestId: context.get("requestId"),
+		logger: context.var.logger,
+		cspNonce: context.get("cspNonce"),
+		clientAddress: context.get("clientAddress"),
+	};
+}
+
 /** Runs `work` in `store` with `context` as the request that {@link requestContext} reads. */
 export async function withRequestContext(
 	store: RequestStore | undefined,
@@ -21,7 +31,7 @@ export async function withRequestContext(
 }
 
 /**
- * The request ID and logger of the request that runs. It gives `undefined`
+ * The request ID, logger, and CSP nonce of the request that runs. It gives `undefined`
  * outside a server request, such as in a prerender pass, or on a host with no
  * request storage.
  *
@@ -34,7 +44,7 @@ export function requestContext(): RequestContext | undefined {
 	for (const store of stores) {
 		const context = store.get();
 		if (context != null) {
-			return { requestId: context.get("requestId"), logger: context.var.logger };
+			return requestContextValues(context);
 		}
 	}
 	return undefined;
