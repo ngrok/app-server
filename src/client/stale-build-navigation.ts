@@ -26,6 +26,8 @@ export type RouterFetchContext = {
 	type: string;
 	/** `"PUSH"`, `"REPLACE"`, or `"POP"` for a navigation. */
 	navigationType?: string | null;
+	/** The fetcher that sends the request, also in a navigation that revalidates it. */
+	fetcherKey?: string | null;
 };
 
 /** The location in a TanStack Router event. */
@@ -98,7 +100,7 @@ async function loadDocument(
 	{
 		response,
 		navigationType,
-	}: { response?: Response | undefined; navigationType?: string | null } = {},
+	}: { response?: Response | undefined; navigationType?: string | null | undefined } = {},
 ): Promise<Response> {
 	// Why no wait: the cancel of a cloned body waits for the other branch.
 	response?.body?.cancel().catch(() => undefined);
@@ -134,7 +136,10 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
 	const observer =
 		typeof PerformanceObserver === "function"
 			? new PerformanceObserver((list) => {
-					see(timingBuild(list.getEntries()));
+					// Why each entry: one delivery can hold the old build first and the new build after it.
+					for (const entry of list.getEntries()) {
+						see(timingBuild([entry]));
+					}
 				})
 			: undefined;
 	observer?.observe({ type: "resource", buffered: true });
@@ -163,8 +168,10 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
  *   the browser loads the target URL as a document.
  * - When the tab already knows of a new build, a navigation loads its target
  *   as a document and sends no data request.
- * - A revalidation, a fetcher, and an action get their response. They only
- *   mark the tab, so the page that the visitor reads never reloads.
+ * - A revalidation, a fetcher, an action, and the loaders after an action
+ *   get their response. They only mark the tab, so the page that the visitor
+ *   reads never reloads.
+ * - A canceled navigation never loads its target.
  * - The router's blockers run before the router sends a request, so they can
  *   still cancel a navigation.
  *
@@ -181,16 +188,31 @@ export function staleBuildFetch(
 	options: StaleBuildOptions = {},
 ): (request: Request, context: RouterFetchContext) => Promise<Response> {
 	const watch = watchBuild(options);
+	// Why: the router sends the loaders after an action with the signal of the action, and those
+	// loaders revalidate the page that the visitor reads.
+	const actions = new WeakSet<AbortSignal>();
 	return async (request, context) => {
-		const navigationType = context.type === "navigation" ? context.navigationType : undefined;
-		const isNavigation = watch != null && navigationType != null && request.method === "GET";
-		if (isNavigation && watch.isStale()) {
+		const navigationType =
+			context.type === "navigation" && context.fetcherKey == null
+				? context.navigationType
+				: undefined;
+		if (navigationType != null && request.method !== "GET") {
+			actions.add(request.signal);
+		}
+		// Why check the signal: a canceled navigation must never load its target.
+		const isNavigation = () =>
+			watch != null &&
+			navigationType != null &&
+			request.method === "GET" &&
+			!actions.has(request.signal) &&
+			!request.signal.aborted;
+		if (isNavigation() && watch?.isStale() === true) {
 			return loadDocument(targetOf(request), { navigationType });
 		}
 		// Why the global at each call: an app can wrap `fetch` after this module, such as for RUM.
 		const response = await globalThis.fetch(request);
 		const isNew = watch?.isNew(response, request.url) === true;
-		if (!isNavigation || !isNew) {
+		if (!isNew || !isNavigation()) {
 			return response;
 		}
 		return loadDocument(targetOf(request), { response, navigationType });
@@ -248,6 +270,8 @@ export function staleBuildNavigation(
 	};
 	const unsubscribe = [
 		router.subscribe("onBeforeNavigate", ({ fromLocation, toLocation }) => {
+			// Why clear first: a change to the fragment replaces a navigation that has not ended.
+			navigation = undefined;
 			if (fromLocation == null || eventPage(fromLocation) === eventPage(toLocation)) {
 				return;
 			}

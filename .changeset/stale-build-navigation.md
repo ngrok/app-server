@@ -9,7 +9,7 @@ Add `staleBuildFetch()` and `staleBuildNavigation()` from the new `@ngrok/app-se
 - The router tells the module when a navigation starts, after its blockers. A canceled link, `navigate()`, a form, and a history step each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never renders the new data.
 - If the tab already knows of a new build, the next navigation loads its target as a document.
-- A revalidation, a fetcher, an action, and a request outside a navigation get their response, and only mark the tab.
+- A revalidation, a fetcher, an action, the loaders after an action, and a request outside a navigation get their response, and only mark the tab.
 - A build in a response from another origin does not count, also after a redirect.
 - A prefetch, such as a `<Link prefetch="intent">` hover, can show the new build before the click.
 - `onNewBuild(served)` runs once when the tab first sees another build, for the app's RUM tool.

@@ -67,15 +67,15 @@ function fakeObserver() {
 			};
 		}),
 	);
-	const report = (name: string, build: string, { redirected = false } = {}) => {
-		const entry = {
+	const report = (name: string, builds: string | string[], { redirected = false } = {}) => {
+		const entries = [builds].flat().map((build) => ({
 			name,
 			entryType: "resource",
 			redirectStart: redirected ? 1 : 0,
 			serverTiming: [{ name: "build", description: build, duration: 0 }],
-		};
+		}));
 		observe?.(
-			{ getEntries: () => [entry] } as unknown as PerformanceObserverEntryList,
+			{ getEntries: () => entries } as unknown as PerformanceObserverEntryList,
 			{} as PerformanceObserver,
 		);
 	};
@@ -172,13 +172,57 @@ describe("staleBuildFetch", () => {
 		},
 	);
 
-	it("returns the response of an action from a new build, so the action result reaches the app", async () => {
+	it("returns the action and its loaders from a new build, so the form keeps its result", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
+		const { signal } = new AbortController();
+
+		const action = await routerFetch(
+			dataRequest("/settings.data", { method: "POST", signal }),
+			PUSH,
+		);
+		const loaders = await routerFetch(dataRequest("/settings.data", { signal }), PUSH);
+
+		expect(action.status).toBe(200);
+		expect(loaders.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("gives a fetcher that a navigation revalidates its response from a new build", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const routerFetch = staleBuildFetch({ build: "v1" });
 
-		const response = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
+		const response = await routerFetch(dataRequest("/notifications.data"), {
+			...PUSH,
+			fetcherKey: "notifications",
+		});
 
 		expect(response.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("never loads the target of a canceled navigation", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const send = fetch;
+		const answer = Promise.withResolvers<undefined>();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<typeof fetch>(async (input, init) => {
+				await answer.promise;
+				return send(input, init);
+			}),
+		);
+		const routerFetch = staleBuildFetch({ build: "v1" });
+		const navigation = new AbortController();
+		const slow = routerFetch(dataRequest("/settings.data", { signal: navigation.signal }), PUSH);
+
+		navigation.abort();
+		answer.resolve(undefined);
+		const late = await slow;
+		const canceled = routerFetch(dataRequest("/usage.data", { signal: navigation.signal }), PUSH);
+
+		expect(late.status).toBe(200);
+		await expect(canceled).resolves.toHaveProperty("status", 200);
 		expect(documentLoads).toStrictEqual([]);
 	});
 
@@ -221,14 +265,13 @@ describe("staleBuildFetch", () => {
 		expect(documentLoads).toStrictEqual([]);
 	});
 
-	it("finds a new build in a prefetch, also one before it started, and loads the next navigation", async () => {
+	it("finds a new build in any entry of a resource batch, and loads the next navigation", async () => {
 		const { requests, documentLoads } = page({ serverBuild: "v2" });
 		const { options, report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
 		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
 
-		report("http://localhost:3000/settings.data", "v2");
-		report("http://localhost:3000/usage.data", "v2");
+		report("http://localhost:3000/api/keys", ["v1", "v2"]);
 		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
 
 		expect(options).toStrictEqual([{ type: "resource", buffered: true }]);
@@ -436,6 +479,27 @@ describe("staleBuildNavigation", () => {
 			expect(slow).toHaveBeenCalledTimes(1);
 		});
 		await router.navigate({ to: "/usage" });
+		answer.resolve(await server("/_serverFn/settings"));
+		await settles(Promise.resolve());
+
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("never reloads for a navigation that a change to the fragment replaced", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		const answer = Promise.withResolvers<Response>();
+		const server = fetch;
+		const slow = vi.fn<typeof fetch>(async () => answer.promise);
+		vi.stubGlobal("fetch", slow);
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+
+		void router.navigate({ to: "/settings" });
+		await vi.waitFor(() => {
+			expect(slow).toHaveBeenCalledTimes(1);
+		});
+		void router.navigate({ to: "/dashboard", hash: "section" });
 		answer.resolve(await server("/_serverFn/settings"));
 		await settles(Promise.resolve());
 

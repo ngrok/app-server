@@ -300,10 +300,11 @@ defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION }
 - The router tells the module when a navigation starts, after its blockers. React Router marks the data request of a navigation. TanStack Router sends `onBeforeNavigate` and `onResolved`. So a canceled link, `navigate()`, a form, and a history step each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never gets the new data.
 - If the tab already knows of a new build, the next navigation loads its target as a document. React Router sends no data request for it. TanStack Router does this also for a page with no data request.
-- A revalidation, a fetcher, an action, and a request outside a navigation get their response, and only mark the tab. The page that the visitor reads never reloads.
+- A revalidation, a fetcher, an action, the loaders after an action, and a request outside a navigation get their response, and only mark the tab. The page that the visitor reads never reloads, and a form keeps its result.
 - A change to the fragment stays in the page.
 - `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
 - With React Router, a navigation to a route with no server loader sends no data request, so it stays on the old build. The next navigation that fetches data moves the tab.
+- With React Router, the document load has no URL fragment, because the router's data request has none. A link to `/settings#usage` loads `/settings`.
 - `unstable_fetch` is an experimental React Router prop, and React Router can change it.
 
 The module sees a build only in a response from this server. By default, that is a document, a data request of the router, or a route discovery request. An app that loads its data in the browser, such as with TanStack Query, sends few of those. Send its queries through proxy routes on this server, as the next section shows, and each query also carries the build. A request that goes to another service directly carries no build, and that service must stay compatible with old clients.
