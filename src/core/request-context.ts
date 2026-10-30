@@ -13,6 +13,7 @@ export function requestContextValues(context: Context<AppServerEnv>): RequestCon
 		requestId: context.get("requestId"),
 		logger: context.var.logger,
 		cspNonce: context.get("cspNonce"),
+		clientAddress: context.get("clientAddress"),
 	};
 }
 

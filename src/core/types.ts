@@ -25,6 +25,8 @@ export type RequestContext = {
 	logger: RequestLogger;
 	/** The nonce for the request's inline scripts, when the `cspNonce` plugin runs. */
 	cspNonce: string | undefined;
+	/** The client's IP address, from `X-Forwarded-For` when `trustedProxyHops` is set, else from the socket. */
+	clientAddress: string | undefined;
 };
 
 /** The server mode. */
@@ -140,6 +142,10 @@ export type AppServerEnv = {
 		logger: RequestLogger;
 		/** The nonce for the request's inline scripts, set by the `cspNonce` plugin. */
 		cspNonce?: string;
+		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
+		clientAddress?: string | undefined;
+		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
+		logAttributes?: Readonly<Record<string, unknown>>;
 		/**
 		 * The `etagPart` of each plugin that the request passed, in order. The
 		 * static stages add them to each file's ETag. The server sets this list.

@@ -33,7 +33,10 @@ export async function loadEntry(build: unknown): Promise<AppServerEntry> {
 		throw new Error("The server build entry is not a React Router server build.");
 	}
 	const entry = createEntry({
-		app: createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1" }),
+		app: createServer({
+			trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1",
+			trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0),
+		}),
 		host,
 		framework: (mode) => runtime(build, { mode }),
 	});

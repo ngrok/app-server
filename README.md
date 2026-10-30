@@ -396,6 +396,42 @@ export async function loader({ context }: Route.LoaderArgs) {
 }
 ```
 
+A request with a valid W3C `traceparent` header logs `trace_id` and `span_id` on each line. `requestId({ datadogTraceIds: true })` also logs `dd.trace_id` and `dd.span_id`, the lower 64 bits in decimal, so Datadog connects each line to its trace.
+
+`accessLog({ attributes })` adds the app's own attributes to each request line. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
+
+```ts
+defaultPlugins({
+	requestId: { datadogTraceIds: true },
+	accessLog: { attributes: (c) => ({ "usr.id": c.get("userId") }) },
+});
+```
+
+## Health checks
+
+`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. Put the plugin first, so a probe skips the access log:
+
+```ts
+export default createServer({
+	plugins: [health({ ready: async () => db.ping() }), ...defaultPlugins()],
+	shutdownDelayMs: 5_000,
+});
+```
+
+On a stop signal, a load balancer removes the server some seconds later. Without a delay, the requests that it sends in that time fail. With `shutdownDelayMs`, the server answers 503 on `/readyz` and serves the other requests for that time. Then it drains. In Kubernetes, set `terminationGracePeriodSeconds` to more than the delay plus `shutdownDeadlineMs`:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 20 # 5 s delay + 10 s drain + margin
+  containers:
+    - name: app
+      readinessProbe:
+        httpGet: { path: /readyz, port: 3000 }
+        periodSeconds: 2
+      livenessProbe:
+        httpGet: { path: /livez, port: 3000 }
+```
+
 ## Environment
 
 `runtimeEnv(schema)` validates the environment once, at startup, with any [Standard Schema](https://standardschema.dev) (zod, valibot, arktype). A bad value stops the server with a message that names it.
@@ -452,7 +488,9 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `logger`: default `jsonSink()`.
 - `listeners`: default the host's listeners. A listener decides how connections arrive. On the node host, the default is `[tcp()]` from `@ngrok/app-server/node`. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
 - `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
-- `shutdownDeadlineMs`: default `10000`.
+- `trustedProxyHops`: how many proxies in front of the server add to `X-Forwarded-For`, such as `1` behind the ngrok edge. With N, the client address is the Nth address from the right of that header. The access log and `requestContext()?.clientAddress` use it. Default `0`, the address of the socket. Set it only to the number of proxies that you run, else a client can spoof its address. For a build with no `server.ts`, set `TRUSTED_PROXY_HOPS`.
+- `shutdownDelayMs`: how long the listeners serve on after a stop signal, before the drain starts. See [Health checks](#health-checks). Default `0`.
+- `shutdownDeadlineMs`: how long open requests get to finish after the drain starts. Default `10000`.
 
 ## Limits
 

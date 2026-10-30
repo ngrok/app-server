@@ -12,7 +12,7 @@ import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { withRequestContext } from "./request-context.js";
-import { abortShutdownSignal, renewShutdownSignal } from "./shutdown.js";
+import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	FetchHandler,
@@ -35,7 +35,8 @@ export type RunningServer = {
 	/** The URL of each listener. */
 	urls: readonly string[];
 	/**
-	 * Aborts `shutdownSignal()`, then runs each plugin's `onShutdown` while the
+	 * Marks the server as not ready, and waits for the shutdown delay. Then it
+	 * aborts `shutdownSignal()` and runs each plugin's `onShutdown` while the
 	 * listeners stop and drain open requests. Both stop at the deadline.
 	 */
 	shutdown: () => Promise<void>;
@@ -129,11 +130,47 @@ export type CreateServerOptions = {
 	 */
 	trustForwardedProto?: boolean;
 	/**
-	 * How long open requests get to finish after a stop signal.
+	 * How many proxies in front of the server add the address they got a
+	 * request from to `X-Forwarded-For`. With N, the client address is the
+	 * Nth address from the right of that header. A header with fewer
+	 * addresses gives its leftmost address. Set it only to the number of
+	 * proxies that you run, else a client can spoof its address.
+	 * @default 0, the address of the socket
+	 */
+	trustedProxyHops?: number;
+	/**
+	 * How long the listeners serve on after a stop signal, before the drain
+	 * starts. During this time, the `health` plugin's readiness probe answers
+	 * 503, so a load balancer stops sending requests first. The drain deadline
+	 * starts after the delay.
+	 * @default 0
+	 */
+	shutdownDelayMs?: number;
+	/**
+	 * How long open requests get to finish after the drain starts.
 	 * @default 10000
 	 */
 	shutdownDeadlineMs?: number;
 };
+
+/**
+ * The client address in an `X-Forwarded-For` header, with `hops` trusted
+ * proxies, or `undefined` when the header has no address.
+ */
+function forwardedClient(header: string | undefined, hops: number): string | undefined {
+	const addresses = (header ?? "")
+		.split(",")
+		.map((address) => address.trim())
+		.filter((address) => address !== "");
+	return addresses[Math.max(0, addresses.length - hops)];
+}
+
+/** Throws for a value that is not an integer of 0 or more, so a bad option stops startup. */
+function checkCount(name: string, value: number): void {
+	if (!Number.isInteger(value) || value < 0) {
+		throw new Error(`${name} must be an integer of 0 or more, not ${value}.`);
+	}
+}
 
 /** The request with the scheme from `X-Forwarded-Proto`, when that header holds one. */
 function withForwardedProto(request: Request): Request {
@@ -189,8 +226,12 @@ export function createServer({
 	logger = jsonSink(),
 	listeners,
 	trustForwardedProto = false,
+	trustedProxyHops = 0,
+	shutdownDelayMs = 0,
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
+	checkCount("trustedProxyHops", trustedProxyHops);
+	checkCount("shutdownDelayMs", shutdownDelayMs);
 	const app = new Hono<AppServerEnv>();
 	let requestStore: RequestStore | undefined;
 	if (trustForwardedProto) {
@@ -200,6 +241,14 @@ export function createServer({
 	}
 	app.use(async (context, next) => {
 		context.set("logger", requestLogger(logger, context));
+		const remoteAddress = context.env?.remoteAddress;
+		context.set(
+			"clientAddress",
+			trustedProxyHops === 0
+				? remoteAddress
+				: (forwardedClient(context.req.header("X-Forwarded-For"), trustedProxyHops) ??
+						remoteAddress),
+		);
 		await withRequestContext(requestStore, context, next);
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
@@ -281,6 +330,15 @@ export function createServer({
 				urls,
 				shutdown: async () => {
 					stopping ??= (async () => {
+						markStopping();
+						if (shutdownDelayMs > 0) {
+							logger.log("info", "waiting before the drain", {
+								"app_server.delay_ms": shutdownDelayMs,
+							});
+							await new Promise((resolve) => {
+								setTimeout(resolve, shutdownDelayMs);
+							});
+						}
 						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
 						abortShutdownSignal();
 						const deadline = setTimeout(() => {

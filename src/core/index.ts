@@ -29,6 +29,10 @@ export {
 } from "./plugins/build-id.js";
 export {
 	//,
+	health,
+} from "./plugins/health.js";
+export {
+	//,
 	privateDocuments,
 } from "./plugins/private-documents.js";
 export {
@@ -101,6 +105,10 @@ export type {
 	//,
 	BuildIdOptions,
 } from "./plugins/build-id.js";
+export type {
+	//,
+	HealthOptions,
+} from "./plugins/health.js";
 export type {
 	//,
 	RequestIdOptions,

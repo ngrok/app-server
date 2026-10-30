@@ -139,6 +139,28 @@ describe("createServer", () => {
 		expect(prerendered.headers.get("Cache-Control")).not.toBe("private, no-cache");
 	});
 
+	it("logs the client address from X-Forwarded-For with trustedProxyHops", async () => {
+		const logged = async (trustedProxyHops: number, forwardedFor: string) => {
+			const { request, lines } = await testServer({
+				plugins: [accessLog()],
+				options: { trustedProxyHops },
+			});
+			await (await request("/", { headers: { "X-Forwarded-For": forwardedFor } })).text();
+			return lines[0]?.attributes["network.client.ip"];
+		};
+
+		await expect(logged(1, "1.1.1.1, 2.2.2.2")).resolves.toBe("2.2.2.2");
+		await expect(logged(2, "1.1.1.1, 2.2.2.2")).resolves.toBe("1.1.1.1");
+		await expect(logged(3, "1.1.1.1, 2.2.2.2")).resolves.toBe("1.1.1.1");
+		await expect(logged(0, "1.1.1.1, 2.2.2.2")).resolves.toBeUndefined();
+	});
+
+	it("stops startup for a trustedProxyHops that is not a count", () => {
+		expect(() => createServer({ trustedProxyHops: Number.NaN })).toThrow(
+			"trustedProxyHops must be an integer of 0 or more, not NaN.",
+		);
+	});
+
 	it("logs an unhandled error and answers 500", async () => {
 		const { request, lines } = await testServer({
 			plugins: [],

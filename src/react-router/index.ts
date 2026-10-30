@@ -22,6 +22,7 @@ export const appServerContext = createContext<AppServerContext>({
 	requestId: undefined,
 	logger: sinkLogger(jsonSink()),
 	cspNonce: undefined,
+	clientAddress: undefined,
 });
 
 /**

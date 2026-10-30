@@ -88,6 +88,18 @@ describe("accessLog", () => {
 		expect(lines[0]?.attributes["network.bytes_written"]).toBe(0);
 	});
 
+	it("adds the app's attributes to the line, and Server-Timing to a document when asked", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog({ attributes: () => ({ "usr.id": "user-1" }), serverTiming: true })],
+		});
+
+		const response = await request("/");
+		await response.text();
+
+		expect(lines[0]?.attributes).toMatchObject({ "usr.id": "user-1" });
+		expect(response.headers.get("Server-Timing")).toMatch(/^app;dur=\d+\.\d$/u);
+	});
+
 	it("redacts the query of the Referer", async () => {
 		const { request, lines } = await testServer({ plugins: [accessLog()] });
 
