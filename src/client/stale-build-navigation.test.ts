@@ -140,15 +140,15 @@ describe("staleBuildFetch", () => {
 	it("reloads the document for a history step, because the browser already moved history", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const routerFetch = staleBuildFetch({ build: "v1" });
-		history.replaceState(null, "", "/settings#usage");
+		history.replaceState(null, "", "/settings?q=a%20b#usage");
 
-		const data = routerFetch(dataRequest("/settings.data"), {
+		const data = routerFetch(dataRequest("/settings.data?q=a%20b"), {
 			type: "navigation",
 			navigationType: "POP",
 		});
 
 		await expect(settles(data)).resolves.toBe(false);
-		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings#usage"]);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings?q=a%20b#usage"]);
 	});
 
 	it.each(["revalidation", "fetcher", "initialization"])(
@@ -175,17 +175,40 @@ describe("staleBuildFetch", () => {
 	it("returns the action and its loaders from a new build, so the form keeps its result", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const routerFetch = staleBuildFetch({ build: "v1" });
-		const { signal } = new AbortController();
 
-		const action = await routerFetch(
-			dataRequest("/settings.data", { method: "POST", signal }),
-			PUSH,
-		);
-		const loaders = await routerFetch(dataRequest("/settings.data", { signal }), PUSH);
+		// Why two signals: a browser gives each `Request` its own signal.
+		const action = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
+		const loaders = await routerFetch(dataRequest("/settings.data?_routes=root"), PUSH);
+		const next = routerFetch(dataRequest("/usage.data"), PUSH);
 
 		expect(action.status).toBe(200);
 		expect(loaders.status).toBe(200);
-		expect(documentLoads).toStrictEqual([]);
+		await expect(settles(next)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
+	});
+
+	it("loads the document once for parallel requests of a navigation, and again after the router cancels it", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
+		const first = new AbortController();
+
+		const root = routerFetch(
+			dataRequest("/settings.data?_routes=root", { signal: first.signal }),
+			PUSH,
+		);
+		const child = routerFetch(
+			dataRequest("/settings.data?_routes=routes/settings", { signal: first.signal }),
+			PUSH,
+		);
+		await settles(Promise.all([root, child]));
+		first.abort();
+		const again = routerFetch(dataRequest("/settings.data"), PUSH);
+
+		await expect(settles(again)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual([
+			"http://localhost:3000/settings",
+			"http://localhost:3000/settings",
+		]);
 	});
 
 	it("gives a fetcher that a navigation revalidates its response from a new build", async () => {
@@ -483,6 +506,30 @@ describe("staleBuildNavigation", () => {
 		await settles(Promise.resolve());
 
 		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("reloads when a navigation takes the pending loader of a preload, and the old code never gets it", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		const answer = Promise.withResolvers<Response>();
+		const server = fetch;
+		const slow = vi.fn<typeof fetch>(async () => answer.promise);
+		vi.stubGlobal("fetch", slow);
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+
+		// Why the cast: the test router has no registered route types.
+		void router.preloadRoute({ to: "/settings" } as Parameters<typeof router.preloadRoute>[0]);
+		await vi.waitFor(() => {
+			expect(slow).toHaveBeenCalledTimes(1);
+		});
+		const navigation = router.navigate({ to: "/settings" });
+		answer.resolve(await server("/_serverFn/settings"));
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(slow).toHaveBeenCalledTimes(1);
+		expect(loaded).toStrictEqual(["/dashboard"]);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
 	});
 
 	it("never reloads for a navigation that a change to the fragment replaced", async () => {

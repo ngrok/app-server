@@ -105,8 +105,8 @@ async function loadDocument(
 	// Why no wait: the cancel of a cloned body waits for the other branch.
 	response?.body?.cancel().catch(() => undefined);
 	// Why reload on this page: the router can move history first, and `assign` to the same page
-	// with a fragment scrolls with no document load.
-	if (pageOf(target) === pageOf(location.href)) {
+	// with a fragment scrolls with no document load. A history step already moved history.
+	if (navigationType === "POP" || pageOf(target) === pageOf(location.href)) {
 		location.reload();
 	} else if (navigationType === "REPLACE") {
 		location.replace(target);
@@ -114,6 +114,14 @@ async function loadDocument(
 		location.assign(target);
 	}
 	return new Promise<Response>(() => {});
+}
+
+/**
+ * Runs `clear` when `signal` aborts. Why: the router aborts a navigation when a
+ * newer one starts, such as after the visitor stays on the page at a leave prompt.
+ */
+function onAbort(signal: AbortSignal, clear: () => void): void {
+	signal.addEventListener("abort", clear, { once: true });
 }
 
 /** Reads the build of each response, and tells when the server runs a new build. */
@@ -188,34 +196,56 @@ export function staleBuildFetch(
 	options: StaleBuildOptions = {},
 ): (request: Request, context: RouterFetchContext) => Promise<Response> {
 	const watch = watchBuild(options);
-	// Why: the router sends the loaders after an action with the signal of the action, and those
-	// loaders revalidate the page that the visitor reads.
-	const actions = new WeakSet<AbortSignal>();
+	/** The path of the last action. The router revalidates the page with the loaders after it. */
+	let action: string | undefined;
+	/** The target that the tab loads as a document now. */
+	let leaving: string | undefined;
 	return async (request, context) => {
 		const navigationType =
 			context.type === "navigation" && context.fetcherKey == null
 				? context.navigationType
 				: undefined;
-		if (navigationType != null && request.method !== "GET") {
-			actions.add(request.signal);
+		// Why the global at each call: an app can wrap `fetch` after this module, such as for RUM.
+		const send = async () => {
+			const response = await globalThis.fetch(request);
+			return { response, isNew: watch?.isNew(response, request.url) === true };
+		};
+		if (watch == null || navigationType == null) {
+			return (await send()).response;
 		}
+		const target = targetOf(request);
+		const path = new URL(target).pathname;
+		const load = async (response?: Response) => {
+			if (leaving === target) {
+				void response?.body?.cancel().catch(() => undefined);
+				return new Promise<Response>(() => {});
+			}
+			leaving = target;
+			onAbort(request.signal, () => {
+				if (leaving === target) {
+					leaving = undefined;
+				}
+			});
+			return loadDocument(target, { response, navigationType });
+		};
+		const isAfterAction = action === path;
+		action = request.method === "GET" ? undefined : path;
+		onAbort(request.signal, () => {
+			if (action === path) {
+				action = undefined;
+			}
+		});
 		// Why check the signal: a canceled navigation must never load its target.
 		const isNavigation = () =>
-			watch != null &&
-			navigationType != null &&
-			request.method === "GET" &&
-			!actions.has(request.signal) &&
-			!request.signal.aborted;
-		if (isNavigation() && watch?.isStale() === true) {
-			return loadDocument(targetOf(request), { navigationType });
+			request.method === "GET" && !isAfterAction && !request.signal.aborted;
+		if (isNavigation() && watch.isStale()) {
+			return load();
 		}
-		// Why the global at each call: an app can wrap `fetch` after this module, such as for RUM.
-		const response = await globalThis.fetch(request);
-		const isNew = watch?.isNew(response, request.url) === true;
+		const { response, isNew } = await send();
 		if (!isNew || !isNavigation()) {
 			return response;
 		}
-		return loadDocument(targetOf(request), { response, navigationType });
+		return load(response);
 	};
 }
 
@@ -226,9 +256,9 @@ export function staleBuildFetch(
  *
  * - A navigation runs from `onBeforeNavigate` to `onResolved`. The router
  *   moves history and runs its blockers before it.
- * - When a data request of a navigation, such as a server function in a
- *   loader, gets a response from a new build, the browser loads the page as
- *   a document.
+ * - When a GET response from a new build comes back while a navigation
+ *   runs, such as from a server function in a loader, the browser loads the
+ *   page as a document.
  * - When the tab already knows of a new build, a navigation to a new path or
  *   query loads the page as a document.
  * - A request outside a navigation gets its response, and only marks the tab.
@@ -286,18 +316,17 @@ export function staleBuildNavigation(
 	];
 	const send = globalThis.fetch;
 	globalThis.fetch = async (input, init) => {
-		// Why at the start: a slow data request still belongs to the navigation that started it.
-		const claimed = methodOf(input, init) === "GET" ? navigation : undefined;
-		if (claimed != null && watch.isStale()) {
-			return reload(claimed);
+		const isGet = methodOf(input, init) === "GET";
+		if (isGet && navigation != null && watch.isStale()) {
+			return reload(navigation);
 		}
 		const response = await send.call(globalThis, input, init);
-		// Why the current navigation only: the router drops the data of a navigation that a newer
-		// one replaced.
-		if (!watch.isNew(response, urlOf(input)) || claimed == null || claimed !== navigation) {
+		// Why the navigation at the response: a navigation can take the pending loader of a preload,
+		// or of the navigation that it replaced.
+		if (!watch.isNew(response, urlOf(input)) || !isGet || navigation == null) {
 			return response;
 		}
-		return reload(claimed, response);
+		return reload(navigation, response);
 	};
 	return () => {
 		for (const stop of unsubscribe) {
