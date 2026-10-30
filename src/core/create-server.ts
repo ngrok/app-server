@@ -6,6 +6,8 @@ import { bodyLimit } from "./plugins/body-limit.js";
 import { privateDocuments } from "./plugins/private-documents.js";
 import { redirects } from "./plugins/redirects.js";
 import type { RedirectRule } from "./plugins/redirects.js";
+import { securityHeaders } from "./plugins/security-headers.js";
+import type { SecurityHeadersOptions } from "./plugins/security-headers.js";
 import { requestId } from "./plugins/request-id.js";
 import type { RequestIdOptions } from "./plugins/request-id.js";
 import { assets, prerendered } from "./plugins/static.js";
@@ -89,6 +91,11 @@ export type DefaultPluginsOptions = {
 	 */
 	bodyLimit?: number | false;
 	/**
+	 * The options of the security headers. `false` turns them off. See
+	 * {@link securityHeaders}.
+	 */
+	securityHeaders?: SecurityHeadersOptions | false;
+	/**
 	 * Plugins that go after compression and before the static stages, so they
 	 * see every response, prerendered pages included. `runtimeEnv` and
 	 * `buildId` go here.
@@ -98,10 +105,10 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `requestId`, `accessLog`,
- * `streamingCompress`, `bodyLimit`, the `beforeStatic` plugins, `assets`,
- * `redirects` (when the option has rules), `trailingSlash`, `prerendered`,
- * and `privateDocuments`. It is a plain array, so an app can filter it or
- * splice into it.
+ * `streamingCompress`, `bodyLimit`, `securityHeaders`, the `beforeStatic`
+ * plugins, `assets`, `redirects` (when the option has rules),
+ * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
+ * array, so an app can filter it or splice into it.
  *
  * @example
  * createServer({ plugins: defaultPlugins({ accessLog: { redactQuery: false }, beforeStatic: [env] }) });
@@ -113,6 +120,7 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		accessLog(options.accessLog),
 		streamingCompress(),
 		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
+		...(options.securityHeaders === false ? [] : [securityHeaders(options.securityHeaders)]),
 		...(options.beforeStatic ?? []),
 		assets(),
 		...(options.redirects == null || options.redirects.length === 0

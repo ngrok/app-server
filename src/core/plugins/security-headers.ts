@@ -5,19 +5,23 @@ export type SecurityHeaderValues = {
 	"X-Content-Type-Options"?: string | false;
 	"Referrer-Policy"?: string | false;
 	"Cross-Origin-Opener-Policy"?: string | false;
-	/** A policy that the plugin adds to each response, next to the app's own policy. */
-	"Content-Security-Policy"?: string | false;
 	/** Sent on an HTTPS request only. */
 	"Strict-Transport-Security"?: string | false;
+	/**
+	 * A policy that the plugin adds to each response, next to the app's own
+	 * policy. It has no default.
+	 */
+	"Content-Security-Policy"?: string | false;
 };
 
-const DEFAULT_SECURITY_HEADERS = {
+// Why no `includeSubDomains`: a browser keeps HSTS for a year, and on an apex domain it would force
+// HTTPS on each subdomain. An app adds it when it knows each subdomain serves HTTPS.
+const DEFAULT_SECURITY_HEADERS: SecurityHeaderValues = {
 	"X-Content-Type-Options": "nosniff",
 	"Referrer-Policy": "strict-origin-when-cross-origin",
 	"Cross-Origin-Opener-Policy": "same-origin",
-	"Content-Security-Policy": "frame-ancestors 'none'",
-	"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-} as const satisfies Required<SecurityHeaderValues>;
+	"Strict-Transport-Security": "max-age=31536000",
+};
 
 /** Options for {@link securityHeaders}. */
 export type SecurityHeadersOptions = {
@@ -31,23 +35,27 @@ export type SecurityHeadersOptions = {
  * - `X-Content-Type-Options: nosniff`
  * - `Referrer-Policy: strict-origin-when-cross-origin`
  * - `Cross-Origin-Opener-Policy: same-origin`
- * - `Content-Security-Policy: frame-ancestors 'none'`
- * - `Strict-Transport-Security: max-age=31536000; includeSubDomains`, on an
- *   HTTPS request only
+ * - `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
  *
  * A response that has a header keeps its own value. The exception is
- * `Content-Security-Policy`: the plugin adds its policy as a second policy,
- * and a browser enforces both. Put it in `beforeStatic`, so it also sees
- * prerendered pages.
+ * `Content-Security-Policy`, which has no default: the plugin adds a set
+ * value as a second policy, and a browser enforces both.
+ * `defaultPlugins()` puts it before the `beforeStatic` plugins, so it also
+ * sees prerendered pages.
  *
  * @example
  * defaultPlugins({
- * 	beforeStatic: [securityHeaders({ headers: { "Cross-Origin-Opener-Policy": "same-origin-allow-popups" } })],
+ * 	securityHeaders: {
+ * 		headers: {
+ * 			"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+ * 			"Content-Security-Policy": "frame-ancestors 'none'",
+ * 		},
+ * 	},
  * });
  */
 export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): Plugin {
 	const values = Object.entries({ ...DEFAULT_SECURITY_HEADERS, ...headers }).filter(
-		(entry): entry is [string, string] => entry[1] !== false,
+		(entry): entry is [string, string] => typeof entry[1] === "string",
 	);
 	return {
 		name: "security-headers",

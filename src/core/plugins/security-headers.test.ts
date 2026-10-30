@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
+import { defaultPlugins } from "../create-server.js";
 import { cspNonce, securityHeaders } from "./security-headers.js";
 
 describe("securityHeaders", () => {
@@ -19,12 +20,10 @@ describe("securityHeaders", () => {
 			"X-Content-Type-Options": "nosniff",
 			"Referrer-Policy": "strict-origin-when-cross-origin",
 			"Cross-Origin-Opener-Policy": "same-origin",
-			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Content-Security-Policy": null,
 		});
 		expect(http.headers.get("Strict-Transport-Security")).toBeNull();
-		expect(https.headers.get("Strict-Transport-Security")).toBe(
-			"max-age=31536000; includeSubDomains",
-		);
+		expect(https.headers.get("Strict-Transport-Security")).toBe("max-age=31536000");
 	});
 
 	it("replaces or turns off a default, and keeps a header that the response sets", async () => {
@@ -33,7 +32,7 @@ describe("securityHeaders", () => {
 				securityHeaders({
 					headers: {
 						"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
-						"Content-Security-Policy": false,
+						"X-Content-Type-Options": false,
 					},
 				}),
 			],
@@ -46,8 +45,34 @@ describe("securityHeaders", () => {
 		const response = await request("/");
 
 		expect(response.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin-allow-popups");
-		expect(response.headers.get("Content-Security-Policy")).toBeNull();
+		expect(response.headers.get("X-Content-Type-Options")).toBeNull();
 		expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+	});
+
+	it("adds a set Content-Security-Policy next to the policy of the response", async () => {
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({ headers: { "Content-Security-Policy": "frame-ancestors 'none'" } }),
+			],
+			render: async () =>
+				new Response("x", {
+					headers: { "Content-Type": "text/html", "Content-Security-Policy": "script-src 'self'" },
+				}),
+		});
+
+		const response = await request("/");
+
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			"script-src 'self', frame-ancestors 'none'",
+		);
+	});
+
+	it("is in the default pipeline, and the securityHeaders option turns it off", async () => {
+		const on = await testServer({ plugins: defaultPlugins() });
+		const off = await testServer({ plugins: defaultPlugins({ securityHeaders: false }) });
+
+		expect((await on.request("/")).headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect((await off.request("/")).headers.get("X-Content-Type-Options")).toBeNull();
 	});
 });
 
