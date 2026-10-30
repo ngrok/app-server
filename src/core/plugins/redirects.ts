@@ -98,9 +98,14 @@ function compileRule({ from, to, status = 301 }: RedirectRule, index: number): C
 
 /** The target of `rule` for the values that its pattern matched. */
 function fill(to: string, groups: Readonly<Record<string, string | undefined>>): string {
-	return to.replaceAll(TARGET_TOKEN, (token, name: string | undefined) =>
-		name == null ? (groups.$splat ?? "") : (groups[name] ?? token),
-	);
+	const queryStart = to.indexOf("?");
+	return to.replaceAll(TARGET_TOKEN, (token, name: string | undefined, offset: number) => {
+		const value = name == null ? (groups.$splat ?? "") : (groups[name] ?? token);
+		// Why: a path segment can have `&`, `=`, and `+`, but in a query they split or change the value.
+		return queryStart !== -1 && offset > queryStart
+			? value.replaceAll(/[&+=]/gu, (char) => encodeURIComponent(char))
+			: value;
+	});
 }
 
 /** `target` with the query string of the request added, before the fragment of `target`. */

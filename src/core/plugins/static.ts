@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
-import { findStaticFile, staticResponse } from "../static-files.js";
+import { contentType, findStaticFile, staticResponse } from "../static-files.js";
 import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
@@ -196,7 +196,9 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			const cacheControl =
 				options.cacheControl ??
 				((path: string) =>
-					path.endsWith(".html") || info.isDataRequest(path) ? REVALIDATE : ONE_HOUR);
+					contentType(path, contentTypes).startsWith("text/html") || info.isDataRequest(path)
+						? REVALIDATE
+						: ONE_HOUR);
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				const value = cacheControl(file.path);
 				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });

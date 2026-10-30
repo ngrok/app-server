@@ -64,6 +64,15 @@ describe("redirects", () => {
 		});
 	});
 
+	it("encodes a value in the query of the target, so it stays one value", async () => {
+		await expect(
+			redirected([{ from: "/search/:term", to: "/results?q=:term" }], "/search/one&two+three"),
+		).resolves.toStrictEqual({ status: 301, location: "/results?q=one%26two%2Bthree" });
+		await expect(
+			redirected([{ from: "/tags/:tag", to: "/tags/:tag/" }], "/tags/a&b"),
+		).resolves.toStrictEqual({ status: 301, location: "/tags/a&b/" });
+	});
+
 	it("accepts a :splat parameter next to a *", async () => {
 		await expect(
 			redirected([{ from: "/files/:splat/*", to: "/archive/:splat/*" }], "/files/a/b/c"),

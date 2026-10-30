@@ -33,8 +33,8 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 	return {
 		name: "body-limit",
 		middleware: async (context, next) => {
-			const { body } = context.req.raw;
-			if (body == null) {
+			const { raw } = context.req;
+			if (raw.method === "GET" || raw.method === "HEAD") {
 				return next();
 			}
 			const length = context.req.header("Content-Length");
@@ -43,22 +43,42 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 			}
 			let bytes = 0;
 			let exceeded = false;
-			const limited = body.pipeThrough(
-				new TransformStream<Uint8Array, Uint8Array>({
-					transform(chunk, controller) {
-						bytes += chunk.byteLength;
+			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+			const limited = new ReadableStream<Uint8Array>(
+				{
+					async pull(controller) {
+						// Why on the first read: on Node, `raw.body` starts to read the socket, and a dev
+						// server middleware that answers the request reads it there.
+						reader ??= raw.body?.getReader();
+						const chunk = await reader?.read();
+						if (chunk == null || chunk.done) {
+							controller.close();
+							return;
+						}
+						bytes += chunk.value.byteLength;
 						if (bytes > maxBytes) {
 							exceeded = true;
 							controller.error(new Error("The request body is larger than the body limit."));
+							await reader?.cancel();
 							return;
 						}
-						controller.enqueue(chunk);
+						controller.enqueue(chunk.value);
 					},
-				}),
+					cancel: async (reason) => reader?.cancel(reason),
+				},
+				// Why 0: the stream reads nothing until the app reads it.
+				{ highWaterMark: 0 },
 			);
-			// Why `duplex`: a request with a stream body needs it, and the DOM types lack it.
-			const init: RequestInit & { duplex: "half" } = { body: limited, duplex: "half" };
-			context.req.raw = new Request(context.req.raw, init);
+			// Why a new request from its parts: `new Request(raw)` reads `raw.body` on Node. `duplex`: a
+			// request with a stream body needs it, and the DOM types lack it.
+			const init: RequestInit & { duplex: "half" } = {
+				method: raw.method,
+				headers: raw.headers,
+				signal: raw.signal,
+				body: limited,
+				duplex: "half",
+			};
+			context.req.raw = new Request(raw.url, init);
 			await next();
 			if (exceeded) {
 				await context.res.body?.cancel();

@@ -311,7 +311,7 @@ defaultPlugins({
 });
 ```
 
-- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path. The target can use each of them.
+- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path. The target can use each of them. In the query of the target, a value gets `&`, `=`, and `+` encoded, so it stays one value.
 - The status is 301 by default, or 308 to keep the method. The redirect keeps the query string, and puts it before the fragment of the target. It applies to GET and HEAD only.
 - The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`.
 - The rules compile at startup. A rule that is not valid stops startup. A local target must be a safe local path, and an absolute target must keep the origin that its rule names. A request whose values break either check gets no redirect.

@@ -17,6 +17,7 @@ const files: Record<string, string> = {
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
 	"digits.bin": "0123456789",
+	"legacy.htm": "<h1>Legacy</h1>",
 	"images/logo.svg": "<svg></svg>",
 	"llms-full.txt": "x".repeat(200_000),
 	"assets/entry-abc123.js": "export {};",
@@ -260,6 +261,7 @@ describe("prerendered cacheControl", () => {
 		await expect(cacheControl("/components/button.data")).resolves.toBe(
 			"public, max-age=0, must-revalidate",
 		);
+		await expect(cacheControl("/legacy.htm")).resolves.toBe("public, max-age=0, must-revalidate");
 		await expect(cacheControl("/images/logo.svg")).resolves.toBe(
 			"public, max-age=3600, stale-while-revalidate=86400",
 		);

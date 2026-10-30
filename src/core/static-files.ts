@@ -72,7 +72,7 @@ export async function findStaticFile(
 }
 
 /** The content type of a file, by its extension. `contentTypes` win over `mime`. */
-function contentType(path: string, contentTypes: Readonly<Record<string, string>>): string {
+export function contentType(path: string, contentTypes: Readonly<Record<string, string>>): string {
 	const extension = /\.[^./]+$/u.exec(path)?.[0] ?? "";
 	return (
 		contentTypes[extension] ??
