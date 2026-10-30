@@ -245,6 +245,13 @@
       }
     },
     {
+      // Why: tests run on Node.js and drive the real routers. They ship in no bundle.
+      "files": ["src/client/**/*.test.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": "off"
+      }
+    },
+    {
       // Why: tests run on Node.js and use a host to drive the core.
       "files": ["src/core/**/*.test.ts"],
       "rules": {

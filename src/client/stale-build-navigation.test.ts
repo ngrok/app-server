@@ -1,30 +1,23 @@
 // @vitest-environment happy-dom
 // @vitest-environment-options {"url":"http://localhost:3000/dashboard"}
+import {
+	createBrowserHistory,
+	createRootRoute,
+	createRoute,
+	createRouter,
+} from "@tanstack/react-router";
+import type { HydratedRouterProps } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { staleBuildNavigation } from "./stale-build-navigation.js";
+import { staleBuildFetch, staleBuildNavigation } from "./stale-build-navigation.js";
 
-type Router = "react-router" | "tanstack";
-
-/**
- * A page with a router stand-in: it handles each link click on the root, as
- * React does. React Router fetches the data and then updates history.
- * TanStack Start updates history and then fetches the data.
- */
-function page({ serverBuild, router = "react-router" }: { serverBuild: string; router?: Router }) {
-	document.body.innerHTML = `
-		<div id="root">
-			<a id="settings" href="/settings">Settings</a>
-			<a id="section" href="#usage">Usage</a>
-			<a id="tab" href="/billing" target="_blank">Billing</a>
-			<a id="file" href="/report.csv" download>Report</a>
-			<a id="docs" href="https://ngrok.com/docs">Docs</a>
-		</div>`;
+/** A server stand-in that answers each request with its build, and the document loads of the page. */
+function page({ serverBuild }: { serverBuild: string }) {
 	const server = { build: serverBuild };
 	const requests: string[] = [];
 	vi.stubGlobal(
 		"fetch",
-		vi.fn<typeof fetch>(async (input) => {
-			const { url } = new Request(input);
+		vi.fn<typeof fetch>(async (input, init) => {
+			const { url } = new Request(input, init);
 			requests.push(url);
 			// Why: a proxy route of `buildId({ paths })` sends the build only in `Server-Timing`.
 			const headers = url.includes("/api/")
@@ -33,24 +26,6 @@ function page({ serverBuild, router = "react-router" }: { serverBuild: string; r
 			return new Response("data", { headers });
 		}),
 	);
-	const routed: string[] = [];
-	let loaded: Promise<Response> | undefined;
-	let blocked = false;
-	document.querySelector("#root")?.addEventListener("click", (event) => {
-		const anchor = event.target instanceof Element ? event.target.closest("a") : null;
-		if (anchor == null) {
-			return;
-		}
-		event.preventDefault();
-		if (blocked) {
-			return;
-		}
-		routed.push(anchor.getAttribute("href") ?? "");
-		if (router === "tanstack") {
-			history.pushState({}, "", anchor.href);
-		}
-		loaded = fetch(`${anchor.pathname}.data`);
-	});
 	const documentLoads: string[] = [];
 	vi.spyOn(location, "assign").mockImplementation((url) => {
 		documentLoads.push(String(url));
@@ -61,15 +36,7 @@ function page({ serverBuild, router = "react-router" }: { serverBuild: string; r
 	vi.spyOn(location, "reload").mockImplementation(() => {
 		documentLoads.push(`reload ${location.href}`);
 	});
-	const click = (id: string, init: MouseEventInit = {}) => {
-		const event = new MouseEvent("click", { bubbles: true, cancelable: true, ...init });
-		document.querySelector(`#${id}`)?.dispatchEvent(event);
-		return event;
-	};
-	const block = () => {
-		blocked = true;
-	};
-	return { server, requests, routed, documentLoads, click, block, loaded: async () => loaded };
+	return { server, requests, documentLoads };
 }
 
 /** Whether a promise settles before the queued tasks run. */
@@ -100,8 +67,13 @@ function fakeObserver() {
 			};
 		}),
 	);
-	const report = (name: string, build: string) => {
-		const entry = { name, serverTiming: [{ name: "build", description: build, duration: 0 }] };
+	const report = (name: string, build: string, { redirected = false } = {}) => {
+		const entry = {
+			name,
+			entryType: "resource",
+			redirectStart: redirected ? 1 : 0,
+			serverTiming: [{ name: "build", description: build, duration: 0 }],
+		};
 		observe?.(
 			{ getEntries: () => [entry] } as unknown as PerformanceObserverEntryList,
 			{} as PerformanceObserver,
@@ -110,207 +82,108 @@ function fakeObserver() {
 	return { options, report };
 }
 
-let stop: (() => void) | undefined;
+/** A React Router data request, as single fetch sends it. */
+function dataRequest(path: string, init?: RequestInit): Request {
+	return new Request(new URL(path, location.href), init);
+}
+
+const PUSH = { type: "navigation", navigationType: "PUSH" } as const;
+
+/** The functions that undo what a test started. */
+const cleanups: (() => void)[] = [];
 
 afterEach(() => {
-	stop?.();
-	stop = undefined;
+	for (const cleanup of cleanups.splice(0)) {
+		cleanup();
+	}
 	history.replaceState(null, "", "/dashboard");
-	vi.useRealTimers();
 });
 
-describe("staleBuildNavigation", () => {
-	it("lets the router handle a click, with one request, while the server runs the same build", async () => {
-		const { requests, routed, documentLoads, click, loaded } = page({ serverBuild: "v1" });
-		stop = staleBuildNavigation({ build: "v1" });
+describe("staleBuildFetch", () => {
+	it("fits the `unstable_fetch` prop of `HydratedRouter`", () => {
+		const props = {
+			unstable_fetch: staleBuildFetch({ build: "v1" }),
+		} satisfies HydratedRouterProps;
 
-		click("settings");
+		expect(props.unstable_fetch).toBeTypeOf("function");
+	});
 
-		await expect(loaded()).resolves.toBeInstanceOf(Response);
-		expect(routed).toStrictEqual(["/settings"]);
-		expect(requests).toStrictEqual(["http://localhost:3000/settings.data"]);
+	it("returns the data of a navigation with one request while the server runs the same build", async () => {
+		const { requests, documentLoads } = page({ serverBuild: "v1" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
+
+		const response = await routerFetch(dataRequest("/settings.data?_routes=root"), PUSH);
+
+		await expect(response.text()).resolves.toBe("data");
+		expect(requests).toStrictEqual(["http://localhost:3000/settings.data?_routes=root"]);
 		expect(documentLoads).toStrictEqual([]);
-	});
-
-	it.each<[Router, string]>([
-		["react-router", "http://localhost:3000/settings"],
-		["tanstack", "reload http://localhost:3000/settings"],
-	])(
-		"with %s, loads the target as a document when the click's data comes from a new build, and the old code never gets it",
-		async (router, load) => {
-			const { requests, documentLoads, click, loaded } = page({ serverBuild: "v2", router });
-			stop = staleBuildNavigation({ build: "v1" });
-
-			click("settings");
-
-			await expect(settles(loaded())).resolves.toBe(false);
-			expect(documentLoads).toStrictEqual([load]);
-			expect(requests).toStrictEqual(["http://localhost:3000/settings.data"]);
-		},
-	);
-
-	it("reloads the document when the router updated history to the target with a fragment first", async () => {
-		const { documentLoads } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		history.replaceState(null, "", "/settings#usage");
-		dispatchEvent(new PopStateEvent("popstate"));
-
-		await expect(settles(fetch("/settings.data"))).resolves.toBe(false);
-		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings#usage"]);
-	});
-
-	it("keeps a slow data request with the navigation that started it", async () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		const { documentLoads, click } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		const answer = Promise.withResolvers<Response>();
-		const server = fetch;
-		vi.stubGlobal(
-			"fetch",
-			vi.fn<typeof fetch>(async () => answer.promise),
-		);
-		stop();
-		stop = staleBuildNavigation({ build: "v1" });
-
-		click("settings");
-		vi.advanceTimersByTime(60_000);
-		answer.resolve(await server("/settings.data"));
-		await settles(Promise.resolve());
-
-		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
-	});
-
-	it("never loads the target of a navigation that a newer one replaced", async () => {
-		const { documentLoads, click } = page({ serverBuild: "v2", router: "tanstack" });
-		stop = staleBuildNavigation({ build: "v1" });
-		const answer = Promise.withResolvers<Response>();
-		const server = fetch;
-		vi.stubGlobal(
-			"fetch",
-			vi.fn<typeof fetch>(async () => answer.promise),
-		);
-		stop();
-		stop = staleBuildNavigation({ build: "v1" });
-
-		click("settings");
-		history.pushState({}, "", "/usage");
-		answer.resolve(await server("/settings.data"));
-		await settles(Promise.resolve());
-
-		expect(documentLoads).toStrictEqual([]);
-	});
-
-	it("lets the app and the router's blockers cancel a click after a new build", async () => {
-		const { routed, documentLoads, click, block } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		await fetch("/poll.data");
-		block();
-
-		const event = click("settings");
-
-		expect(event.defaultPrevented).toBe(true);
-		expect(routed).toStrictEqual([]);
-		expect(documentLoads).toStrictEqual([]);
-	});
-
-	it("never reloads the page that the visitor reads when a request after a history step finds a new build", async () => {
-		const { server, documentLoads } = page({ serverBuild: "v1" });
-		stop = staleBuildNavigation({ build: "v1" });
-		history.replaceState(null, "", "/settings");
-		dispatchEvent(new PopStateEvent("popstate"));
-		await fetch("/settings.data");
-
-		server.build = "v2";
-		const revalidation = await fetch("/settings.data");
-
-		expect(revalidation.status).toBe(200);
-		expect(documentLoads).toStrictEqual([]);
-	});
-
-	it("never sends a click's target to a proxy route's response, such as a background query", async () => {
-		const { documentLoads, click, block } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		block();
-		click("settings");
-
-		const query = await fetch("/api/keys");
-
-		expect(query.status).toBe(200);
-		expect(documentLoads).toStrictEqual([]);
-	});
-
-	it("loads the target of a history update to a new page as a document after a new build", async () => {
-		const { documentLoads, requests } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		await fetch("/poll.data");
-
-		history.pushState({}, "", "/usage");
-		history.replaceState({}, "", "/keys?page=2");
-
-		expect(documentLoads).toStrictEqual([
-			"http://localhost:3000/usage",
-			"replace http://localhost:3000/keys?page=2",
-		]);
-		expect(requests).toStrictEqual(["http://localhost:3000/poll.data"]);
-		expect(location.href).toBe("http://localhost:3000/dashboard");
-	});
-
-	it("keeps history updates and steps in the same page after a new build", async () => {
-		const { documentLoads } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		await fetch("/poll.data");
-
-		history.pushState({ scroll: 1 }, "", "#usage");
-		history.replaceState({ scroll: 2 }, "");
-		history.pushState({ scroll: 3 }, "", location.href);
-		history.replaceState(null, "", "/dashboard");
-		dispatchEvent(new PopStateEvent("popstate"));
-
-		expect(documentLoads).toStrictEqual([]);
-		expect(history.state).toBeNull();
-	});
-
-	it("keeps the browser's error for a history update to another origin", async () => {
-		page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		await fetch("/poll.data");
-
-		expect(() => {
-			history.pushState({}, "", "https://ngrok.com/");
-		}).toThrow(expect.objectContaining({ name: "SecurityError" }));
 	});
 
 	it.each([
-		["a link to a part of this page", "section", {}],
-		["a link to a new window", "tab", {}],
-		["a download", "file", {}],
-		["a link to another origin", "docs", {}],
-		["a click with a modifier key", "settings", { metaKey: true }],
-	])("does not send a data request to %s", async (_name, id, init) => {
-		const { documentLoads, click } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
+		["PUSH", "/settings.data?_routes=root,routes/settings", "http://localhost:3000/settings"],
+		["PUSH", "/docs/_.data?q=a%20b&_routes=root", "http://localhost:3000/docs/?q=a+b"],
+		["PUSH", "/_.data", "http://localhost:3000/"],
+		["REPLACE", "/keys.data?page=2", "replace http://localhost:3000/keys?page=2"],
+	])(
+		"loads the target of a %s navigation to %s as a document when the data comes from a new build",
+		async (navigationType, path, load) => {
+			const { documentLoads } = page({ serverBuild: "v2" });
+			const routerFetch = staleBuildFetch({ build: "v1" });
 
-		click(id, init);
-		const response = await fetch("/poll.data");
+			const data = routerFetch(dataRequest(path), { type: "navigation", navigationType });
 
-		expect(response.status).toBe(200);
-		expect(documentLoads).toStrictEqual([]);
+			await expect(settles(data)).resolves.toBe(false);
+			expect(documentLoads).toStrictEqual([load]);
+		},
+	);
+
+	it("reloads the document for a history step, because the browser already moved history", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
+		history.replaceState(null, "", "/settings#usage");
+
+		const data = routerFetch(dataRequest("/settings.data"), {
+			type: "navigation",
+			navigationType: "POP",
+		});
+
+		await expect(settles(data)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings#usage"]);
 	});
 
-	it("returns the response of a POST from a new build, so the action result reaches the app", async () => {
-		const { documentLoads } = page({ serverBuild: "v2" });
-		stop = staleBuildNavigation({ build: "v1" });
-		history.replaceState(null, "", "/settings");
-		dispatchEvent(new PopStateEvent("popstate"));
+	it.each(["revalidation", "fetcher", "initialization"])(
+		"gives a %s request its response from a new build, and the next navigation loads with no request",
+		async (type) => {
+			const { requests, documentLoads } = page({ serverBuild: "v2" });
+			const onNewBuild = vi.fn<(served: string) => void>();
+			const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
 
-		const response = await fetch("/settings.data", { method: "POST" });
+			const response = await routerFetch(dataRequest("/dashboard.data"), {
+				type,
+				navigationType: null,
+			});
+			const data = routerFetch(dataRequest("/settings.data"), PUSH);
+
+			expect(response.status).toBe(200);
+			await expect(settles(data)).resolves.toBe(false);
+			expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+			expect(requests).toStrictEqual(["http://localhost:3000/dashboard.data"]);
+			expect(onNewBuild).toHaveBeenCalledExactlyOnceWith("v2");
+		},
+	);
+
+	it("returns the response of an action from a new build, so the action result reaches the app", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
+
+		const response = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
 
 		expect(response.status).toBe(200);
 		expect(documentLoads).toStrictEqual([]);
 	});
 
 	it("loads the document with no wait on a body whose cancel does not finish", async () => {
-		const { documentLoads, click, loaded } = page({ serverBuild: "v2" });
+		const { documentLoads } = page({ serverBuild: "v2" });
 		vi.stubGlobal(
 			"fetch",
 			vi.fn<typeof fetch>(async () => {
@@ -319,18 +192,18 @@ describe("staleBuildNavigation", () => {
 				return new Response(body, { headers: { "X-Build-Id": "v2" } });
 			}),
 		);
-		stop = staleBuildNavigation({ build: "v1" });
+		const routerFetch = staleBuildFetch({ build: "v1" });
 
-		click("settings");
-		await settles(loaded());
+		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
 
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
 	});
 
 	it("ignores a build from another origin", async () => {
-		const { documentLoads, click } = page({ serverBuild: "v1" });
+		const { documentLoads } = page({ serverBuild: "v1" });
 		const { report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
+		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
 		vi.stubGlobal(
 			"fetch",
 			vi.fn<typeof fetch>(async () => {
@@ -339,51 +212,266 @@ describe("staleBuildNavigation", () => {
 				return response;
 			}),
 		);
-		stop = staleBuildNavigation({ build: "v1", onNewBuild });
 
 		report("https://api.ngrok.com/keys", "api-v7");
-		click("settings");
-		await fetch("https://api.ngrok.com/keys");
-		history.pushState({}, "", "/usage");
+		const response = await routerFetch(dataRequest("/settings.data"), PUSH);
 
+		expect(response.status).toBe(200);
+		expect(onNewBuild).not.toHaveBeenCalled();
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("finds a new build in a prefetch, also one before it started, and loads the next navigation", async () => {
+		const { requests, documentLoads } = page({ serverBuild: "v2" });
+		const { options, report } = fakeObserver();
+		const onNewBuild = vi.fn<(served: string) => void>();
+		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+
+		report("http://localhost:3000/settings.data", "v2");
+		report("http://localhost:3000/usage.data", "v2");
+		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
+
+		expect(options).toStrictEqual([{ type: "resource", buffered: true }]);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+		expect(requests).toStrictEqual([]);
+		expect(onNewBuild).toHaveBeenCalledExactlyOnceWith("v2");
+	});
+
+	it("ignores the build of a prefetch that a redirect can move to another origin", async () => {
+		const { documentLoads } = page({ serverBuild: "v1" });
+		const { report } = fakeObserver();
+		const onNewBuild = vi.fn<(served: string) => void>();
+		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+
+		report("http://localhost:3000/go/status", "v9", { redirected: true });
+		const response = await routerFetch(dataRequest("/settings.data"), PUSH);
+
+		expect(response.status).toBe(200);
 		expect(onNewBuild).not.toHaveBeenCalled();
 		expect(documentLoads).toStrictEqual([]);
 	});
 
 	it("reads the build from the document's Server-Timing, and does nothing with no build", async () => {
-		const { documentLoads, click, loaded } = page({ serverBuild: "v2" });
+		const { documentLoads } = page({ serverBuild: "v2" });
 		const entries = vi.spyOn(performance, "getEntriesByType");
 		entries.mockReturnValueOnce([]);
-		const server = fetch;
-		staleBuildNavigation();
-		expect(fetch).toBe(server);
-
+		const noBuild = staleBuildFetch();
 		entries.mockReturnValueOnce([
 			Object.assign(new EventTarget(), {
 				name: location.href,
+				redirectStart: 1,
 				serverTiming: [{ name: "build", description: "v1", duration: 0 }],
 			}) as unknown as PerformanceEntry,
 		]);
-		stop = staleBuildNavigation();
-		click("settings");
+		const routerFetch = staleBuildFetch();
 
-		await expect(settles(loaded())).resolves.toBe(false);
+		const response = await noBuild(dataRequest("/settings.data"), PUSH);
+		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
+
+		expect(response.status).toBe(200);
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
 	});
+});
 
-	it("finds a new build in a prefetch, also one before it started, and reports it once", async () => {
+describe("staleBuildNavigation", () => {
+	/** A TanStack router whose loaders call `serverFns` in turn, as server functions do. */
+	function tanstack(serverFns: Record<string, string[]> = {}) {
+		const rootRoute = createRootRoute();
+		const loaded: string[] = [];
+		const route = (path: string) =>
+			createRoute({
+				getParentRoute: () => rootRoute,
+				path,
+				loader: async () => {
+					for (const serverFn of serverFns[path] ?? []) {
+						// oxlint-disable-next-line no-await-in-loop -- a loader can call its server functions in turn.
+						await fetch(serverFn);
+					}
+					loaded.push(path);
+				},
+			});
+		const router = createRouter({
+			routeTree: rootRoute.addChildren([route("/dashboard"), route("/settings"), route("/usage")]),
+			history: createBrowserHistory(),
+		});
+		// Why: `RouterProvider` loads the router at each history change, after the blockers.
+		cleanups.push(
+			router.history.subscribe(() => {
+				void router.load();
+			}),
+		);
+		return { router, loaded };
+	}
+
+	it("lets a navigation load its data, and gives a later request from a new build its response", async () => {
+		const { server, requests, documentLoads } = page({ serverBuild: "v1" });
+		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+
+		await router.navigate({ to: "/settings" });
+		server.build = "v2";
+		const poll = await fetch("/_serverFn/notifications");
+
+		expect(poll.status).toBe(200);
+		expect(loaded).toStrictEqual(["/dashboard", "/settings"]);
+		expect(requests).toStrictEqual([
+			"http://localhost:3000/_serverFn/settings",
+			"http://localhost:3000/_serverFn/notifications",
+		]);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("reloads the target when a later request of a navigation comes from a new build, and the old code never gets it", async () => {
+		const { server, documentLoads } = page({ serverBuild: "v1" });
+		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/user", "/_serverFn/keys"] });
+		await router.load();
+		const send = fetch;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<typeof fetch>(async (input, init) => {
+				const response = await send(input, init);
+				server.build = "v2";
+				return response;
+			}),
+		);
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+
+		const navigation = router.navigate({ to: "/settings" });
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(loaded).toStrictEqual(["/dashboard"]);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
+	});
+
+	it("gives a request outside a navigation its response, and reloads at the next navigation with no request", async () => {
 		const { requests, documentLoads } = page({ serverBuild: "v2" });
-		const { options, report } = fakeObserver();
-		const onNewBuild = vi.fn<(served: string) => void>();
-		stop = staleBuildNavigation({ build: "v1", onNewBuild });
+		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
 
-		report("http://localhost:3000/settings.data", "v2");
-		await fetch("/poll.data");
-		history.pushState({}, "", "/usage");
+		const poll = await fetch("/_serverFn/notifications");
+		const navigation = router.navigate({ to: "/settings" });
 
-		expect(options).toStrictEqual([{ type: "resource", buffered: true }]);
-		expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
-		expect(requests).toStrictEqual(["http://localhost:3000/poll.data"]);
-		expect(onNewBuild).toHaveBeenCalledExactlyOnceWith("v2");
+		expect(poll.status).toBe(200);
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(loaded).toStrictEqual(["/dashboard"]);
+		expect(requests).toStrictEqual(["http://localhost:3000/_serverFn/notifications"]);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
+	});
+
+	it("lets a blocker cancel a navigation, and never reloads the page after a new build", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		const unblock = router.history.block({ blockerFn: () => true });
+
+		const navigation = router.navigate({ to: "/settings" });
+		const poll = await fetch("/_serverFn/notifications");
+		unblock();
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(poll.status).toBe(200);
+		expect(location.pathname).toBe("/dashboard");
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("reloads at a history step after a new build, also to a page with no data request", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		await router.navigate({ to: "/usage" });
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		await fetch("/_serverFn/notifications");
+
+		router.history.back();
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual(["reload http://localhost:3000/dashboard"]);
+		});
+	});
+
+	it("tries again at the next navigation when the visitor stays on the page at a leave prompt", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		await fetch("/_serverFn/notifications");
+
+		void router.navigate({ to: "/settings" });
+		void router.navigate({ to: "/usage" });
+
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual([
+				"reload http://localhost:3000/settings",
+				"reload http://localhost:3000/usage",
+			]);
+		});
+	});
+
+	it("keeps a change to the fragment in the page after a new build", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		await fetch("/_serverFn/notifications");
+
+		await router.navigate({ to: "/dashboard", hash: "usage" });
+
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("never reloads for the late response of a navigation that a newer one replaced", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		const answer = Promise.withResolvers<Response>();
+		const server = fetch;
+		const slow = vi.fn<typeof fetch>(async () => answer.promise);
+		vi.stubGlobal("fetch", slow);
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+
+		void router.navigate({ to: "/settings" });
+		await vi.waitFor(() => {
+			expect(slow).toHaveBeenCalledTimes(1);
+		});
+		await router.navigate({ to: "/usage" });
+		answer.resolve(await server("/_serverFn/settings"));
+		await settles(Promise.resolve());
+
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("returns the response of a POST from a new build in a navigation", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		let save: Promise<Response> | undefined;
+		cleanups.push(
+			router.subscribe("onBeforeLoad", () => {
+				save = fetch("/_serverFn/save", { method: "POST" });
+			}),
+		);
+
+		await router.navigate({ to: "/settings" });
+
+		await expect(save).resolves.toHaveProperty("status", 200);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("gives back `fetch` when it stops, and does nothing with no build", async () => {
+		page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		const server = fetch;
+		vi.spyOn(performance, "getEntriesByType").mockReturnValueOnce([]);
+
+		staleBuildNavigation(router)();
+		const stopped = staleBuildNavigation(router, { build: "v1" });
+		const patched = fetch;
+		stopped();
+
+		expect(patched).not.toBe(server);
+		expect(fetch).toBe(server);
 	});
 });

@@ -78,7 +78,7 @@ function quoted(value: string): string {
  * to more routes, such as API proxy routes. The plugin removes the build
  * header and the `build` metric of an upstream API from each other
  * response, so the client reads only this app's build.
- * `staleBuildNavigation()` from `@ngrok/app-server/client` reads the metric
+ * `staleBuildFetch()` and `staleBuildNavigation()` from `@ngrok/app-server/client` read the metric
  * from the document, and from a response that the browser fetches with no
  * script, such as a prefetch.
  *

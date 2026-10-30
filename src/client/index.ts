@@ -1,9 +1,12 @@
 export {
 	//,
+	staleBuildFetch,
 	staleBuildNavigation,
 } from "./stale-build-navigation.js";
 
 export type {
 	//,
-	StaleBuildNavigationOptions,
+	NavigationEvents,
+	RouterFetchContext,
+	StaleBuildOptions,
 } from "./stale-build-navigation.js";
