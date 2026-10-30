@@ -1,3 +1,4 @@
+import { withHeaderHook } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 /**
@@ -11,9 +12,9 @@ import type { Plugin } from "../types.js";
 export function noindex(): Plugin {
 	return {
 		name: "noindex",
-		middleware: async (context, next) => {
-			await next();
-			context.header("X-Robots-Tag", "noindex, nofollow");
-		},
+		middleware: async (context, next) =>
+			withHeaderHook(context, next, (response) => {
+				response.set("X-Robots-Tag", "noindex, nofollow");
+			}),
 	};
 }

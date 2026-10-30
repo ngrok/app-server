@@ -1,3 +1,4 @@
+import { withHeaderHook } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
@@ -60,18 +61,16 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 	return {
 		name: "security-headers",
 		middleware: async (context, next) => {
-			await next();
 			const isHttps = new URL(context.req.url).protocol === "https:";
-			for (const [name, value] of values) {
-				if (name === "Content-Security-Policy") {
-					context.header(name, value, { append: true });
-				} else if (
-					!context.res.headers.has(name) &&
-					(name !== "Strict-Transport-Security" || isHttps)
-				) {
-					context.header(name, value);
+			await withHeaderHook(context, next, (response) => {
+				for (const [name, value] of values) {
+					if (name === "Content-Security-Policy") {
+						response.append(name, value);
+					} else if (!response.has(name) && (name !== "Strict-Transport-Security" || isHttps)) {
+						response.set(name, value);
+					}
 				}
-			}
+			});
 		},
 	};
 }

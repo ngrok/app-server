@@ -421,6 +421,11 @@ async function checkTanstackStartDev(runtime: string): Promise<void> {
 		assert.match(await (await fetch(new URL("/", base))).text(), /TanStack Start home/u);
 		const client = await fetch(new URL("/@vite/client", base));
 		assert.match(client.headers.get("content-type") ?? "", /javascript/u, "Vite serves its client");
+		assert.equal(
+			client.headers.get("x-content-type-options"),
+			"nosniff",
+			"a response that Vite sends gets the security headers",
+		);
 		await client.text();
 		const hmr = await new Promise<string>((resolve, reject) => {
 			const socket = new WebSocket(base.replace(/^http/u, "ws"), "vite-hmr");

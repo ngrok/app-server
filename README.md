@@ -127,18 +127,21 @@ A route that takes a body larger than the limit needs a higher `bodyLimit` for t
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
 ```ts
+import { withHeaderHook } from "@ngrok/app-server";
 import type { Plugin } from "@ngrok/app-server";
 
 const frameOptions: Plugin = {
 	name: "frame-options",
-	middleware: async (c, next) => {
-		await next();
-		c.header("X-Frame-Options", "DENY"); // `c.header` also works on a response with immutable headers
-	},
+	middleware: async (c, next) =>
+		withHeaderHook(c, next, (response) => {
+			response.set("X-Frame-Options", "DENY");
+		}),
 	setup: (info) => {}, // once, before the first request; a throw stops startup
 	onShutdown: async () => {}, // at shutdown, while the listeners drain, up to the deadline
 };
 ```
+
+A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, and `append` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -146,10 +149,10 @@ A plugin that changes a response with a value it reads at run time, as `runtimeE
 const version: Plugin = {
 	name: "version",
 	etagPart: () => process.env.APP_VERSION,
-	middleware: async (c, next) => {
-		await next();
-		c.header("X-App-Version", process.env.APP_VERSION);
-	},
+	middleware: async (c, next) =>
+		withHeaderHook(c, next, (response) => {
+			response.set("X-App-Version", process.env.APP_VERSION ?? "dev");
+		}),
 };
 ```
 
@@ -165,7 +168,7 @@ Use one of these two fixes:
 An auth plugin sets `Cache-Control: private` on each response that it lets through. Else a CDN can give a protected file to every visitor.
 
 ```ts
-import { createServer, defaultPlugins } from "@ngrok/app-server";
+import { createServer, defaultPlugins, withHeaderHook } from "@ngrok/app-server";
 import type { Plugin } from "@ngrok/app-server";
 
 const auth: Plugin = {
@@ -177,8 +180,9 @@ const auth: Plugin = {
 		if (!(await hasSession(c.req.raw))) {
 			return c.redirect("/login", 302);
 		}
-		await next();
-		c.header("Cache-Control", "private, no-cache");
+		await withHeaderHook(c, next, (response) => {
+			response.set("Cache-Control", "private, no-cache");
+		});
 	},
 };
 

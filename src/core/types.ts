@@ -158,8 +158,25 @@ export type AppServerEnv = {
 		 * static stages add them to each file's ETag. The server sets this list.
 		 */
 		etagParts?: readonly string[];
+		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
+		headerHooks?: readonly HeaderHook[];
 	};
 };
+
+/** The headers of a response, for a {@link HeaderHook}. */
+export type ResponseHeaders = {
+	get: (name: string) => string | null;
+	has: (name: string) => boolean;
+	set: (name: string, value: string) => void;
+	append: (name: string, value: string) => void;
+};
+
+/**
+ * A change to the headers of a response, from a stage that runs before the
+ * response. The stage runs it after the later stages, and a dev server
+ * middleware that sends its own response runs it before it sends the head.
+ */
+export type HeaderHook = (headers: ResponseHeaders) => void;
 
 /** The request handler that a listener calls. */
 export type FetchHandler = (

@@ -13,6 +13,10 @@ export {
 } from "./event-stream.js";
 export {
 	//,
+	withHeaderHook,
+} from "./header-hook.js";
+export {
+	//,
 	jsonSink,
 } from "./log.js";
 export {
@@ -155,6 +159,7 @@ export type {
 	FileInfo,
 	FrameworkRuntime,
 	FrameworkRuntimeFactory,
+	HeaderHook,
 	HostRuntime,
 	Lifecycle,
 	Listener,
@@ -166,6 +171,7 @@ export type {
 	RequestContext,
 	RequestLogger,
 	RequestStore,
+	ResponseHeaders,
 	ServerBindings,
 	SetupInfo,
 	StartedListener,
