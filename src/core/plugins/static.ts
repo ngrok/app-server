@@ -11,9 +11,8 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 /**
  * Serves the hashed files under `/assets/` with a one-year immutable cache.
  * A missing asset gets a plain 404 with `Cache-Control: no-store`, not a
- * rendered page. In development,
- * the dev server serves the source modules, the HMR client, and the CSS here
- * instead.
+ * rendered page. In development, the dev server serves the source modules,
+ * the HMR client, and the CSS here instead.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets(), prerendered()] });

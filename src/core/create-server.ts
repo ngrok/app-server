@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
+import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
 import { privateDocuments } from "./plugins/private-documents.js";
 import { redirects } from "./plugins/redirects.js";
 import type { RedirectRule } from "./plugins/redirects.js";
-import type { AccessLogOptions } from "./plugins/access-log.js";
 import { requestId } from "./plugins/request-id.js";
 import type { RequestIdOptions } from "./plugins/request-id.js";
 import { assets, prerendered } from "./plugins/static.js";
@@ -100,8 +100,8 @@ export type DefaultPluginsOptions = {
  * The default pipeline, in order: `requestId`, `accessLog`,
  * `streamingCompress`, `bodyLimit`, the `beforeStatic` plugins, `assets`,
  * `redirects` (when the option has rules), `trailingSlash`, `prerendered`,
- * and `privateDocuments`. It is a plain
- * array, so an app can filter it or splice into it.
+ * and `privateDocuments`. It is a plain array, so an app can filter it or
+ * splice into it.
  *
  * @example
  * createServer({ plugins: defaultPlugins({ accessLog: { redactQuery: false }, beforeStatic: [env] }) });
