@@ -40,6 +40,7 @@ Short, named rules for how to work. Each name links to its full rule. Use the na
 - [Guard the context window](./docs/principles/guard-the-context-window.md) (code, prose): load only what the task needs.
 - [Stream, don't buffer](./docs/principles/stream-dont-buffer.md) (code): read on pull, flush each chunk, cancel the source.
 - [One pipeline for development and production](./docs/principles/one-pipeline.md) (code): a stage differs only where its job differs.
+- [Add no round trips to a client navigation](./docs/principles/no-added-round-trips.md) (code): a client navigation makes only the router's requests.
 
 ## Rules
 

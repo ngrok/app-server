@@ -24,9 +24,11 @@ export async function withHeaderHook(
 	context.set("headerHooks", [...(context.get("headerHooks") ?? []), hook]);
 	await next();
 	let copied = false;
-	const write = (name: string, value: string, { append }: { append: boolean }) => {
+	const write = (name: string, value: string | undefined, { append }: { append: boolean }) => {
 		if (copied) {
-			if (append) {
+			if (value == null) {
+				context.res.headers.delete(name);
+			} else if (append) {
 				context.res.headers.append(name, value);
 			} else {
 				context.res.headers.set(name, value);
@@ -47,6 +49,9 @@ export async function withHeaderHook(
 		},
 		append: (name, value) => {
 			write(name, value, { append: true });
+		},
+		delete: (name) => {
+			write(name, undefined, { append: false });
 		},
 	};
 	hook(headers);

@@ -20,6 +20,7 @@ export default defineConfig({
 	format: "esm",
 	entry: {
 		cli: "./src/cli/cli.ts",
+		client: "./src/client/index.ts",
 		index: "./src/core/index.ts",
 		node: "./src/node/index.ts",
 		"node-vite": "./src/node/vite.ts",

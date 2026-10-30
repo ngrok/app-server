@@ -209,6 +209,49 @@
       }
     },
     {
+      // Why: the client entry runs in the browser bundle of each app, so it imports no Node.js
+      // module, no framework, no Hono, and no adapter. It can import a constant from the core.
+      "files": ["src/client/**"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "node:*",
+                  "hono",
+                  "hono/*",
+                  "@hono/*",
+                  "react-router",
+                  "@tanstack/*",
+                  "vite"
+                ],
+                "message": "The client entry runs in the browser and imports no package."
+              },
+              {
+                "group": [
+                  "**/cli/**",
+                  "**/node/**",
+                  "**/react-router/**",
+                  "**/tanstack-start/**",
+                  "**/vite/**"
+                ],
+                "message": "The client entry imports no adapter."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // Why: tests run on Node.js and drive the real routers. They ship in no bundle.
+      "files": ["src/client/**/*.test.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": "off"
+      }
+    },
+    {
       // Why: tests run on Node.js and use a host to drive the core.
       "files": ["src/core/**/*.test.ts"],
       "rules": {

@@ -141,7 +141,7 @@ const frameOptions: Plugin = {
 };
 ```
 
-A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, and `append` a header.
+A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -254,7 +254,99 @@ export function getRouter() {
 
 ## Deploys and open tabs
 
-After a deploy, an open tab still runs the old build. When the visitor goes to a new route, the browser asks for an old chunk, such as `/assets/route-3f9a1c.js`. The new server does not have it, so the navigation fails. Keep the old `/assets/*` files at the CDN or in the image for 7 days after a deploy. Then the old tab keeps working. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404. `buildId()` sends the deployed build on each document and data response. The app's client code can compare it with its own build, and load the next page as a document after a change.
+After a deploy, an open tab still runs the old build. Two things can then go wrong:
+
+- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
+- **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
+
+`buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. For React Router, create the module once, and give its three hooks to the router:
+
+```ts
+// app/stale-build.ts (React Router)
+import { staleBuildReactRouter } from "@ngrok/app-server/client";
+
+export const staleBuild = staleBuildReactRouter({
+	onNewBuild: (build) => datadogRum.addAction("new build", { build }),
+});
+```
+
+```tsx
+// app/root.tsx
+export const clientMiddleware = [staleBuild.middleware];
+```
+
+```tsx
+// app/entry.client.tsx
+startTransition(() => {
+	hydrateRoot(
+		document,
+		<HydratedRouter
+			unstable_fetch={staleBuild.fetch}
+			instrumentations={[staleBuild.instrumentation]}
+		/>,
+	);
+});
+```
+
+For TanStack Start, give it the router, on the client only:
+
+```tsx
+// src/router.tsx (TanStack Start)
+import { staleBuildTanStack } from "@ngrok/app-server/client";
+
+export function getRouter() {
+	const router = createRouter({ routeTree });
+	if (!router.isServer) {
+		staleBuildTanStack(router);
+	}
+	return router;
+}
+```
+
+And keep `buildId()` in the server's pipeline:
+
+```ts
+// server.ts
+defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION })] });
+```
+
+- `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
+- The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
+- The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, and a history step each act as the router acts.
+- If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never gets the new data.
+- If the tab already knows of a new build, the next navigation loads its target as a document before the old code renders it. With React Router, the root middleware does this for each `navigate` call, also to a route with no loader, and the router sends no data request. TanStack Router does this for each navigation to a new path or query.
+- The document load keeps the URL fragment, such as `#usage`.
+- A revalidation, a fetcher, an action, the loaders after an action, and a request outside a navigation get their response, and only mark the tab. The page that the visitor reads never reloads, and a form keeps its result.
+- A change to the fragment stays in the page.
+- `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
+- `app/root.tsx` also runs on the server. The module reads no browser state until React Router calls it.
+- With React Router, a history step to a route with no loader stays on the old build. The next link moves the tab.
+- `unstable_fetch` is an experimental React Router prop, and React Router can change it. The other two hooks are stable React Router APIs.
+
+The module sees a build only in a response from this server. By default, that is a document, a data request of the router, or a route discovery request. An app that loads its data in the browser, such as with TanStack Query, sends few of those. Send its queries through proxy routes on this server, as the next section shows, and each query also carries the build. A request that goes to another service directly carries no build, and that service must stay compatible with old clients.
+
+### Proxy routes
+
+A proxy route on this server forwards a request from the browser to the app's API, such as `/api/*`. The request makes the round trip anyway, so its response can carry the build at no cost. Add the routes to `paths`:
+
+```ts
+// server.ts
+const build = buildId({
+	value: env.values.PUBLIC_APP_VERSION,
+	paths: (path) => path.startsWith("/api/"),
+});
+
+const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] }) });
+```
+
+- The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
+- Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
+- The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
+- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build.
+- `buildId()` removes the `X-Build-Id` header and the `build` metric of the upstream API from each response, so the client reads only this app's build.
+- A response that a cache can use again without the server gets no build, so a cached copy never reports an old build. That is a response with `public`, a `max-age`, an `s-maxage`, a stale time, a future `Expires`, or a `Last-Modified`, and with no `no-cache` or `no-store`.
+
+The client module sends no request of its own and adds no wait. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation loads its target as a document: at most one more request, once for each deploy. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 
 ## Trailing slashes
 

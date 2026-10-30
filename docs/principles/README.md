@@ -12,4 +12,4 @@ When you apply a principle to a change, name it and the decision that it changed
 - Each file has the same six parts: the rule, **Why**, **Applies to**, **Signs you missed it**, **In this repo**, and **Enforced by**.
 - Add a principle only when it changes decisions that the existing ones do not cover. Then add it to the list in `AGENTS.md`.
 
-Most principles come from the mantle and frontend repos, with signs and examples for a server. Two are for this server only: [stream, don't buffer](./stream-dont-buffer.md) and [one pipeline for development and production](./one-pipeline.md). The six-part format comes from the principle skills in pstack.
+Most principles come from the mantle and frontend repos, with signs and examples for a server. Three are for this server only: [stream, don't buffer](./stream-dont-buffer.md), [one pipeline for development and production](./one-pipeline.md), and [add no round trips to a client navigation](./no-added-round-trips.md). The six-part format comes from the principle skills in pstack.
