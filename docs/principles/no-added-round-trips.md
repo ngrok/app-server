@@ -16,7 +16,7 @@ A client-side navigation makes the requests that the router makes, and no more. 
 **In this repo:**
 
 - `buildId()` puts the build on the document, on the data responses that the router already fetches, and on the responses of the app's proxy routes in `paths`.
-- `staleBuildFetch()` and `staleBuildNavigation()` read that header from those responses. They send no request and add no wait. After a deploy, one navigation loads its target as a document: at most one more request, once for each deploy.
+- `staleBuildReactRouter()` and `staleBuildTanStack()` read that header from those responses. They send no request and add no wait. After a deploy, one navigation loads its target as a document: at most one more request, once for each deploy.
 - The document's build travels in `Server-Timing`, so the client reads it with no request.
 
-**Enforced by:** the `staleBuildFetch()` and `staleBuildNavigation()` tests, which count the requests of each navigation; review for the rest.
+**Enforced by:** the `staleBuildReactRouter()` and `staleBuildTanStack()` tests, which count the requests of each navigation; review for the rest.

@@ -259,30 +259,45 @@ After a deploy, an open tab still runs the old build. Two things can then go wro
 - **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
 - **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
 
-`buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. Give React Router the module's `fetch`:
+`buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. For React Router, create the module once, and give its three hooks to the router:
 
-```tsx
-// app/entry.client.tsx (React Router)
-import { staleBuildFetch } from "@ngrok/app-server/client";
+```ts
+// app/stale-build.ts (React Router)
+import { staleBuildReactRouter } from "@ngrok/app-server/client";
 
-const routerFetch = staleBuildFetch({
+export const staleBuild = staleBuildReactRouter({
 	onNewBuild: (build) => datadogRum.addAction("new build", { build }),
-});
-startTransition(() => {
-	hydrateRoot(document, <HydratedRouter unstable_fetch={routerFetch} />);
 });
 ```
 
-Give TanStack Start the router, on the client only:
+```tsx
+// app/root.tsx
+export const clientMiddleware = [staleBuild.middleware];
+```
+
+```tsx
+// app/entry.client.tsx
+startTransition(() => {
+	hydrateRoot(
+		document,
+		<HydratedRouter
+			unstable_fetch={staleBuild.fetch}
+			instrumentations={[staleBuild.instrumentation]}
+		/>,
+	);
+});
+```
+
+For TanStack Start, give it the router, on the client only:
 
 ```tsx
 // src/router.tsx (TanStack Start)
-import { staleBuildNavigation } from "@ngrok/app-server/client";
+import { staleBuildTanStack } from "@ngrok/app-server/client";
 
 export function getRouter() {
 	const router = createRouter({ routeTree });
 	if (!router.isServer) {
-		staleBuildNavigation(router);
+		staleBuildTanStack(router);
 	}
 	return router;
 }
@@ -297,15 +312,16 @@ defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION }
 
 - `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
 - The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
-- The router tells the module when a navigation starts, after its blockers. React Router marks the data request of a navigation. TanStack Router sends `onBeforeNavigate` and `onResolved`. So a canceled link, `navigate()`, a form, and a history step each act as the router acts.
+- The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, and a history step each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never gets the new data.
-- If the tab already knows of a new build, the next navigation loads its target as a document. React Router sends no data request for it. TanStack Router does this also for a page with no data request.
+- If the tab already knows of a new build, the next navigation loads its target as a document before the old code renders it. With React Router, the root middleware does this for each `navigate` call, also to a route with no loader, and the router sends no data request. TanStack Router does this for each navigation to a new path or query.
+- The document load keeps the URL fragment, such as `#usage`.
 - A revalidation, a fetcher, an action, the loaders after an action, and a request outside a navigation get their response, and only mark the tab. The page that the visitor reads never reloads, and a form keeps its result.
 - A change to the fragment stays in the page.
 - `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
-- With React Router, a navigation to a route with no server loader sends no data request, so it stays on the old build. The next navigation that fetches data moves the tab.
-- With React Router, the document load has no URL fragment, because the router's data request has none. A link to `/settings#usage` loads `/settings`.
-- `unstable_fetch` is an experimental React Router prop, and React Router can change it.
+- `app/root.tsx` also runs on the server. The module reads no browser state until React Router calls it.
+- With React Router, a history step to a route with no loader stays on the old build. The next link moves the tab.
+- `unstable_fetch` is an experimental React Router prop, and React Router can change it. The other two hooks are stable React Router APIs.
 
 The module sees a build only in a response from this server. By default, that is a document, a data request of the router, or a route discovery request. An app that loads its data in the browser, such as with TanStack Query, sends few of those. Send its queries through proxy routes on this server, as the next section shows, and each query also carries the build. A request that goes to another service directly carries no build, and that service must stay compatible with old clients.
 

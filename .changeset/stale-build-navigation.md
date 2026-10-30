@@ -2,10 +2,10 @@
 "@ngrok/app-server": patch
 ---
 
-Add `staleBuildFetch()` and `staleBuildNavigation()` from the new `@ngrok/app-server/client` entry. After a deploy, they move an open tab to the new build at the next navigation, and the page that the visitor reads never reloads.
+Add `staleBuildReactRouter()` and `staleBuildTanStack()` from the new `@ngrok/app-server/client` entry. After a deploy, they move an open tab to the new build at the next navigation, and the page that the visitor reads never reloads.
 
-- React Router: give `staleBuildFetch()` to `HydratedRouter` as `unstable_fetch`.
-- TanStack Start: call `staleBuildNavigation(router)` in `getRouter()`, on the client only.
+- React Router: give `fetch` and `instrumentation` of `staleBuildReactRouter()` to `HydratedRouter`, and export its `middleware` in the root `clientMiddleware`. A navigation to a route with no loader also moves the tab, and the document load keeps the URL fragment.
+- TanStack Start: call `staleBuildTanStack(router)` in `getRouter()`, on the client only.
 - The router tells the module when a navigation starts, after its blockers. A canceled link, `navigate()`, a form, and a history step each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never renders the new data.
 - If the tab already knows of a new build, the next navigation loads its target as a document.

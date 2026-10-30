@@ -1,6 +1,6 @@
 import { BUILD_ID_HEADER, BUILD_ID_METRIC } from "../core/plugins/build-id.js";
 
-/** Options for {@link staleBuildFetch} and {@link staleBuildNavigation}. */
+/** Options for {@link staleBuildReactRouter} and {@link staleBuildTanStack}. */
 export type StaleBuildOptions = {
 	/**
 	 * The header that `buildId()` sets on data responses.
@@ -33,7 +33,7 @@ export type RouterFetchContext = {
 /** The location in a TanStack Router event. */
 type EventLocation = { pathname: string; searchStr: string };
 
-/** The part of a TanStack Router that {@link staleBuildNavigation} reads. */
+/** The part of a TanStack Router that {@link staleBuildTanStack} reads. */
 export type NavigationEvents = {
 	history: { flush: () => void };
 	subscribe: (
@@ -101,7 +101,7 @@ async function loadDocument(
 		response,
 		navigationType,
 	}: { response?: Response | undefined; navigationType?: string | null | undefined } = {},
-): Promise<Response> {
+): Promise<never> {
 	// Why no wait: the cancel of a cloned body waits for the other branch.
 	response?.body?.cancel().catch(() => undefined);
 	// Why reload on this page: the router can move history first, and `assign` to the same page
@@ -113,7 +113,7 @@ async function loadDocument(
 	} else {
 		location.assign(target);
 	}
-	return new Promise<Response>(() => {});
+	return new Promise<never>(() => {});
 }
 
 /**
@@ -166,86 +166,180 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
 	};
 }
 
+/** The `navigate` call of a React Router instrumentation. */
+type NavigateInfo = { to: string | number; formMethod?: string };
+
+/** The router instrumentations that {@link staleBuildReactRouter} adds. */
+type RouterInstrumentations = {
+	navigate: (handler: () => Promise<unknown>, info: NavigateInfo) => Promise<void>;
+	fetch: (handler: () => Promise<unknown>) => Promise<void>;
+};
+
+/** The hooks that {@link staleBuildReactRouter} gives to React Router. */
+export type StaleBuildReactRouter = {
+	/** Give it to `HydratedRouter` as `unstable_fetch`. */
+	fetch: (request: Request, context: RouterFetchContext) => Promise<Response>;
+	/** Give it to `HydratedRouter` in `instrumentations`. */
+	instrumentation: {
+		router: (router: { instrument: (instrumentations: RouterInstrumentations) => void }) => void;
+	};
+	/** Export it from `app/root.tsx` in `clientMiddleware`. */
+	middleware: <Result>(args: { request: Request }, next: () => Promise<Result>) => Promise<Result>;
+};
+
+/** The fragment of a `navigate` target, such as `#usage`, or `""`. */
+function hashOf(to: string | number): string {
+	return typeof to === "string" && to.includes("#") ? to.slice(to.indexOf("#")) : "";
+}
+
 /**
  * Moves an open React Router tab to a new build at a navigation, so the old
  * client code never renders data from the new server, and the page that the
- * visitor reads never reloads. Give it to `HydratedRouter` as
- * `unstable_fetch`.
+ * visitor reads never reloads. Create it in a module that the client entry
+ * and `app/root.tsx` both import. It reads no browser state until React
+ * Router calls it, so the server can import it.
  *
  * - When the data request of a navigation gets a response from a new build,
  *   the browser loads the target URL as a document.
- * - When the tab already knows of a new build, a navigation loads its target
- *   as a document and sends no data request.
+ * - When the tab already knows of a new build, a `navigate` call, such as a
+ *   link click, loads its target as a document before the router renders it
+ *   or sends a data request. The root middleware does this also for a route
+ *   with no loader.
  * - A revalidation, a fetcher, an action, and the loaders after an action
  *   get their response. They only mark the tab, so the page that the visitor
  *   reads never reloads.
- * - A canceled navigation never loads its target.
- * - The router's blockers run before the router sends a request, so they can
- *   still cancel a navigation.
+ * - The router's blockers run first, and a canceled navigation never loads
+ *   its target.
  *
  * It sends no request of its own and adds no wait. It needs `buildId()` in
  * the server's pipeline, and it does nothing on a document with no build.
  *
  * @example
+ * // app/stale-build.ts
+ * export const staleBuild = staleBuildReactRouter();
+ *
+ * // app/root.tsx
+ * export const clientMiddleware = [staleBuild.middleware];
+ *
  * // app/entry.client.tsx
  * startTransition(() => {
- * 	hydrateRoot(document, <HydratedRouter unstable_fetch={staleBuildFetch()} />);
+ * 	hydrateRoot(
+ * 		document,
+ * 		<HydratedRouter
+ * 			unstable_fetch={staleBuild.fetch}
+ * 			instrumentations={[staleBuild.instrumentation]}
+ * 		/>,
+ * 	);
  * });
  */
-export function staleBuildFetch(
-	options: StaleBuildOptions = {},
-): (request: Request, context: RouterFetchContext) => Promise<Response> {
-	const watch = watchBuild(options);
+export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBuildReactRouter {
+	// Why lazy: `app/root.tsx` also runs on the server, which has no tab to watch.
+	let watched: { watch: ReturnType<typeof watchBuild> } | undefined;
+	const watch = () => {
+		watched ??= { watch: watchBuild(options) };
+		return watched.watch;
+	};
 	/** The path of the last action. The router revalidates the page with the loaders after it. */
 	let action: string | undefined;
 	/** The target that the tab loads as a document now. */
 	let leaving: string | undefined;
-	return async (request, context) => {
-		const navigationType =
-			context.type === "navigation" && context.fetcherKey == null
-				? context.navigationType
-				: undefined;
-		// Why the global at each call: an app can wrap `fetch` after this module, such as for RUM.
-		const send = async () => {
-			const response = await globalThis.fetch(request);
-			return { response, isNew: watch?.isNew(response, request.url) === true };
-		};
-		if (watch == null || navigationType == null) {
-			return (await send()).response;
+	/**
+	 * The `navigate` call that runs now. `claimed` is true when its first
+	 * middleware call already ran, or when it is not a page load.
+	 */
+	let navigating: { hash: string; claimed: boolean } | undefined;
+	/** The number of fetcher calls that run now. */
+	let fetchers = 0;
+	const load = async (
+		request: Request,
+		target: string,
+		{ response, navigationType }: { response?: Response; navigationType?: string | null } = {},
+	) => {
+		if (leaving === target) {
+			void response?.body?.cancel().catch(() => undefined);
+			return new Promise<never>(() => {});
 		}
-		const target = targetOf(request);
-		const path = new URL(target).pathname;
-		const load = async (response?: Response) => {
-			if (leaving === target) {
-				void response?.body?.cancel().catch(() => undefined);
-				return new Promise<Response>(() => {});
-			}
-			leaving = target;
-			onAbort(request.signal, () => {
-				if (leaving === target) {
-					leaving = undefined;
-				}
-			});
-			return loadDocument(target, { response, navigationType });
-		};
-		const isAfterAction = action === path;
-		action = request.method === "GET" ? undefined : path;
+		leaving = target;
 		onAbort(request.signal, () => {
-			if (action === path) {
-				action = undefined;
+			if (leaving === target) {
+				leaving = undefined;
 			}
 		});
-		// Why check the signal: a canceled navigation must never load its target.
-		const isNavigation = () =>
-			request.method === "GET" && !isAfterAction && !request.signal.aborted;
-		if (isNavigation() && watch.isStale()) {
-			return load();
-		}
-		const { response, isNew } = await send();
-		if (!isNew || !isNavigation()) {
-			return response;
-		}
-		return load(response);
+		return loadDocument(target, { response, navigationType });
+	};
+	return {
+		fetch: async (request, context) => {
+			const navigationType =
+				context.type === "navigation" && context.fetcherKey == null
+					? context.navigationType
+					: undefined;
+			// Why the global at each call: an app can wrap `fetch` after this module, such as for RUM.
+			const send = async () => {
+				const response = await globalThis.fetch(request);
+				return { response, isNew: watch()?.isNew(response, request.url) === true };
+			};
+			if (watch() == null || navigationType == null) {
+				return (await send()).response;
+			}
+			// Why the hash of the `navigate` call: the router removes it from the data request.
+			const target = targetOf(request) + (navigationType === "POP" ? "" : (navigating?.hash ?? ""));
+			const path = new URL(target).pathname;
+			const isAfterAction = action === path;
+			action = request.method === "GET" ? undefined : path;
+			onAbort(request.signal, () => {
+				if (action === path) {
+					action = undefined;
+				}
+			});
+			// Why check the signal: a canceled navigation must never load its target.
+			const isNavigation = () =>
+				request.method === "GET" && !isAfterAction && !request.signal.aborted;
+			if (isNavigation() && watch()?.isStale() === true) {
+				return load(request, target, { navigationType });
+			}
+			const { response, isNew } = await send();
+			if (!isNew || !isNavigation()) {
+				return response;
+			}
+			return load(request, target, { response, navigationType });
+		},
+		instrumentation: {
+			router: ({ instrument }) => {
+				watch();
+				instrument({
+					navigate: async (handler, { to, formMethod }) => {
+						// Why claimed: a history step and a form submission are not a page load to take over.
+						const current = {
+							hash: hashOf(to),
+							claimed: typeof to === "number" || (formMethod ?? "GET").toUpperCase() !== "GET",
+						};
+						navigating = current;
+						await handler();
+						if (navigating === current) {
+							navigating = undefined;
+						}
+					},
+					fetch: async (handler) => {
+						fetchers += 1;
+						await handler();
+						fetchers -= 1;
+					},
+				});
+			},
+		},
+		middleware: async ({ request }, next) => {
+			const current = navigating;
+			// Why the first call only: the router runs the middleware of a `navigate` call before the
+			// fetchers that it revalidates. Why no fetcher: a fetcher call has its own middleware.
+			if (current == null || current.claimed || fetchers > 0 || request.signal.aborted) {
+				return next();
+			}
+			current.claimed = true;
+			if (watch()?.isStale() !== true || pageOf(request.url) === pageOf(location.href)) {
+				return next();
+			}
+			return load(request, request.url + current.hash);
+		},
 	};
 }
 
@@ -272,12 +366,12 @@ export function staleBuildFetch(
  * export function getRouter() {
  * 	const router = createRouter({ routeTree });
  * 	if (!router.isServer) {
- * 		staleBuildNavigation(router);
+ * 		staleBuildTanStack(router);
  * 	}
  * 	return router;
  * }
  */
-export function staleBuildNavigation(
+export function staleBuildTanStack(
 	router: NavigationEvents,
 	options: StaleBuildOptions = {},
 ): () => void {

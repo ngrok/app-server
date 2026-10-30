@@ -6,9 +6,11 @@ import {
 	createRoute,
 	createRouter,
 } from "@tanstack/react-router";
+import { createBrowserRouter } from "react-router";
+import type { DataStrategyResult, MiddlewareFunction } from "react-router";
 import type { HydratedRouterProps } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { staleBuildFetch, staleBuildNavigation } from "./stale-build-navigation.js";
+import { staleBuildReactRouter, staleBuildTanStack } from "./stale-build-navigation.js";
 
 /** A server stand-in that answers each request with its build, and the document loads of the page. */
 function page({ serverBuild }: { serverBuild: string }) {
@@ -89,6 +91,25 @@ function dataRequest(path: string, init?: RequestInit): Request {
 
 const PUSH = { type: "navigation", navigationType: "PUSH" } as const;
 
+/** A `staleBuildReactRouter()` that React Router already started, as at router creation. */
+function started(options?: Parameters<typeof staleBuildReactRouter>[0]) {
+	const staleBuild = staleBuildReactRouter(options);
+	instrumentations(staleBuild);
+	return staleBuild;
+}
+
+/** The router instrumentations that `staleBuild` adds, as React Router gets them. */
+function instrumentations(staleBuild: ReturnType<typeof staleBuildReactRouter>) {
+	let added: Parameters<Parameters<typeof staleBuild.instrumentation.router>[0]["instrument"]>[0];
+	staleBuild.instrumentation.router({
+		instrument: (hooks) => {
+			added = hooks;
+		},
+	});
+	// @ts-expect-error -- `instrument` runs before the return.
+	return added;
+}
+
 /** The functions that undo what a test started. */
 const cleanups: (() => void)[] = [];
 
@@ -99,18 +120,75 @@ afterEach(() => {
 	history.replaceState(null, "", "/dashboard");
 });
 
-describe("staleBuildFetch", () => {
-	it("fits the `unstable_fetch` prop of `HydratedRouter`", () => {
+describe("staleBuildReactRouter", () => {
+	it("fits the props of `HydratedRouter` and the `clientMiddleware` of a route", () => {
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
 		const props = {
-			unstable_fetch: staleBuildFetch({ build: "v1" }),
+			unstable_fetch: staleBuild.fetch,
+			instrumentations: [staleBuild.instrumentation],
 		} satisfies HydratedRouterProps;
+		const clientMiddleware: MiddlewareFunction<Record<string, DataStrategyResult>>[] = [
+			staleBuild.middleware,
+		];
 
-		expect(props.unstable_fetch).toBeTypeOf("function");
+		expect(props.instrumentations).toHaveLength(1);
+		expect(clientMiddleware).toHaveLength(1);
+	});
+
+	it("reads no browser state until React Router calls it, so the server can import it", () => {
+		const entries = vi.spyOn(performance, "getEntriesByType");
+
+		staleBuildReactRouter();
+
+		expect(entries).not.toHaveBeenCalled();
+	});
+
+	it("keeps the fragment of the `navigate` call when the data comes from a new build", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
+		const { navigate } = instrumentations(staleBuild);
+		let data: Promise<Response> | undefined;
+
+		void navigate(
+			async () => {
+				data = staleBuild.fetch(dataRequest("/settings.data"), PUSH);
+				return data;
+			},
+			{ to: "/settings#usage" },
+		);
+
+		await expect(settles(data)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
+	});
+
+	it("never takes a fetcher's middleware call for a navigation", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
+		const { navigate, fetch: fetcher } = instrumentations(staleBuild);
+		await staleBuild.fetch(dataRequest("/dashboard.data"), { type: "revalidation" });
+		const loaded = Promise.withResolvers<undefined>();
+		void fetcher(async () => loaded.promise);
+		let result: Promise<string> | undefined;
+
+		void navigate(
+			async () => {
+				result = staleBuild.middleware(
+					{ request: dataRequest("/notifications") },
+					async () => "next",
+				);
+				return result;
+			},
+			{ to: "/settings" },
+		);
+		loaded.resolve(undefined);
+
+		await expect(result).resolves.toBe("next");
+		expect(documentLoads).toStrictEqual([]);
 	});
 
 	it("returns the data of a navigation with one request while the server runs the same build", async () => {
 		const { requests, documentLoads } = page({ serverBuild: "v1" });
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 
 		const response = await routerFetch(dataRequest("/settings.data?_routes=root"), PUSH);
 
@@ -128,7 +206,7 @@ describe("staleBuildFetch", () => {
 		"loads the target of a %s navigation to %s as a document when the data comes from a new build",
 		async (navigationType, path, load) => {
 			const { documentLoads } = page({ serverBuild: "v2" });
-			const routerFetch = staleBuildFetch({ build: "v1" });
+			const routerFetch = started({ build: "v1" }).fetch;
 
 			const data = routerFetch(dataRequest(path), { type: "navigation", navigationType });
 
@@ -139,7 +217,7 @@ describe("staleBuildFetch", () => {
 
 	it("reloads the document for a history step, because the browser already moved history", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 		history.replaceState(null, "", "/settings?q=a%20b#usage");
 
 		const data = routerFetch(dataRequest("/settings.data?q=a%20b"), {
@@ -156,7 +234,7 @@ describe("staleBuildFetch", () => {
 		async (type) => {
 			const { requests, documentLoads } = page({ serverBuild: "v2" });
 			const onNewBuild = vi.fn<(served: string) => void>();
-			const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+			const routerFetch = started({ build: "v1", onNewBuild }).fetch;
 
 			const response = await routerFetch(dataRequest("/dashboard.data"), {
 				type,
@@ -174,7 +252,7 @@ describe("staleBuildFetch", () => {
 
 	it("returns the action and its loaders from a new build, so the form keeps its result", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 
 		// Why two signals: a browser gives each `Request` its own signal.
 		const action = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
@@ -189,7 +267,7 @@ describe("staleBuildFetch", () => {
 
 	it("loads the document once for parallel requests of a navigation, and again after the router cancels it", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 		const first = new AbortController();
 
 		const root = routerFetch(
@@ -213,7 +291,7 @@ describe("staleBuildFetch", () => {
 
 	it("gives a fetcher that a navigation revalidates its response from a new build", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 
 		const response = await routerFetch(dataRequest("/notifications.data"), {
 			...PUSH,
@@ -235,7 +313,7 @@ describe("staleBuildFetch", () => {
 				return send(input, init);
 			}),
 		);
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 		const navigation = new AbortController();
 		const slow = routerFetch(dataRequest("/settings.data", { signal: navigation.signal }), PUSH);
 
@@ -259,7 +337,7 @@ describe("staleBuildFetch", () => {
 				return new Response(body, { headers: { "X-Build-Id": "v2" } });
 			}),
 		);
-		const routerFetch = staleBuildFetch({ build: "v1" });
+		const routerFetch = started({ build: "v1" }).fetch;
 
 		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
 
@@ -270,7 +348,7 @@ describe("staleBuildFetch", () => {
 		const { documentLoads } = page({ serverBuild: "v1" });
 		const { report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
-		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+		const routerFetch = started({ build: "v1", onNewBuild }).fetch;
 		vi.stubGlobal(
 			"fetch",
 			vi.fn<typeof fetch>(async () => {
@@ -292,7 +370,7 @@ describe("staleBuildFetch", () => {
 		const { requests, documentLoads } = page({ serverBuild: "v2" });
 		const { options, report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
-		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+		const routerFetch = started({ build: "v1", onNewBuild }).fetch;
 
 		report("http://localhost:3000/api/keys", ["v1", "v2"]);
 		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
@@ -307,7 +385,7 @@ describe("staleBuildFetch", () => {
 		const { documentLoads } = page({ serverBuild: "v1" });
 		const { report } = fakeObserver();
 		const onNewBuild = vi.fn<(served: string) => void>();
-		const routerFetch = staleBuildFetch({ build: "v1", onNewBuild });
+		const routerFetch = started({ build: "v1", onNewBuild }).fetch;
 
 		report("http://localhost:3000/go/status", "v9", { redirected: true });
 		const response = await routerFetch(dataRequest("/settings.data"), PUSH);
@@ -321,7 +399,7 @@ describe("staleBuildFetch", () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const entries = vi.spyOn(performance, "getEntriesByType");
 		entries.mockReturnValueOnce([]);
-		const noBuild = staleBuildFetch();
+		const noBuild = started().fetch;
 		entries.mockReturnValueOnce([
 			Object.assign(new EventTarget(), {
 				name: location.href,
@@ -329,7 +407,7 @@ describe("staleBuildFetch", () => {
 				serverTiming: [{ name: "build", description: "v1", duration: 0 }],
 			}) as unknown as PerformanceEntry,
 		]);
-		const routerFetch = staleBuildFetch();
+		const routerFetch = started().fetch;
 
 		const response = await noBuild(dataRequest("/settings.data"), PUSH);
 		await settles(routerFetch(dataRequest("/settings.data"), PUSH));
@@ -339,7 +417,106 @@ describe("staleBuildFetch", () => {
 	});
 });
 
-describe("staleBuildNavigation", () => {
+describe("staleBuildReactRouter with a real router and no loaders", () => {
+	/** A React Router with the root middleware and the instrumentation, and routes with no loader. */
+	function reactRouter(staleBuild: ReturnType<typeof staleBuildReactRouter>) {
+		const router = createBrowserRouter(
+			[
+				{
+					id: "root",
+					path: "/",
+					middleware: [staleBuild.middleware],
+					children: [
+						{ path: "dashboard" },
+						{ path: "settings", action: () => "saved" },
+						{ path: "usage" },
+					],
+				},
+			],
+			{ instrumentations: [staleBuild.instrumentation] },
+		);
+		cleanups.push(() => {
+			router.dispose();
+		});
+		return router;
+	}
+
+	it("moves to the target with the router while the server runs the same build", async () => {
+		const { documentLoads } = page({ serverBuild: "v1" });
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+
+		await router.navigate("/settings");
+
+		expect(router.state.location.pathname).toBe("/settings");
+		expect(location.pathname).toBe("/settings");
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("loads the target with its fragment as a document after a new build, before the old code renders it", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+
+		const navigation = router.navigate("/settings#usage");
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
+		expect(router.state.location.pathname).toBe("/dashboard");
+	});
+
+	it("lets a blocker cancel the navigation after a new build", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+		router.getBlocker("unsaved", () => true);
+
+		await router.navigate("/settings");
+
+		expect(router.state.location.pathname).toBe("/dashboard");
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("never reloads at a revalidation, and lets a form submission to another route run its action", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+
+		await router.revalidate();
+		await router.navigate("/settings", { formMethod: "POST", formData: new FormData() });
+
+		expect(router.state.actionData).toStrictEqual({ "0-1": "saved" });
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("takes only the first middleware call of a navigation, not the fetchers that it revalidates", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
+		const { navigate } = instrumentations(staleBuild);
+		report("http://localhost:3000/api/keys", "v2");
+		let fetcher: Promise<string> | undefined;
+
+		void navigate(
+			async () => {
+				void staleBuild.middleware({ request: dataRequest("/settings") }, async () => "next");
+				fetcher = staleBuild.middleware(
+					{ request: dataRequest("/notifications") },
+					async () => "next",
+				);
+				return fetcher;
+			},
+			{ to: "/settings" },
+		);
+
+		await expect(fetcher).resolves.toBe("next");
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+	});
+});
+
+describe("staleBuildTanStack", () => {
 	/** A TanStack router whose loaders call `serverFns` in turn, as server functions do. */
 	function tanstack(serverFns: Record<string, string[]> = {}) {
 		const rootRoute = createRootRoute();
@@ -373,7 +550,7 @@ describe("staleBuildNavigation", () => {
 		const { server, requests, documentLoads } = page({ serverBuild: "v1" });
 		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		await router.navigate({ to: "/settings" });
 		server.build = "v2";
@@ -401,7 +578,7 @@ describe("staleBuildNavigation", () => {
 				return response;
 			}),
 		);
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		const navigation = router.navigate({ to: "/settings" });
 
@@ -414,7 +591,7 @@ describe("staleBuildNavigation", () => {
 		const { requests, documentLoads } = page({ serverBuild: "v2" });
 		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		const poll = await fetch("/_serverFn/notifications");
 		const navigation = router.navigate({ to: "/settings" });
@@ -430,7 +607,7 @@ describe("staleBuildNavigation", () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const { router } = tanstack();
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 		const unblock = router.history.block({ blockerFn: () => true });
 
 		const navigation = router.navigate({ to: "/settings" });
@@ -448,7 +625,7 @@ describe("staleBuildNavigation", () => {
 		const { router } = tanstack();
 		await router.load();
 		await router.navigate({ to: "/usage" });
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 		await fetch("/_serverFn/notifications");
 
 		router.history.back();
@@ -461,7 +638,7 @@ describe("staleBuildNavigation", () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const { router } = tanstack();
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 		await fetch("/_serverFn/notifications");
 
 		void router.navigate({ to: "/settings" });
@@ -479,7 +656,7 @@ describe("staleBuildNavigation", () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const { router } = tanstack();
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 		await fetch("/_serverFn/notifications");
 
 		await router.navigate({ to: "/dashboard", hash: "usage" });
@@ -495,7 +672,7 @@ describe("staleBuildNavigation", () => {
 		const server = fetch;
 		const slow = vi.fn<typeof fetch>(async () => answer.promise);
 		vi.stubGlobal("fetch", slow);
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		void router.navigate({ to: "/settings" });
 		await vi.waitFor(() => {
@@ -516,7 +693,7 @@ describe("staleBuildNavigation", () => {
 		const server = fetch;
 		const slow = vi.fn<typeof fetch>(async () => answer.promise);
 		vi.stubGlobal("fetch", slow);
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		// Why the cast: the test router has no registered route types.
 		void router.preloadRoute({ to: "/settings" } as Parameters<typeof router.preloadRoute>[0]);
@@ -540,7 +717,7 @@ describe("staleBuildNavigation", () => {
 		const server = fetch;
 		const slow = vi.fn<typeof fetch>(async () => answer.promise);
 		vi.stubGlobal("fetch", slow);
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 
 		void router.navigate({ to: "/settings" });
 		await vi.waitFor(() => {
@@ -557,7 +734,7 @@ describe("staleBuildNavigation", () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
 		const { router } = tanstack();
 		await router.load();
-		cleanups.push(staleBuildNavigation(router, { build: "v1" }));
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
 		let save: Promise<Response> | undefined;
 		cleanups.push(
 			router.subscribe("onBeforeLoad", () => {
@@ -577,8 +754,8 @@ describe("staleBuildNavigation", () => {
 		const server = fetch;
 		vi.spyOn(performance, "getEntriesByType").mockReturnValueOnce([]);
 
-		staleBuildNavigation(router)();
-		const stopped = staleBuildNavigation(router, { build: "v1" });
+		staleBuildTanStack(router)();
+		const stopped = staleBuildTanStack(router, { build: "v1" });
 		const patched = fetch;
 		stopped();
 
