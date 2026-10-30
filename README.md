@@ -528,5 +528,6 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 
 - The build must serve at `/` (Vite `base`). The Vite plugin fails the build for another base.
 - `appServer` does not support React Router `serverBundles`.
+- One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
 - The package has one host adapter, `node`. A serverless host, such as Cloudflare Workers or Vercel, needs its own adapter. See `HostRuntime` and `HostBuild`.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.
