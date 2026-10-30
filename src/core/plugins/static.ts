@@ -87,6 +87,16 @@ export type PrerenderedOptions = {
 	 * prerendered({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
 	 */
 	markdownTwins?: boolean | { twinOf: (path: string) => string | undefined };
+	/**
+	 * Sends a request path to the next stage, with no file lookup. Use it for
+	 * private pages, so the auth check in the app or the framework runs for
+	 * them. A data request has its own path, such as `/app.data` in React
+	 * Router.
+	 *
+	 * @example
+	 * prerendered({ skip: (path) => path === "/app" || path.startsWith("/app/") || path.startsWith("/app.") });
+	 */
+	skip?: (path: string) => boolean;
 };
 
 /** The default markdown twin of a page: `/docs/button.md` for `/docs/button`, and `/index.md` for `/`. */
@@ -176,7 +186,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				});
 			stage = async (context, next) => {
 				const { method } = context.req;
-				if (method !== "GET" && method !== "HEAD") {
+				if ((method !== "GET" && method !== "HEAD") || options.skip?.(context.req.path) === true) {
 					return next();
 				}
 				const twin = await findTwin(files, context.req.path, twinOf);

@@ -23,6 +23,8 @@ export type RequestContext = {
 	requestId: string | undefined;
 	/** The request's logger. Its lines carry the request ID. */
 	logger: RequestLogger;
+	/** The nonce for the request's inline scripts, when the `cspNonce` plugin runs. */
+	cspNonce: string | undefined;
 };
 
 /** The server mode. */
@@ -136,6 +138,8 @@ export type AppServerEnv = {
 		/** The request ID, set by the `requestId` plugin. */
 		requestId?: string;
 		logger: RequestLogger;
+		/** The nonce for the request's inline scripts, set by the `cspNonce` plugin. */
+		cspNonce?: string;
 		/**
 		 * The `etagPart` of each plugin that the request passed, in order. The
 		 * static stages add them to each file's ETag. The server sets this list.

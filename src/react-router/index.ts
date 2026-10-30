@@ -1,6 +1,7 @@
 import { createContext, createRequestHandler, RouterContextProvider } from "react-router";
 import type { ServerBuild } from "react-router";
 import { jsonSink, sinkLogger } from "../core/log.js";
+import { requestContextValues } from "../core/request-context.js";
 import type { FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
 
 /** What the server puts in React Router's context for each request. */
@@ -20,6 +21,7 @@ export type AppServerContext = RequestContext;
 export const appServerContext = createContext<AppServerContext>({
 	requestId: undefined,
 	logger: sinkLogger(jsonSink()),
+	cspNonce: undefined,
 });
 
 /**
@@ -72,10 +74,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 		contentTypes: { ".data": "text/x-script" },
 		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();
-			routerContext.set(appServerContext, {
-				requestId: context.var.requestId,
-				logger: context.var.logger,
-			});
+			routerContext.set(appServerContext, requestContextValues(context));
 			return handler(request, routerContext);
 		},
 	};

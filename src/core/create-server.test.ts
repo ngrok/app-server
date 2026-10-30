@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
@@ -119,6 +122,21 @@ describe("createServer", () => {
 		expect(response.status).toBe(302);
 		expect(response.headers.get("X-Request-Id")).not.toBeNull();
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+	});
+
+	it("marks a rendered document private by default, but not a prerendered page", async () => {
+		const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-private-"));
+		onTestFinished(() => {
+			rmSync(clientDirectory, { recursive: true, force: true });
+		});
+		writeFileSync(join(clientDirectory, "about.html"), "<h1>About</h1>");
+		const { request } = await testServer({ plugins: defaultPlugins(), clientDirectory });
+
+		const rendered = await request("/dashboard");
+		const prerendered = await request("/about.html");
+
+		expect(rendered.headers.get("Cache-Control")).toBe("private, no-cache");
+		expect(prerendered.headers.get("Cache-Control")).not.toBe("private, no-cache");
 	});
 
 	it("logs an unhandled error and answers 500", async () => {

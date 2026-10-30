@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
+import { bodyLimit } from "./plugins/body-limit.js";
+import { privateDocuments } from "./plugins/private-documents.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { requestId } from "./plugins/request-id.js";
 import type { RequestIdOptions } from "./plugins/request-id.js";
@@ -58,6 +60,9 @@ export type ServerInternals = {
 	setRequestStore: (store: RequestStore | undefined) => void;
 };
 
+/** Why 10 MiB: a form or an avatar upload fits, and a body cannot fill the memory. */
+const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024;
+
 /** Options for {@link defaultPlugins}. */
 export type DefaultPluginsOptions = {
 	requestId?: RequestIdOptions;
@@ -70,6 +75,12 @@ export type DefaultPluginsOptions = {
 	 */
 	trailingSlash?: TrailingSlash;
 	/**
+	 * The largest request body, in bytes. A larger body gets a 413. `false`
+	 * turns the limit off. See {@link bodyLimit}.
+	 * @default 10485760 (10 MiB)
+	 */
+	bodyLimit?: number | false;
+	/**
 	 * Plugins that go after compression and before the static stages, so they
 	 * see every response, prerendered pages included. `runtimeEnv` and
 	 * `buildId` go here.
@@ -79,22 +90,27 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `requestId`, `accessLog`,
- * `streamingCompress`, the `beforeStatic` plugins, `assets`, `trailingSlash`,
- * and `prerendered`. It is a plain array, so an app can filter it or splice into it.
+ * `streamingCompress`, `bodyLimit`, the `beforeStatic` plugins, `assets`,
+ * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
+ * array, so an app can filter it or splice into it.
  *
  * @example
  * createServer({ plugins: defaultPlugins({ accessLog: { redactQuery: false }, beforeStatic: [env] }) });
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
+	const maxBytes = options.bodyLimit ?? DEFAULT_BODY_LIMIT;
 	return [
 		requestId(options.requestId),
 		accessLog(options.accessLog),
 		streamingCompress(),
+		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
 		...(options.beforeStatic ?? []),
 		assets(),
 		// Why after `assets`: in development, the dev server there answers Vite's paths, such as `/@vite/client`.
 		trailingSlash({ mode: options.trailingSlash ?? "never" }),
 		prerendered(options.prerendered),
+		// Why last: it must see only the responses of the app's routes and the framework.
+		privateDocuments(),
 	];
 }
 

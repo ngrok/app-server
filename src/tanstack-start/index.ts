@@ -1,5 +1,6 @@
 import type { AnyRouter, RegisteredRouter } from "@tanstack/react-router";
 import type { TrailingSlash } from "../core/plugins/trailing-slash.js";
+import { requestContextValues } from "../core/request-context.js";
 import type { FrameworkRuntime, Mode } from "../core/types.js";
 
 /**
@@ -70,7 +71,7 @@ function startServerEntry(module: unknown): StartServerEntry | undefined {
 
 /**
  * The run side of the TanStack Start adapter, for the module of Start's
- * server entry. Start gets the request ID and logger as `appServer` in its
+ * server entry. Start gets the `requestContext()` values as `appServer` in its
  * request context. The server reads the prerendered paths that the Vite plugin
  * recorded.
  *
@@ -93,7 +94,7 @@ export function runtime(
 		fetch: async (request, context) =>
 			entry.fetch(request, {
 				context: {
-					appServer: { requestId: context.var.requestId, logger: context.var.logger },
+					appServer: requestContextValues(context),
 				},
 			}),
 	};

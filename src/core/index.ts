@@ -21,8 +21,16 @@ export {
 } from "./plugins/access-log.js";
 export {
 	//,
+	bodyLimit,
+} from "./plugins/body-limit.js";
+export {
+	//,
 	buildId,
 } from "./plugins/build-id.js";
+export {
+	//,
+	privateDocuments,
+} from "./plugins/private-documents.js";
 export {
 	//,
 	requestId,
@@ -32,6 +40,11 @@ export {
 	PUBLIC_ENV_SCRIPT_ID,
 	runtimeEnv,
 } from "./plugins/runtime-env.js";
+export {
+	//,
+	cspNonce,
+	securityHeaders,
+} from "./plugins/security-headers.js";
 export {
 	//,
 	assets,
@@ -82,6 +95,10 @@ export type {
 } from "./plugins/access-log.js";
 export type {
 	//,
+	BodyLimitOptions,
+} from "./plugins/body-limit.js";
+export type {
+	//,
 	BuildIdOptions,
 } from "./plugins/build-id.js";
 export type {
@@ -95,6 +112,12 @@ export type {
 	RuntimeEnvOptions,
 	StandardSchemaV1,
 } from "./plugins/runtime-env.js";
+export type {
+	//,
+	CspNonceOptions,
+	SecurityHeadersOptions,
+	SecurityHeaderValues,
+} from "./plugins/security-headers.js";
 export type {
 	//,
 	PrerenderedOptions,

@@ -113,18 +113,22 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
 3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
-4. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv` and `buildId` go here.
-5. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
-6. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-7. `prerendered({ headers, rewrite })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file goes on to the framework.
+4. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 MiB by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit, and the response becomes a 413. The body streams. The plugin does not read it into memory.
+5. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, `securityHeaders`, and an auth check go here.
+6. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
+7. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
+8. `prerendered({ headers, rewrite, skip })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+9. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page that the server rendered for one user. A document with its own `Cache-Control` keeps it.
+
+A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
 `defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
 
 ```ts
 import type { Plugin } from "@ngrok/app-server";
 
-const securityHeaders: Plugin = {
-	name: "security-headers",
+const frameOptions: Plugin = {
+	name: "frame-options",
 	middleware: async (c, next) => {
 		await next();
 		c.header("X-Frame-Options", "DENY"); // `c.header` also works on a response with immutable headers
@@ -145,6 +149,96 @@ const version: Plugin = {
 		c.header("X-App-Version", process.env.APP_VERSION);
 	},
 };
+```
+
+## Protect pages
+
+`prerendered()` answers before the app's own routes and before the framework. So an auth check in a loader or in a `server.ts` route never runs for a prerendered file. A prerendered app shell at `/app` goes to a visitor with no session.
+
+Use one of these two fixes:
+
+- Put the auth check in `beforeStatic`. It then runs before each prerendered file and its data file.
+- Send the private paths to the framework with `prerendered({ skip })`, and keep the auth check in the app.
+
+An auth plugin sets `Cache-Control: private` on each response that it lets through. Else a CDN can give a protected file to every visitor.
+
+```ts
+import { createServer, defaultPlugins } from "@ngrok/app-server";
+import type { Plugin } from "@ngrok/app-server";
+
+const auth: Plugin = {
+	name: "auth",
+	middleware: async (c, next) => {
+		if (!c.req.path.startsWith("/app")) {
+			return next();
+		}
+		if (!(await hasSession(c.req.raw))) {
+			return c.redirect("/login", 302);
+		}
+		await next();
+		c.header("Cache-Control", "private, no-cache");
+	},
+};
+
+export default createServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) });
+```
+
+`hasSession` stands for the app's own session check.
+
+## Security headers
+
+`securityHeaders()` sets these headers on each response:
+
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Content-Security-Policy: frame-ancestors 'none'`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`, on an HTTPS request only
+
+A response that has one of these headers keeps its own value. The exception is `Content-Security-Policy`: the plugin adds its policy as a second policy, and a browser enforces both. `false` turns a header off. Put the plugin in `beforeStatic`, so it also sees prerendered pages:
+
+```ts
+defaultPlugins({
+	beforeStatic: [
+		securityHeaders({ headers: { "Cross-Origin-Opener-Policy": "same-origin-allow-popups" } }),
+	],
+});
+```
+
+A site that is in a frame on another site, or that opens an OAuth pop-up, must change `Content-Security-Policy` or `Cross-Origin-Opener-Policy`.
+
+### A CSP nonce for each request
+
+`cspNonce({ policy })` makes a random nonce for each request that reaches the app's routes or the framework. It sets the `Content-Security-Policy` from `policy` on each HTML document that has none. Put it after the static stages. A prerendered page has one nonce in its file for every visitor, so it uses script hashes instead. See [Prerendered headers](#prerendered-headers).
+
+```ts
+createServer({
+	plugins: [
+		...defaultPlugins(),
+		cspNonce({
+			policy: (nonce) =>
+				`script-src 'nonce-${nonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
+		}),
+	],
+});
+```
+
+Give the nonce to the framework's render. `requestContext()?.cspNonce` has it. In React Router, do it in `app/entry.server.tsx`:
+
+```tsx
+const nonce = requestContext()?.cspNonce;
+const { pipe } = renderToPipeableStream(
+	<ServerRouter context={routerContext} url={request.url} nonce={nonce} />,
+	{ nonce /* , … */ },
+);
+```
+
+In TanStack Start, give it to the router:
+
+```ts
+export function getRouter() {
+	return createRouter({ routeTree, ssr: { nonce: requestContext()?.cspNonce } });
+}
 ```
 
 ## Trailing slashes

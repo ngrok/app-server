@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
+import type { Plugin } from "../types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
 const files: Record<string, string> = {
@@ -228,6 +229,34 @@ describe("prerendered", () => {
 				attributes: { "app_server.missing_paths": ["/gone"] },
 			},
 		]);
+	});
+});
+
+describe("prerendered skip", () => {
+	it("lets a plugin before it block a prerendered page and its data file", async () => {
+		const auth: Plugin = {
+			name: "auth",
+			middleware: async (context, next) =>
+				context.req.path.startsWith("/components/") ? context.text("Unauthorized", 401) : next(),
+		};
+		const { request } = await testServer({
+			plugins: [auth, assets(), prerendered()],
+			clientDirectory,
+		});
+
+		expect((await request("/components/button")).status).toBe(401);
+		expect((await request("/components/button.data")).status).toBe(401);
+		expect((await request("/llms.txt")).status).toBe(200);
+	});
+
+	it("sends a path that skip matches to the framework, with no file lookup", async () => {
+		const { request } = await staticServer({
+			skip: (path) => path.startsWith("/components/button"),
+		});
+
+		await expect((await request("/components/button")).text()).resolves.toBe("rendered");
+		await expect((await request("/components/button.data")).text()).resolves.toBe("rendered");
+		await expect((await request("/llms.txt")).text()).resolves.toBe("llms");
 	});
 });
 
