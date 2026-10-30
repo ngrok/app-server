@@ -158,4 +158,31 @@ describe("staleBuildNavigation", () => {
 
 		expect(routed).toStrictEqual([]);
 	});
+
+	it("finds a new build in a prefetch before the click, and reports it once", async () => {
+		const { routed, requests, click } = page({ serverBuild: "v2" });
+		let observe: PerformanceObserverCallback | undefined;
+		vi.stubGlobal(
+			"PerformanceObserver",
+			// oxlint-disable-next-line eslint/prefer-arrow-callback -- the code calls the stub with `new`, which an arrow function refuses.
+			vi.fn(function fakeObserver(callback: PerformanceObserverCallback) {
+				observe = callback;
+				return { observe: () => {}, disconnect: () => {} };
+			}),
+		);
+		const onNewBuild = vi.fn<(served: string) => void>();
+		stop = staleBuildNavigation({ build: "v1", onNewBuild });
+		const prefetch = { serverTiming: [{ name: "build", description: "v2", duration: 0 }] };
+
+		observe?.(
+			{ getEntries: () => [prefetch] } as unknown as PerformanceObserverEntryList,
+			{} as PerformanceObserver,
+		);
+		await fetch("/poll.data");
+		click("settings");
+
+		expect(routed).toStrictEqual([]);
+		expect(requests).toStrictEqual(["http://localhost:3000/poll.data"]);
+		expect(onNewBuild).toHaveBeenCalledExactlyOnceWith("v2");
+	});
 });

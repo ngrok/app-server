@@ -13,6 +13,11 @@ export type StaleBuildNavigationOptions = {
 	 * @default the `build` metric of the document's `Server-Timing`, which `buildId()` sends
 	 */
 	build?: string;
+	/**
+	 * Runs once, when the tab first sees a response from another build. Use
+	 * it to count stale tabs in the app's RUM tool.
+	 */
+	onNewBuild?: (served: string) => void;
 };
 
 /**
@@ -22,11 +27,10 @@ export type StaleBuildNavigationOptions = {
  */
 const PENDING_MS = 10_000;
 
-/** The build in the `Server-Timing` of the document's navigation entry. */
-function documentBuild(): string | undefined {
-	return performance
-		.getEntriesByType("navigation")
-		.filter((entry): entry is PerformanceNavigationTiming => "serverTiming" in entry)
+/** The build in the `Server-Timing` of the first of `entries` that has one. */
+function timingBuild(entries: PerformanceEntryList): string | undefined {
+	return entries
+		.filter((entry): entry is PerformanceResourceTiming => "serverTiming" in entry)
 		.flatMap((entry) => entry.serverTiming)
 		.find((metric) => metric.name === BUILD_ID_METRIC)?.description;
 }
@@ -80,8 +84,8 @@ function methodOf(input: RequestInfo | URL, init: RequestInit | undefined): stri
  * never renders data from the new server, and the page that the visitor
  * reads never reloads.
  *
- * It reads the build of each data response that the router fetches. When the
- * server runs a new build:
+ * It reads the build of each data response that the router fetches, and of
+ * each prefetch that the browser makes. When the server runs a new build:
  *
  * - If the visitor started the navigation (a link click or a history step),
  *   the browser loads the target URL as a document. The old code never sees
@@ -104,7 +108,8 @@ function methodOf(input: RequestInfo | URL, init: RequestInit | undefined): stri
  */
 export function staleBuildNavigation({
 	header = BUILD_ID_HEADER,
-	build = documentBuild(),
+	build = timingBuild(performance.getEntriesByType("navigation")),
+	onNewBuild,
 }: StaleBuildNavigationOptions = {}): () => void {
 	if (build == null) {
 		return () => {};
@@ -113,6 +118,24 @@ export function staleBuildNavigation({
 	const { signal } = listening;
 	let stale = false;
 	let pending: { url: string; at: number } | undefined;
+	const see = (served: string | null | undefined) => {
+		if (served == null || served === build || stale) {
+			return;
+		}
+		stale = true;
+		onNewBuild?.(served);
+	};
+	// Why resource timing: it shows the build of a response that no script fetched, such as a
+	// prefetch on hover, so the tab can find a new build before the click.
+	const observer =
+		typeof PerformanceObserver === "function"
+			? new PerformanceObserver((list) => {
+					for (const entry of list.getEntries()) {
+						see(timingBuild([entry]));
+					}
+				})
+			: undefined;
+	observer?.observe({ type: "resource" });
 
 	addEventListener(
 		"click",
@@ -166,7 +189,7 @@ export function staleBuildNavigation({
 		if (served == null || served === build) {
 			return response;
 		}
-		stale = true;
+		see(served);
 		const target =
 			pending != null && Date.now() - pending.at < PENDING_MS ? pending.url : undefined;
 		if (target == null || methodOf(input, init) !== "GET") {
@@ -179,6 +202,7 @@ export function staleBuildNavigation({
 	};
 	return () => {
 		listening.abort();
+		observer?.disconnect();
 		history.pushState = pushState;
 		history.replaceState = replaceState;
 		globalThis.fetch = send;

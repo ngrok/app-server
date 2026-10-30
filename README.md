@@ -270,7 +270,7 @@ defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION }
 // app/entry.client.tsx (React Router)
 import { staleBuildNavigation } from "@ngrok/app-server/client";
 
-staleBuildNavigation();
+staleBuildNavigation({ onNewBuild: (build) => datadogRum.addAction("new build", { build }) });
 startTransition(() => {
 	hydrateRoot(document, <HydratedRouter />);
 });
@@ -285,11 +285,15 @@ staleBuildNavigation();
 hydrateRoot(document, <StartClient />);
 ```
 
-- `buildId()` sends the build on each data response, and in the `Server-Timing` of each document.
+- `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
+- The module reads the build from the responses that the router fetches, and from the responses that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click.
 - When a data response comes from a new build and the visitor started that navigation with a link click or a history step, the browser loads the target URL as a document. The old code never gets the new data.
 - After that, each link click, history step, and `history.pushState` loads its target as a document.
 - A link to a new window, a download, a modified click, and a link to another origin do not change.
 - Call `staleBuildNavigation()` before the router starts, so its listeners run first.
+- `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
+
+The module sees a build only in a response from this server: a document, a data request of the router, or a route discovery request. An app that loads its data in the browser from another service, such as with TanStack Query, sends few such requests. The module then finds a new build later, and the other service must stay compatible with old clients.
 
 `staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation is a document load, which is also one request. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 

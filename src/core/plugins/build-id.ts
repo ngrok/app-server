@@ -32,9 +32,10 @@ function quoted(value: string): string {
 /**
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
- * happened under it. Each document also gets the build as
- * `Server-Timing: build;desc="<value>"`, which `staleBuildNavigation()`
- * from `@ngrok/app-server/client` reads.
+ * happened under it. Each of them also gets the build as
+ * `Server-Timing: build;desc="<value>"`. `staleBuildNavigation()` from
+ * `@ngrok/app-server/client` reads it from the document, and from a data
+ * response that the browser fetches with no script, such as a prefetch.
  *
  * @example
  * buildId({ value: env.values.PUBLIC_APP_VERSION });
@@ -55,8 +56,6 @@ export function buildId({ header = BUILD_ID_HEADER, value }: BuildIdOptions): Pl
 				const isDocument = response.get("Content-Type")?.startsWith("text/html") ?? false;
 				if (isDocument || isDataRequest(context.req.path)) {
 					response.set(header, value);
-				}
-				if (isDocument) {
 					response.append("Server-Timing", timing);
 				}
 			}),
