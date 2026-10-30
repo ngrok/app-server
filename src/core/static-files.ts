@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
-import type { AppServerEnv, StaticFiles } from "./types.js";
+import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
 
 /** A file under the client build that answers a request. */
 export type StaticFile = {
@@ -112,6 +112,36 @@ async function fileEtag(file: StaticFile, parts: readonly string[]): Promise<str
 	return `W/"${base}-${hash}"`;
 }
 
+/**
+ * The byte range that a `Range` header asks for in a file of `size` bytes.
+ * It gives `"unsatisfiable"` for a range that starts after the end of the
+ * file, and `undefined` for a header to ignore: a header that is not valid,
+ * or one with more than one range.
+ *
+ * @example
+ * byteRange("bytes=-100", 1000); // => { start: 900, end: 999 }
+ */
+export function byteRange(header: string, size: number): ByteRange | "unsatisfiable" | undefined {
+	const groups = /^bytes=(?<first>\d*)-(?<last>\d*)$/u.exec(header.trim())?.groups;
+	const first = groups?.first ?? "";
+	const last = groups?.last ?? "";
+	if (first === "" && last === "") {
+		return undefined;
+	}
+	if (first === "") {
+		const suffix = Number(last);
+		return suffix === 0 || size === 0
+			? "unsatisfiable"
+			: { start: Math.max(0, size - suffix), end: size - 1 };
+	}
+	const start = Number(first);
+	const end = last === "" ? Number.POSITIVE_INFINITY : Number(last);
+	if (end < start) {
+		return undefined;
+	}
+	return start >= size ? "unsatisfiable" : { start, end: Math.min(end, size - 1) };
+}
+
 /** What {@link staticResponse} needs besides the request. */
 export type StaticResponseOptions = {
 	files: StaticFiles;
@@ -125,6 +155,10 @@ export type StaticResponseOptions = {
  * The response for a static file, with a weak ETag from its size,
  * modification time, and the request's `etagParts`. A matching
  * `If-None-Match` gets a 304, and `HEAD` gets the headers only.
+ *
+ * A GET with one `bytes` range gets a 206 with those bytes, and a range
+ * after the end of the file gets a 416. A request with `If-Range` gets the
+ * full file. Why: the ETag is weak, and `If-Range` needs a strong match.
  */
 export async function staticResponse(
 	context: Context<AppServerEnv>,
@@ -143,9 +177,28 @@ export async function staticResponse(
 		responseHeaders.delete("Content-Type");
 		return new Response(null, { status: 304, headers: responseHeaders });
 	}
+	responseHeaders.set("Accept-Ranges", "bytes");
 	responseHeaders.set("Content-Length", String(file.size));
 	if (context.req.method === "HEAD") {
 		return new Response(null, { headers: responseHeaders });
+	}
+	const rangeHeader = context.req.header("Range");
+	const range =
+		rangeHeader == null || context.req.header("If-Range") != null
+			? undefined
+			: byteRange(rangeHeader, file.size);
+	if (range === "unsatisfiable") {
+		responseHeaders.set("Content-Range", `bytes */${file.size}`);
+		responseHeaders.delete("Content-Length");
+		return new Response(null, { status: 416, headers: responseHeaders });
+	}
+	if (range != null) {
+		responseHeaders.set("Content-Range", `bytes ${range.start}-${range.end}/${file.size}`);
+		responseHeaders.set("Content-Length", String(range.end - range.start + 1));
+		return new Response(await files.open(file.path, range), {
+			status: 206,
+			headers: responseHeaders,
+		});
 	}
 	return new Response(await files.open(file.path), { headers: responseHeaders });
 }

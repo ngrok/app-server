@@ -10,7 +10,8 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 
 /**
  * Serves the hashed files under `/assets/` with a one-year immutable cache.
- * A missing asset gets a plain 404, not a rendered page. In development,
+ * A missing asset gets a plain 404 with `Cache-Control: no-store`, not a
+ * rendered page. In development,
  * the dev server serves the source modules, the HMR client, and the CSS here
  * instead.
  *
@@ -34,7 +35,8 @@ export function assets(): Plugin {
 				}
 				const file = await findStaticFile(files, path);
 				if (file == null) {
-					return context.text("Not Found", 404);
+					// Why `no-store`: an old tab asks for the chunks of the build it runs, and a CDN must not keep the miss.
+					return context.text("Not Found", 404, { "Cache-Control": "no-store" });
 				}
 				return staticResponse(context, {
 					files,
@@ -97,7 +99,24 @@ export type PrerenderedOptions = {
 	 * prerendered({ skip: (path) => path === "/app" || path.startsWith("/app/") || path.startsWith("/app.") });
 	 */
 	skip?: (path: string) => boolean;
+	/**
+	 * The `Cache-Control` of a served file, by the file's URL path, such as
+	 * `/about/index.html`. `undefined` sends none. A header that the build
+	 * captured, and the `headers` option, win over it.
+	 *
+	 * The default gives an HTML page and a data file of the framework
+	 * `public, max-age=0, must-revalidate`, so a visitor always sees the newest
+	 * page, and a 304 keeps it fast. It gives every other file
+	 * `public, max-age=3600, stale-while-revalidate=86400`.
+	 *
+	 * @example
+	 * prerendered({ cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined) });
+	 */
+	cacheControl?: (path: string) => string | undefined;
 };
+
+const REVALIDATE = "public, max-age=0, must-revalidate";
+const ONE_HOUR = "public, max-age=3600, stale-while-revalidate=86400";
 
 /** The default markdown twin of a page: `/docs/button.md` for `/docs/button`, and `/index.md` for `/`. */
 function defaultTwinOf(path: string): string {
@@ -142,7 +161,8 @@ function twinOfOption(
  * plus every other file in it. It sends no redirect. The `trailingSlash`
  * plugin does. Each response gets
  * the headers its loader sent at build time (the `appServer` Vite plugin
- * captures them), an ETag, and a 304 for a matching `If-None-Match`. A path
+ * captures them), a `Cache-Control` (see `cacheControl`), an ETag, and a 304
+ * for a matching `If-None-Match`. A GET with one byte range gets a 206. A path
  * with no file goes on to the framework. Off in development.
  *
  * At startup, it warns about each prerendered path that has no file.
@@ -174,16 +194,23 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				});
 			}
 			const twinOf = twinOfOption(options.markdownTwins);
-			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) =>
-				staticResponse(context, {
+			const cacheControl =
+				options.cacheControl ??
+				((path: string) =>
+					path.endsWith(".html") || info.isDataRequest(path) ? REVALIDATE : ONE_HOUR);
+			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
+				const value = cacheControl(file.path);
+				return staticResponse(context, {
 					files,
 					file,
 					headers: {
+						...(value == null ? {} : { "Cache-Control": value }),
 						...capturedHeaders.get(manifestKey(path)),
 						...options.headers?.(path, context),
 					},
 					contentTypes,
 				});
+			};
 			stage = async (context, next) => {
 				const { method } = context.req;
 				if ((method !== "GET" && method !== "HEAD") || options.skip?.(context.req.path) === true) {

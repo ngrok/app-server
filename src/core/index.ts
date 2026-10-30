@@ -138,6 +138,7 @@ export type {
 export type {
 	//,
 	AppServerEnv,
+	ByteRange,
 	FetchHandler,
 	FileInfo,
 	FrameworkRuntime,

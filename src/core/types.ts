@@ -71,6 +71,9 @@ export type FileInfo = {
 	mtimeMs: number;
 };
 
+/** A range of bytes in a file. `start` and `end` are both inclusive. */
+export type ByteRange = { start: number; end: number };
+
 /**
  * The files of the client build. Each path is a URL path that the static
  * stages checked: it starts with `/`, and it has no `..`, no `//`, and no
@@ -79,8 +82,12 @@ export type FileInfo = {
 export type StaticFiles = {
 	/** What is at `path`, or `undefined` when nothing is there. */
 	stat: (path: string) => Promise<FileInfo | undefined>;
-	/** The bytes of the file at `path`. */
-	open: (path: string) => Promise<ReadableStream<Uint8Array>>;
+	/**
+	 * The bytes of the file at `path`. With `range`, only the bytes from
+	 * `start` to `end`, both inclusive. A host must honor `range`, because the
+	 * static stages answer a `Range` request with these bytes.
+	 */
+	open: (path: string, range?: ByteRange) => Promise<ReadableStream<Uint8Array>>;
 };
 
 /** Request-scoped storage, such as `AsyncLocalStorage`. */

@@ -24,18 +24,19 @@ describe("streamingCompress", () => {
 		).toBe("<html>shell");
 	});
 
-	it("drops a Content-Length that the gzip body would break", async () => {
+	it("drops a Content-Length and an Accept-Ranges that the gzip body would break", async () => {
 		const { request } = await testServer({
 			plugins: [streamingCompress()],
 			render: async () =>
 				new Response("<p>hi</p>", {
-					headers: { "Content-Type": "text/html", "Content-Length": "9" },
+					headers: { "Content-Type": "text/html", "Content-Length": "9", "Accept-Ranges": "bytes" },
 				}),
 		});
 
 		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
 
 		expect(response.headers.get("Content-Length")).toBeNull();
+		expect(response.headers.get("Accept-Ranges")).toBeNull();
 		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe("<p>hi</p>");
 	});
 

@@ -47,6 +47,8 @@ export function streamingCompress(): Plugin {
 			// Why after the assignment: Hono copies the old response's headers onto the new one.
 			context.res.headers.set("Content-Encoding", "gzip");
 			context.res.headers.delete("Content-Length");
+			// Why: a range of the gzip bytes cannot be served, because each response compresses again.
+			context.res.headers.delete("Accept-Ranges");
 		},
 	};
 }

@@ -115,9 +115,9 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
 4. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 MiB by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit, and the response becomes a 413. The body streams. The plugin does not read it into memory.
 5. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, `securityHeaders`, and an auth check go here.
-6. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404. In development, Vite serves here.
+6. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 7. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-8. `prerendered({ headers, rewrite, skip })`: every file in the client build, with an ETag and a 304 for a matching `If-None-Match`. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+8. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range. An HTML page and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
 9. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page that the server rendered for one user. A document with its own `Cache-Control` keeps it.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
@@ -240,6 +240,10 @@ export function getRouter() {
 	return createRouter({ routeTree, ssr: { nonce: requestContext()?.cspNonce } });
 }
 ```
+
+## Deploys and open tabs
+
+After a deploy, an open tab still runs the old build. When the visitor goes to a new route, the browser asks for an old chunk, such as `/assets/route-3f9a1c.js`. The new server does not have it, so the navigation fails. Keep the old `/assets/*` files at the CDN or in the image for 7 days after a deploy. Then the old tab keeps working. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404. `buildId()` sends the deployed build on each document and data response. The app's client code can compare it with its own build, and load the next page as a document after a change.
 
 ## Trailing slashes
 
