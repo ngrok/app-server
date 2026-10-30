@@ -254,7 +254,44 @@ export function getRouter() {
 
 ## Deploys and open tabs
 
-After a deploy, an open tab still runs the old build. When the visitor goes to a new route, the browser asks for an old chunk, such as `/assets/route-3f9a1c.js`. The new server does not have it, so the navigation fails. Keep the old `/assets/*` files at the CDN or in the image for 7 days after a deploy. Then the old tab keeps working. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404. `buildId()` sends the deployed build on each document and data response. The app's client code can compare it with its own build, and load the next page as a document after a change.
+After a deploy, an open tab still runs the old build. Two things can then go wrong:
+
+- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
+- **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
+
+`buildId()` and `staleBuildNavigation()` fix the second problem at the next navigation, and the page that the visitor reads never reloads:
+
+```ts
+// server.ts
+defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION })] });
+```
+
+```tsx
+// app/entry.client.tsx (React Router)
+import { staleBuildNavigation } from "@ngrok/app-server/client";
+
+staleBuildNavigation();
+startTransition(() => {
+	hydrateRoot(document, <HydratedRouter />);
+});
+```
+
+```tsx
+// src/client.tsx (TanStack Start)
+import { staleBuildNavigation } from "@ngrok/app-server/client";
+import { StartClient } from "@tanstack/react-start/client";
+
+staleBuildNavigation();
+hydrateRoot(document, <StartClient />);
+```
+
+- `buildId()` sends the build on each data response, and in the `Server-Timing` of each document.
+- When a data response comes from a new build and the visitor started that navigation with a link click or a history step, the browser loads the target URL as a document. The old code never gets the new data.
+- After that, each link click, history step, and `history.pushState` loads its target as a document.
+- A link to a new window, a download, a modified click, and a link to another origin do not change.
+- Call `staleBuildNavigation()` before the router starts, so its listeners run first.
+
+`staleBuildNavigation()` sends no request of its own. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation is a document load, which is also one request. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 
 ## Trailing slashes
 

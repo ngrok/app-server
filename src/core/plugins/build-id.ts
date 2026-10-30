@@ -1,6 +1,16 @@
 import { withHeaderHook } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 
+/** The header that {@link buildId} sets by default. */
+export const BUILD_ID_HEADER = "X-Build-Id";
+
+/**
+ * The `Server-Timing` metric that holds the build of a document. Why
+ * `Server-Timing`: a script can read it from the navigation entry, and the
+ * document's HTML does not change.
+ */
+export const BUILD_ID_METRIC = "build";
+
 /** Options for {@link buildId}. */
 export type BuildIdOptions = {
 	/** @default "X-Build-Id" */
@@ -14,15 +24,23 @@ function noDataRequests(): boolean {
 	return false;
 }
 
+/** A `Server-Timing` quoted string with the characters of `value`. */
+function quoted(value: string): string {
+	return `"${value.replaceAll(/["\\]/gu, String.raw`\$&`)}"`;
+}
+
 /**
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
- * happened under it.
+ * happened under it. Each document also gets the build as
+ * `Server-Timing: build;desc="<value>"`, which `staleBuildNavigation()`
+ * from `@ngrok/app-server/client` reads.
  *
  * @example
  * buildId({ value: env.values.PUBLIC_APP_VERSION });
  */
-export function buildId({ header = "X-Build-Id", value }: BuildIdOptions): Plugin {
+export function buildId({ header = BUILD_ID_HEADER, value }: BuildIdOptions): Plugin {
+	const timing = `${BUILD_ID_METRIC};desc=${quoted(value)}`;
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;
 	return {
 		name: "build-id",
@@ -37,6 +55,9 @@ export function buildId({ header = "X-Build-Id", value }: BuildIdOptions): Plugi
 				const isDocument = response.get("Content-Type")?.startsWith("text/html") ?? false;
 				if (isDocument || isDataRequest(context.req.path)) {
 					response.set(header, value);
+				}
+				if (isDocument) {
+					response.append("Server-Timing", timing);
 				}
 			}),
 	};

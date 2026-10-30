@@ -29,6 +29,22 @@ describe("buildId", () => {
 		expect((await request("/api.json")).headers.get("X-Build-Id")).toBeNull();
 	});
 
+	it("puts the build in the Server-Timing of a document only", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: 'v"42' })],
+			framework: { isDataRequest: (path) => path.endsWith(".data") },
+			render: async (incoming) =>
+				new URL(incoming.url).pathname.endsWith(".data")
+					? new Response("[data]", { headers: { "Content-Type": "text/x-script" } })
+					: new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		expect((await request("/page")).headers.get("Server-Timing")).toBe(
+			String.raw`build;desc="v\"42"`,
+		);
+		expect((await request("/page.data")).headers.get("Server-Timing")).toBeNull();
+	});
+
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {
 		const serve = async (value: string) =>
 			testServer({ plugins: [buildId({ value }), prerendered()], clientDirectory });
