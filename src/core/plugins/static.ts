@@ -1,7 +1,10 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
+import { prefersMarkdown } from "../prefers-markdown.js";
 import { findStaticFile, staticResponse } from "../static-files.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import type { StaticFile } from "../static-files.js";
+import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
+import { trimTrailingSlashes } from "./trailing-slash.js";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
@@ -63,7 +66,66 @@ export type PrerenderedOptions = {
 	 * answer depends on a request header, add a `Vary` for it in a plugin.
 	 */
 	rewrite?: (path: string, context: Context<AppServerEnv>) => string;
+	/**
+	 * Serves the markdown twin of a page, such as `/docs/button.md` for
+	 * `/docs/button`, to a request that {@link prefersMarkdown} accepts. A
+	 * page has a twin when `twinOf` names a file in the client build.
+	 *
+	 * - A request that prefers markdown gets the twin, with the twin's
+	 *   captured headers. `rewrite` does not run for it.
+	 * - Each answer for a path with a twin gets `Vary: Accept`: the twin, the
+	 *   prerendered HTML, and the framework's answer. The server adds
+	 *   `Accept` to the `Vary` header and keeps the values in it.
+	 * - A path with no twin gets no `Vary: Accept`, so a request for the
+	 *   twin's own URL gets none.
+	 *
+	 * `true` uses the default `twinOf`: the path with no trailing slash plus
+	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
+	 * request path.
+	 *
+	 * @example
+	 * prerendered({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
+	 */
+	markdownTwins?: boolean | { twinOf: (path: string) => string | undefined };
 };
+
+/** The default markdown twin of a page: `/docs/button.md` for `/docs/button`, and `/index.md` for `/`. */
+function defaultTwinOf(path: string): string {
+	return `${trimTrailingSlashes(path) || "/index"}.md`;
+}
+
+/** The file of the markdown twin of `path`, or `undefined` when the page has none. */
+async function findTwin(
+	files: StaticFiles,
+	path: string,
+	twinOf: ((path: string) => string | undefined) | undefined,
+): Promise<{ path: string; file: StaticFile } | undefined> {
+	const twinPath = twinOf?.(path);
+	const file = twinPath == null ? undefined : await findStaticFile(files, twinPath);
+	return twinPath == null || file == null ? undefined : { path: twinPath, file };
+}
+
+/** A `Vary` value with `Accept` added, or `undefined` when `vary` already covers `Accept`. */
+function varyWithAccept(vary: string | null): string | undefined {
+	if (vary == null || vary.trim() === "") {
+		return "Accept";
+	}
+	const values = new Set(vary.split(",").map((value) => value.trim().toLowerCase()));
+	return values.has("accept") || values.has("*") ? undefined : `${vary}, Accept`;
+}
+
+/** The `twinOf` function that the `markdownTwins` option selects, or `undefined` when it is off. */
+function twinOfOption(
+	markdownTwins: PrerenderedOptions["markdownTwins"],
+): ((path: string) => string | undefined) | undefined {
+	if (markdownTwins === true) {
+		return defaultTwinOf;
+	}
+	if (markdownTwins == null || markdownTwins === false) {
+		return undefined;
+	}
+	return markdownTwins.twinOf;
+}
 
 /**
  * Serves the client build: prerendered pages at their own URL with a 200,
@@ -101,17 +163,9 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					"app_server.missing_paths": missing,
 				});
 			}
-			stage = async (context, next) => {
-				const { method } = context.req;
-				if (method !== "GET" && method !== "HEAD") {
-					return next();
-				}
-				const path = options.rewrite?.(context.req.path, context) ?? context.req.path;
-				const file = await findStaticFile(files, path);
-				if (file == null) {
-					return next();
-				}
-				return staticResponse(context, {
+			const twinOf = twinOfOption(options.markdownTwins);
+			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) =>
+				staticResponse(context, {
 					files,
 					file,
 					headers: {
@@ -120,6 +174,26 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					},
 					contentTypes,
 				});
+			stage = async (context, next) => {
+				const { method } = context.req;
+				if (method !== "GET" && method !== "HEAD") {
+					return next();
+				}
+				const twin = await findTwin(files, context.req.path, twinOf);
+				const preferred = twin != null && prefersMarkdown(context.req.raw) ? twin : undefined;
+				const path =
+					preferred?.path ?? options.rewrite?.(context.req.path, context) ?? context.req.path;
+				const file = preferred?.file ?? (await findStaticFile(files, path));
+				if (file == null) {
+					await next();
+				} else {
+					context.res = await serve(context, path, file);
+				}
+				const vary = twin == null ? undefined : varyWithAccept(context.res.headers.get("Vary"));
+				if (vary != null) {
+					// Why `context.header`: it also works on a framework response with immutable headers.
+					context.header("Vary", vary);
+				}
 			};
 		},
 		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),

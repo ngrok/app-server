@@ -11,6 +11,8 @@ const files: Record<string, string> = {
 	"index.html": "<h1>Home</h1>",
 	"components/button/index.html": "<h1>Button</h1>",
 	"components/button.md": "# Button",
+	"index.md": "# Home",
+	"docs/rendered.md": "# Rendered",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
 	"llms-full.txt": "x".repeat(200_000),
@@ -25,6 +27,7 @@ const files: Record<string, string> = {
 				"access-control-allow-origin": "*",
 			},
 			"/components/button": { "content-security-policy": "default-src 'self'" },
+			"/components/button.md": { "cache-control": "max-age=60" },
 		},
 	}),
 };
@@ -245,5 +248,128 @@ describe("assets", () => {
 
 		expect(response.status).toBe(404);
 		await expect(response.text()).resolves.toBe("Not Found");
+	});
+});
+
+describe("prerendered markdownTwins", () => {
+	const markdown = { headers: { Accept: "text/markdown" } };
+	const browser = { headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" } };
+
+	it("serves the twin, with its own captured headers, to a request that prefers markdown", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const response = await request("/components/button", markdown);
+
+		await expect(response.text()).resolves.toBe("# Button");
+		expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+		expect(response.headers.get("Cache-Control")).toBe("max-age=60");
+		expect(response.headers.get("Content-Security-Policy")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("serves the HTML with Vary: Accept to a browser", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const response = await request("/components/button", browser);
+
+		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
+		expect(response.headers.get("Content-Security-Policy")).toBe("default-src 'self'");
+		expect(response.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("answers HEAD as GET, and keeps Vary: Accept on a 304", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+		const etag = (await request("/components/button", browser)).headers.get("ETag") ?? "";
+
+		const head = await request("/components/button", { ...markdown, method: "HEAD" });
+		const notModified = await request("/components/button", {
+			headers: { ...browser.headers, "If-None-Match": etag },
+		});
+
+		expect(head.headers.get("Content-Length")).toBe("8");
+		expect(head.headers.get("Vary")).toBe("Accept");
+		expect(notModified.status).toBe(304);
+		expect(notModified.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("serves the twin of the root, of a URL with a trailing slash, and of a page that the framework renders", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const root = await request("/", markdown);
+		const slash = await request("/components/button/", markdown);
+		const renderedTwin = await request("/docs/rendered", markdown);
+		const rendered = await request("/docs/rendered", browser);
+
+		await expect(root.text()).resolves.toBe("# Home");
+		await expect(slash.text()).resolves.toBe("# Button");
+		await expect(renderedTwin.text()).resolves.toBe("# Rendered");
+		await expect(rendered.text()).resolves.toBe("rendered");
+		expect(rendered.headers.get("Vary")).toBe("Accept");
+	});
+
+	it("adds no Vary: Accept for a path with no twin or for the twin's own URL", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const noTwin = await request("/llms.txt", markdown);
+		const twinUrl = await request("/components/button.md", markdown);
+		const missing = await request("/docs/missing", markdown);
+
+		await expect(noTwin.text()).resolves.toBe("llms");
+		expect(noTwin.headers.get("Vary")).toBeNull();
+		await expect(twinUrl.text()).resolves.toBe("# Button");
+		expect(twinUrl.headers.get("Vary")).toBeNull();
+		expect(missing.headers.get("Vary")).toBeNull();
+	});
+
+	it("adds Accept to the Vary values that the headers option sets", async () => {
+		const { request } = await staticServer({
+			markdownTwins: true,
+			headers: () => ({ Vary: "Origin" }),
+		});
+
+		const response = await request("/components/button", browser);
+
+		expect(response.headers.get("Vary")).toBe("Origin, Accept");
+	});
+
+	it("uses twinOf, and applies the request-path rules to the path it returns", async () => {
+		const twins: Record<string, string> = {
+			"/button": "/components/button.md",
+			"/secret": "/.env",
+			"/escape": "/../outside.md",
+		};
+		const { request } = await staticServer({ markdownTwins: { twinOf: (path) => twins[path] } });
+
+		await expect((await request("/button", markdown)).text()).resolves.toBe("# Button");
+		for (const path of ["/secret", "/escape"]) {
+			const response = await request(path, markdown);
+			await expect(response.text()).resolves.toBe("rendered");
+			expect(response.headers.get("Vary")).toBeNull();
+		}
+	});
+
+	it("runs rewrite only when the request does not get the twin", async () => {
+		const seen: string[] = [];
+		const { request } = await staticServer({
+			markdownTwins: true,
+			rewrite: (path) => {
+				seen.push(path);
+				return path;
+			},
+		});
+
+		await request("/components/button", markdown);
+		await request("/components/button", browser);
+
+		expect(seen).toStrictEqual(["/components/button"]);
+	});
+
+	it("is off by default", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/components/button", markdown);
+
+		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
+		expect(response.headers.get("Vary")).toBeNull();
 	});
 });

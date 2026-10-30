@@ -24,7 +24,7 @@ function isFilePath(path: string): boolean {
 }
 
 /** `path` with no trailing slashes. Why a scan, not `/\/+$/`: that regex takes quadratic time on a long run of slashes inside the path. */
-function trimTrailingSlashes(path: string): string {
+export function trimTrailingSlashes(path: string): string {
 	let end = path.length;
 	while (end > 0 && path[end - 1] === "/") {
 		end -= 1;
