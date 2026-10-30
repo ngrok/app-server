@@ -3,6 +3,8 @@ import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
 import { privateDocuments } from "./plugins/private-documents.js";
+import { redirects } from "./plugins/redirects.js";
+import type { RedirectRule } from "./plugins/redirects.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { requestId } from "./plugins/request-id.js";
 import type { RequestIdOptions } from "./plugins/request-id.js";
@@ -70,6 +72,11 @@ export type DefaultPluginsOptions = {
 	accessLog?: AccessLogOptions;
 	prerendered?: PrerenderedOptions;
 	/**
+	 * Redirects from old URL paths to new URLs. They run before
+	 * `trailingSlash`, so an old URL gets one redirect. See {@link redirects}.
+	 */
+	redirects?: readonly RedirectRule[];
+	/**
 	 * How a page URL ends. Set the same mode in the framework's router when it
 	 * has one, else the redirects loop. See {@link trailingSlash}.
 	 * @default "never"
@@ -92,7 +99,8 @@ export type DefaultPluginsOptions = {
 /**
  * The default pipeline, in order: `requestId`, `accessLog`,
  * `streamingCompress`, `bodyLimit`, the `beforeStatic` plugins, `assets`,
- * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
+ * `redirects` (when the option has rules), `trailingSlash`, `prerendered`,
+ * and `privateDocuments`. It is a plain
  * array, so an app can filter it or splice into it.
  *
  * @example
@@ -107,6 +115,9 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
 		...(options.beforeStatic ?? []),
 		assets(),
+		...(options.redirects == null || options.redirects.length === 0
+			? []
+			: [redirects(options.redirects)]),
 		// Why after `assets`: in development, the dev server there answers Vite's paths, such as `/@vite/client`.
 		trailingSlash({ mode: options.trailingSlash ?? "never" }),
 		prerendered(options.prerendered),

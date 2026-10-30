@@ -116,9 +116,10 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 4. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 MiB by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit, and the response becomes a 413. The body streams. The plugin does not read it into memory.
 5. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, `securityHeaders`, and an auth check go here.
 6. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
-7. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-8. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range. An HTML page and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
-9. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page that the server rendered for one user. A document with its own `Cache-Control` keeps it.
+7. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
+8. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
+9. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range. An HTML page and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+10. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page that the server rendered for one user. A document with its own `Cache-Control` keeps it.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
@@ -289,6 +290,33 @@ createServer({
 ```
 
 `"never" satisfies RouterTrailingSlash` fails to type-check here. With no registered router, `RouterTrailingSlash` allows each mode. The server mode wins for each page, because the server redirects first. The router's 307 is temporary, and its `Location` uses the request's host, so a proxy's internal host can leak into it.
+
+## Redirects
+
+A site that moves pages sends a permanent redirect from each old URL. `defaultPlugins({ redirects })` takes a table:
+
+```ts
+defaultPlugins({
+	redirects: [
+		{ from: "/pricing-old", to: "/pricing" },
+		{ from: "/blog/:slug", to: "/articles/:slug" },
+		{ from: "/docs/*", to: "https://docs.example.com/*", status: 308 },
+	],
+});
+```
+
+- A `:name` segment matches one path segment. A `*` last segment matches the rest of the path. The target can use each of them.
+- The status is 301 by default, or 308 to keep the method. The redirect keeps the query string. It applies to GET and HEAD only.
+- The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`.
+- The rules compile at startup. A rule that is not valid stops startup. A local target must be a safe local path, and an absolute target must keep the origin that its rule names. A request whose values break either check gets no redirect.
+
+### Preview deploys
+
+`noindex()` sets `X-Robots-Tag: noindex, nofollow` on each response, so a search engine does not index a preview deploy. Turn it on from the environment:
+
+```ts
+defaultPlugins({ beforeStatic: process.env.PREVIEW === "1" ? [noindex()] : [] });
+```
 
 ## Content negotiation
 

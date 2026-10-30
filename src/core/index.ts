@@ -33,8 +33,16 @@ export {
 } from "./plugins/health.js";
 export {
 	//,
+	noindex,
+} from "./plugins/noindex.js";
+export {
+	//,
 	privateDocuments,
 } from "./plugins/private-documents.js";
+export {
+	//,
+	redirects,
+} from "./plugins/redirects.js";
 export {
 	//,
 	requestId,
@@ -109,6 +117,10 @@ export type {
 	//,
 	HealthOptions,
 } from "./plugins/health.js";
+export type {
+	//,
+	RedirectRule,
+} from "./plugins/redirects.js";
 export type {
 	//,
 	RequestIdOptions,
