@@ -1,7 +1,13 @@
 // A server build entry for `test/runtimes.ts`: the built package with a stub framework, so the
 // same checks run on Node, Bun, and Deno.
 import { join } from "node:path";
-import { createEntry, createServer, eventStream, jsonSink } from "../../dist/index.js";
+import {
+	createEntry,
+	createServer,
+	defaultPlugins,
+	eventStream,
+	jsonSink,
+} from "../../dist/index.js";
 import { host, tcp } from "../../dist/node.js";
 
 const encoder = new TextEncoder();
@@ -20,6 +26,7 @@ const app = createServer({
 		process.stdout.write(line);
 	}),
 	listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+	plugins: defaultPlugins({ bodyLimit: 1024 }),
 	shutdownDeadlineMs: 3_000,
 });
 app.get("/hold-status", (context) => context.text(String(holdCancelled)));
@@ -87,6 +94,7 @@ const routes = {
 		setTimeout(() => {}, 60_000);
 		return new Response("lingering", { headers: { "Content-Type": "text/plain" } });
 	},
+	"/upload": async (request) => new Response(String((await request.arrayBuffer()).byteLength)),
 	"/events": (request) =>
 		eventStream({ signal: request.signal }, ({ send }) => {
 			send({ data: "hello" });

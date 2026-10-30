@@ -183,6 +183,29 @@ async function check(runtime: string): Promise<void> {
 		assert.equal(await rendered.text(), "rendered", "a path with no file goes to the framework");
 		assert.equal(rendered.headers.get("x-request-id"), "abc-123");
 
+		const range = await fetch(new URL("/cpu", base), { headers: { Range: "bytes=0-3" } });
+		assert.equal(range.status, 206, "a byte range gets a 206");
+		assert.equal(await range.text(), "<h1>");
+
+		const upload = async (bytes: number, { streamed }: { streamed: boolean }) => {
+			const body = new Uint8Array(bytes);
+			// Why `duplex`: a request with a stream body needs it, and the DOM types lack it.
+			const init: RequestInit & { duplex: "half" } = {
+				method: "POST",
+				body: streamed ? new Blob([body]).stream() : body,
+				duplex: "half",
+			};
+			const response = await fetch(new URL("/upload", base), init);
+			return { status: response.status, text: await response.text() };
+		};
+		assert.deepEqual(await upload(1024, { streamed: true }), { status: 200, text: "1024" });
+		assert.equal((await upload(2048, { streamed: false })).status, 413, "a large body gets a 413");
+		assert.equal(
+			(await upload(2048, { streamed: true })).status,
+			413,
+			"a large streamed body gets a 413",
+		);
+
 		// The stream sends its shell and holds the rest until `/release`, so this read hangs if
 		// compression holds the stream back.
 		const streamed = await request(new URL("/stream", base).href, { "Accept-Encoding": "gzip" });
