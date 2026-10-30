@@ -199,14 +199,20 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					path.endsWith(".html") || info.isDataRequest(path) ? REVALIDATE : ONE_HOUR);
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				const value = cacheControl(file.path);
+				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });
+				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.
+				for (const layer of [
+					capturedHeaders.get(manifestKey(path)),
+					options.headers?.(path, context),
+				]) {
+					for (const [name, layerValue] of Object.entries(layer ?? {})) {
+						headers.set(name, layerValue);
+					}
+				}
 				return staticResponse(context, {
 					files,
 					file,
-					headers: {
-						...(value == null ? {} : { "Cache-Control": value }),
-						...capturedHeaders.get(manifestKey(path)),
-						...options.headers?.(path, context),
-					},
+					headers: Object.fromEntries(headers),
 					contentTypes,
 				});
 			};

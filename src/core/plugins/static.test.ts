@@ -90,6 +90,17 @@ describe("prerendered", () => {
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
 	});
 
+	it("lets the headers option replace a captured header in any case", async () => {
+		const { request } = await staticServer({
+			headers: (path) =>
+				path === "/components/button.md" ? { "Cache-Control": "private, no-cache" } : undefined,
+		});
+
+		const response = await request("/components/button.md");
+
+		expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
+	});
+
 	it("serves the file that rewrite names, with that file's headers", async () => {
 		const { request } = await staticServer({
 			rewrite: (path, context) =>
@@ -319,6 +330,16 @@ describe("prerendered ranges", () => {
 		const { request } = await staticServer();
 
 		expect((await request("/digits.bin")).headers.get("Accept-Ranges")).toBe("bytes");
+	});
+
+	it("sends the full page for a range of an HTML file, because a later stage can change it", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/components/button", { headers: { Range: "bytes=0-3" } });
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Accept-Ranges")).toBeNull();
+		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
 	});
 });
 

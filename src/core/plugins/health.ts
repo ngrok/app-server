@@ -42,7 +42,9 @@ export function health({
 			return false;
 		}
 		try {
-			return (await ready?.()) ?? true;
+			const appReady = (await ready?.()) ?? true;
+			// Why check again: a stop signal can come while the app check runs.
+			return appReady && !isStopping();
 		} catch {
 			return false;
 		}

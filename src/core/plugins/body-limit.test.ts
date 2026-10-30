@@ -74,4 +74,25 @@ describe("bodyLimit", () => {
 		expect(large.status).toBe(413);
 		await expect(large.text()).resolves.toBe("Payload Too Large");
 	});
+
+	it("errors the response stream when the app streams a body that passes the limit into its response", async () => {
+		const { request } = await testServer({
+			plugins: [bodyLimit({ maxBytes: 25 })],
+			render: async (incoming) => new Response(incoming.body),
+		});
+
+		const response = await request("/upload", streamedBody(3));
+
+		expect(response.status).toBe(200);
+		await expect(response.text()).rejects.toThrow(
+			"The request body is larger than the body limit.",
+		);
+	});
+
+	it("stops startup for a maxBytes that is not a whole number of 0 or more", () => {
+		for (const maxBytes of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+			expect(() => bodyLimit({ maxBytes })).toThrow("bodyLimit needs a maxBytes");
+		}
+		expect(() => bodyLimit({ maxBytes: 0 })).not.toThrow();
+	});
 });

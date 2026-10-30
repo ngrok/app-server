@@ -38,6 +38,38 @@ describe("redirects", () => {
 		).resolves.toStrictEqual({ status: 301, location: "/new?tab=1&ref=ad" });
 	});
 
+	it("adds the query string before the fragment of the target", async () => {
+		await expect(
+			redirected([{ from: "/old", to: "/new#details" }], "/old?ref=ad"),
+		).resolves.toStrictEqual({ status: 301, location: "/new?ref=ad#details" });
+		await expect(
+			redirected([{ from: "/old", to: "/new?tab=1#details" }], "/old?ref=ad"),
+		).resolves.toStrictEqual({ status: 301, location: "/new?tab=1&ref=ad#details" });
+	});
+
+	it("uses the first rule that matches, whether it is a pattern or an exact path", async () => {
+		const rules: RedirectRule[] = [
+			{ from: "/blog/:slug", to: "/articles/:slug" },
+			{ from: "/blog/old", to: "/archive" },
+			{ from: "/news/old", to: "/archive" },
+			{ from: "/news/:slug", to: "/updates/:slug" },
+		];
+
+		await expect(redirected(rules, "/blog/old")).resolves.toMatchObject({
+			location: "/articles/old",
+		});
+		await expect(redirected(rules, "/news/old")).resolves.toMatchObject({ location: "/archive" });
+		await expect(redirected(rules, "/news/new")).resolves.toMatchObject({
+			location: "/updates/new",
+		});
+	});
+
+	it("accepts a :splat parameter next to a *", async () => {
+		await expect(
+			redirected([{ from: "/files/:splat/*", to: "/archive/:splat/*" }], "/files/a/b/c"),
+		).resolves.toStrictEqual({ status: 301, location: "/archive/a/b/c" });
+	});
+
 	it("goes on for a path with no rule, a POST, and a target that leaves the site", async () => {
 		const rules: RedirectRule[] = [
 			{ from: "/old", to: "/new" },

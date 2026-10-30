@@ -183,9 +183,11 @@ async function check(runtime: string): Promise<void> {
 		assert.equal(await rendered.text(), "rendered", "a path with no file goes to the framework");
 		assert.equal(rendered.headers.get("x-request-id"), "abc-123");
 
-		const range = await fetch(new URL("/cpu", base), { headers: { Range: "bytes=0-3" } });
+		const range = await fetch(new URL("/assets/app-abc123.js", base), {
+			headers: { Range: "bytes=0-5" },
+		});
 		assert.equal(range.status, 206, "a byte range gets a 206");
-		assert.equal(await range.text(), "<h1>");
+		assert.equal(await range.text(), "export");
 
 		const upload = async (bytes: number, { streamed }: { streamed: boolean }) => {
 			const body = new Uint8Array(bytes);

@@ -28,6 +28,8 @@ type CompiledRule = {
 	status: 301 | 308;
 	/** The origin of an absolute `to`, else `undefined`. */
 	origin: string | undefined;
+	/** The position of the rule in the table. */
+	index: number;
 };
 
 const PARAM = /^:(?<name>[A-Za-z_]\w*)$/u;
@@ -56,7 +58,8 @@ function compilePattern(from: string): { pattern: RegExp | undefined; names: Set
 				throw new Error(`The redirect from ${from} has a * that is not the last segment.`);
 			}
 			names.add("*");
-			return "(?<splat>.+)";
+			// Why `$`: a `:name` cannot have it, so the group name is free.
+			return "(?<$splat>.+)";
 		}
 		return segment.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
 	});
@@ -67,7 +70,7 @@ function compilePattern(from: string): { pattern: RegExp | undefined; names: Set
 }
 
 /** Compiles a rule, and throws for a rule that is not valid, so a bad table stops startup. */
-function compileRule({ from, to, status = 301 }: RedirectRule): CompiledRule {
+function compileRule({ from, to, status = 301 }: RedirectRule, index: number): CompiledRule {
 	if (!from.startsWith("/")) {
 		throw new Error(`A redirect must be from a path that starts with "/", not ${from}.`);
 	}
@@ -84,28 +87,31 @@ function compileRule({ from, to, status = 301 }: RedirectRule): CompiledRule {
 		if (!isSafeLocalPath(to)) {
 			throw new Error(`The redirect from ${from} goes to ${to}, which is not a safe local path.`);
 		}
-		return { key: matchKey(from), pattern, to, status, origin: undefined };
+		return { key: matchKey(from), pattern, to, status, origin: undefined, index };
 	}
 	const url = URL.parse(to);
 	if (url == null || (url.protocol !== "https:" && url.protocol !== "http:")) {
 		throw new Error(`A redirect must go to a local path or an http(s) URL, not ${to}.`);
 	}
-	return { key: matchKey(from), pattern, to, status, origin: url.origin };
+	return { key: matchKey(from), pattern, to, status, origin: url.origin, index };
 }
 
 /** The target of `rule` for the values that its pattern matched. */
 function fill(to: string, groups: Readonly<Record<string, string | undefined>>): string {
 	return to.replaceAll(TARGET_TOKEN, (token, name: string | undefined) =>
-		name == null ? (groups.splat ?? "") : (groups[name] ?? token),
+		name == null ? (groups.$splat ?? "") : (groups[name] ?? token),
 	);
 }
 
-/** `target` with the query string of the request added. */
+/** `target` with the query string of the request added, before the fragment of `target`. */
 function withQuery(target: string, search: string): string {
 	if (search === "") {
 		return target;
 	}
-	return target.includes("?") ? `${target}&${search.slice(1)}` : `${target}${search}`;
+	const hashIndex = target.indexOf("#");
+	const path = hashIndex === -1 ? target : target.slice(0, hashIndex);
+	const hash = hashIndex === -1 ? "" : target.slice(hashIndex);
+	return `${path}${path.includes("?") ? `&${search.slice(1)}` : search}${hash}`;
 }
 
 /**
@@ -128,7 +134,7 @@ function withQuery(target: string, search: string): string {
  * ]);
  */
 export function redirects(rules: readonly RedirectRule[]): Plugin {
-	const compiled = rules.map((rule) => compileRule(rule));
+	const compiled = rules.map((rule, index) => compileRule(rule, index));
 	const exact = new Map<string, CompiledRule>();
 	for (const rule of compiled.toReversed()) {
 		// Why reversed: the first rule for a path wins.
@@ -139,16 +145,16 @@ export function redirects(rules: readonly RedirectRule[]): Plugin {
 	const patterns = compiled.filter((rule) => rule.pattern != null);
 	const find = (path: string): { rule: CompiledRule; target: string } | undefined => {
 		const exactRule = exact.get(path);
-		if (exactRule != null) {
-			return { rule: exactRule, target: exactRule.to };
-		}
 		for (const rule of patterns) {
+			if (exactRule != null && rule.index > exactRule.index) {
+				break;
+			}
 			const groups = rule.pattern?.exec(path)?.groups;
 			if (groups != null) {
 				return { rule, target: fill(rule.to, groups) };
 			}
 		}
-		return undefined;
+		return exactRule == null ? undefined : { rule: exactRule, target: exactRule.to };
 	};
 	return {
 		name: "redirects",

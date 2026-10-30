@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
+import { markStopping, renewShutdownSignal } from "../shutdown.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import type { LogSink } from "../types.js";
@@ -31,6 +32,25 @@ describe("health", () => {
 
 		expect((await failing.request("/readyz")).status).toBe(503);
 		expect((await throwing.request("/readyz")).status).toBe(503);
+	});
+
+	it("is not ready when a stop signal comes while the app check runs", async () => {
+		const { request } = await testServer({
+			plugins: [
+				health({
+					ready: async () => {
+						markStopping();
+						return true;
+					},
+				}),
+			],
+		});
+
+		try {
+			expect((await request("/readyz")).status).toBe(503);
+		} finally {
+			renewShutdownSignal();
+		}
 	});
 
 	it("fails readiness at the stop signal, and serves requests during the shutdown delay", async () => {

@@ -158,7 +158,8 @@ export type StaticResponseOptions = {
  *
  * A GET with one `bytes` range gets a 206 with those bytes, and a range
  * after the end of the file gets a 416. A request with `If-Range` gets the
- * full file. Why: the ETag is weak, and `If-Range` needs a strong match.
+ * full file. Why: the ETag is weak, and `If-Range` needs a strong match. An
+ * HTML file gets no ranges.
  */
 export async function staticResponse(
 	context: Context<AppServerEnv>,
@@ -177,14 +178,18 @@ export async function staticResponse(
 		responseHeaders.delete("Content-Type");
 		return new Response(null, { status: 304, headers: responseHeaders });
 	}
-	responseHeaders.set("Accept-Ranges", "bytes");
+	// Why no ranges for HTML: `runtimeEnv` adds a script to a page, so a range of the file is not a range of the page.
+	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
+	if (!html) {
+		responseHeaders.set("Accept-Ranges", "bytes");
+	}
 	responseHeaders.set("Content-Length", String(file.size));
 	if (context.req.method === "HEAD") {
 		return new Response(null, { headers: responseHeaders });
 	}
 	const rangeHeader = context.req.header("Range");
 	const range =
-		rangeHeader == null || context.req.header("If-Range") != null
+		html || rangeHeader == null || context.req.header("If-Range") != null
 			? undefined
 			: byteRange(rangeHeader, file.size);
 	if (range === "unsatisfiable") {
