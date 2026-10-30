@@ -50,18 +50,30 @@ function runHooksAtHead(outgoing: ServerResponse, hooks: readonly HeaderHook[]):
 	) => {
 		const [message, given] = typeof reason === "string" ? [reason, values] : [undefined, reason];
 		// Why: the hooks must see the headers that `writeHead` gets, such as the content type of a file.
-		if (given != null && !Array.isArray(given)) {
+		if (Array.isArray(given)) {
+			// Why remove, then append: Node reads a flat `[name, value, …]` list so. A name replaces the old value and can repeat.
+			const names = given.filter((_, index) => index % 2 === 0).map(String);
+			for (const name of names) {
+				outgoing.removeHeader(name);
+			}
+			for (const [index, name] of names.entries()) {
+				const value = given[index * 2 + 1];
+				if (value != null) {
+					outgoing.appendHeader(name, typeof value === "number" ? String(value) : value);
+				}
+			}
+		} else if (given != null) {
 			for (const [name, value] of Object.entries(given)) {
 				if (value != null) {
 					outgoing.setHeader(name, value);
 				}
 			}
 		}
-		for (const hook of hooks) {
+		// Why reversed: in production, the hook of an inner stage runs first, so an outer stage has the last word.
+		for (const hook of hooks.toReversed()) {
 			hook(headers);
 		}
-		const rest = Array.isArray(given) ? given : undefined;
-		return message == null ? writeHead(statusCode, rest) : writeHead(statusCode, message, rest);
+		return message == null ? writeHead(statusCode) : writeHead(statusCode, message);
 	};
 	return () => {
 		outgoing.writeHead = writeHead;

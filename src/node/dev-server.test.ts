@@ -2,7 +2,9 @@ import { setImmediate } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { createServer, serverInternals } from "../core/create-server.js";
 import { accessLog } from "../core/plugins/access-log.js";
+import { withHeaderHook } from "../core/header-hook.js";
 import { bodyLimit } from "../core/plugins/body-limit.js";
+import { buildId } from "../core/plugins/build-id.js";
 import { noindex } from "../core/plugins/noindex.js";
 import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestId } from "../core/plugins/request-id.js";
@@ -156,6 +158,63 @@ describe("devServerStage", () => {
 				...expected,
 				referrer: "strict-origin-when-cross-origin",
 			});
+		} finally {
+			await server?.shutdown();
+		}
+	});
+
+	it("runs the header hooks in the production order, also for array headers of writeHead", async () => {
+		const appPolicy: Plugin = {
+			name: "app-policy",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.set("Content-Security-Policy", "script-src 'self'");
+				}),
+		};
+		const app = createServer({
+			plugins: [
+				securityHeaders({ headers: { "Content-Security-Policy": "frame-ancestors 'none'" } }),
+				buildId({ value: "v1" }),
+				appPolicy,
+				assets(),
+			],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (request, response, next) => {
+			if (request.url === "/array.html") {
+				response.writeHead(200, ["Content-Type", "text/html"]);
+				response.end("<h1>Static</h1>");
+			} else if (request.url === "/set.html") {
+				response.setHeader("Content-Type", "text/html");
+				response.end("<h1>Static</h1>");
+			} else {
+				next();
+			}
+		};
+		const internals = serverInternals(app);
+		const logger = { log: () => {} };
+		await internals?.prepare({
+			...(await productionSetup({ logger })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+
+		const headersOf = async (path: string) => {
+			const response = await fetch(new URL(path, server?.urls[0]));
+			await response.text();
+			return {
+				csp: response.headers.get("Content-Security-Policy"),
+				build: response.headers.get("X-Build-Id"),
+			};
+		};
+		const expected = { csp: "script-src 'self', frame-ancestors 'none'", build: "v1" };
+
+		try {
+			await expect(headersOf("/rendered")).resolves.toStrictEqual(expected);
+			await expect(headersOf("/set.html")).resolves.toStrictEqual(expected);
+			await expect(headersOf("/array.html")).resolves.toStrictEqual(expected);
 		} finally {
 			await server?.shutdown();
 		}

@@ -73,6 +73,19 @@ describe("redirects", () => {
 		).resolves.toStrictEqual({ status: 301, location: "/tags/a&b/" });
 	});
 
+	it("goes on for a request that is already at the target of its rule", async () => {
+		const rules: RedirectRule[] = [{ from: "/tags/:tag", to: "/tags/:tag/" }];
+
+		await expect(redirected(rules, "/tags/a")).resolves.toStrictEqual({
+			status: 301,
+			location: "/tags/a/",
+		});
+		await expect(redirected(rules, "/tags/a/?page=2")).resolves.toStrictEqual({
+			status: 200,
+			location: null,
+		});
+	});
+
 	it("accepts a :splat parameter next to a *", async () => {
 		await expect(
 			redirected([{ from: "/files/:splat/*", to: "/archive/:splat/*" }], "/files/a/b/c"),

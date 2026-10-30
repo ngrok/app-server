@@ -127,7 +127,8 @@ function withQuery(target: string, search: string): string {
  * The rules compile at startup, and a rule that is not valid stops startup.
  * A local target must be a safe local path. An absolute target must keep the
  * origin that its rule names. A request whose values break either check goes
- * on to the next stage. It applies to GET and HEAD only.
+ * on to the next stage, and so does a request that is already at its
+ * target. It applies to GET and HEAD only.
  *
  * Put it before `trailingSlash`, so `/old/` gets one redirect to the final
  * URL. `defaultPlugins({ redirects })` does that.
@@ -175,6 +176,10 @@ export function redirects(rules: readonly RedirectRule[]): Plugin {
 				return next();
 			}
 			const location = withQuery(found.target, url.search);
+			// Why: a rule such as `/tags/:tag` to `/tags/:tag/` also matches its own target.
+			if (new URL(location, url).href === url.href) {
+				return next();
+			}
 			const safe =
 				found.rule.origin == null
 					? isSafeLocalPath(location)

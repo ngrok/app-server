@@ -105,7 +105,7 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `requestId`, `accessLog`,
- * `streamingCompress`, `bodyLimit`, `securityHeaders`, the `beforeStatic`
+ * `streamingCompress`, `securityHeaders`, `bodyLimit`, the `beforeStatic`
  * plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
  * array, so an app can filter it or splice into it.
@@ -119,8 +119,9 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		requestId(options.requestId),
 		accessLog(options.accessLog),
 		streamingCompress(),
-		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
+		// Why before `bodyLimit`: its 413 must also get the security headers.
 		...(options.securityHeaders === false ? [] : [securityHeaders(options.securityHeaders)]),
+		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
 		...(options.beforeStatic ?? []),
 		assets(),
 		...(options.redirects == null || options.redirects.length === 0

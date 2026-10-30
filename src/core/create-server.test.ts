@@ -109,6 +109,30 @@ describe("createServer", () => {
 		expect(cancel).toHaveBeenCalledTimes(1);
 	});
 
+	it("sends the security headers with a 413 from the body limit", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ bodyLimit: 10 }),
+			render: async (incoming) => new Response(await incoming.arrayBuffer()),
+		});
+
+		const declared = await request("/upload", {
+			method: "POST",
+			headers: { "Content-Length": "11" },
+			body: "x".repeat(11),
+		});
+		const init: RequestInit & { duplex: "half" } = {
+			method: "POST",
+			duplex: "half",
+			body: new Blob(["x".repeat(11)]).stream(),
+		};
+		const streamed = await request("/upload", init);
+
+		for (const response of [declared, streamed]) {
+			expect(response.status).toBe(413);
+			expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		}
+	});
+
 	it("adds its headers to a response whose headers are immutable", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins(),

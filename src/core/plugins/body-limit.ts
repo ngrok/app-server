@@ -64,7 +64,8 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 						}
 						controller.enqueue(chunk.value);
 					},
-					cancel: async (reason) => reader?.cancel(reason),
+					// Why `raw.body`: if the app cancels before its first read, no reader exists yet.
+					cancel: async (reason) => (reader ?? raw.body)?.cancel(reason),
 				},
 				// Why 0: the stream reads nothing until the app reads it.
 				{ highWaterMark: 0 },

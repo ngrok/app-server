@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { testServer } from "../../test-server.js";
 import { bodyLimit } from "./body-limit.js";
 
@@ -87,6 +87,26 @@ describe("bodyLimit", () => {
 		await expect(response.text()).rejects.toThrow(
 			"The request body is larger than the body limit.",
 		);
+	});
+
+	it("cancels the request body when the app cancels it before the first read", async () => {
+		const cancel = vi.fn<(reason: unknown) => void>();
+		const init: RequestInit & { duplex: "half" } = {
+			method: "POST",
+			duplex: "half",
+			body: new ReadableStream<Uint8Array>({ cancel }),
+		};
+		const { request } = await testServer({
+			plugins: [bodyLimit({ maxBytes: 10 })],
+			render: async (incoming) => {
+				await incoming.body?.cancel("not needed");
+				return new Response("ok");
+			},
+		});
+
+		await request("/upload", init);
+
+		expect(cancel).toHaveBeenCalledExactlyOnceWith("not needed");
 	});
 
 	it("stops startup for a maxBytes that is not a whole number of 0 or more", () => {
