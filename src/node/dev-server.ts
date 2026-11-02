@@ -41,6 +41,9 @@ function runHooksAtHead(outgoing: ServerResponse, hooks: readonly HeaderHook[]):
 		append: (name, value) => {
 			outgoing.appendHeader(name, value);
 		},
+		delete: (name) => {
+			outgoing.removeHeader(name);
+		},
 	};
 	const writeHead = outgoing.writeHead.bind(outgoing);
 	outgoing.writeHead = (

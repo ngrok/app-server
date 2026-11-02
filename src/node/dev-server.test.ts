@@ -219,4 +219,34 @@ describe("devServerStage", () => {
 			await server?.shutdown();
 		}
 	});
+
+	it("lets a header hook delete a header of the middleware's answer", async () => {
+		const app = createServer({
+			plugins: [buildId({ value: "v42" }), assets()],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (_request, response) => {
+			response.setHeader("X-Build-Id", "api-v7");
+			response.setHeader("Server-Timing", 'build;desc="api-v7"');
+			response.end("{}");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+
+		try {
+			const response = await fetch(new URL("/@vite/client", server?.urls[0]));
+			await response.text();
+
+			expect(response.headers.get("X-Build-Id")).toBeNull();
+			expect(response.headers.get("Server-Timing")).toBeNull();
+		} finally {
+			await server?.shutdown();
+		}
+	});
 });

@@ -29,6 +29,89 @@ describe("buildId", () => {
 		expect((await request("/api.json")).headers.get("X-Build-Id")).toBeNull();
 	});
 
+	it("puts the build in the Server-Timing of documents and data responses", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: 'v"42' })],
+			framework: { isDataRequest: (path) => path.endsWith(".data") },
+			render: async (incoming) =>
+				new URL(incoming.url).pathname === "/api.json"
+					? Response.json({})
+					: new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+		const timing = String.raw`build;desc="v\"42"`;
+
+		expect((await request("/page")).headers.get("Server-Timing")).toBe(timing);
+		expect((await request("/page.data")).headers.get("Server-Timing")).toBe(timing);
+		expect((await request("/api.json")).headers.get("Server-Timing")).toBeNull();
+	});
+
+	it("puts the build in the Server-Timing of the paths option, but not a response that a cache can use again", async () => {
+		const headers: Record<string, Record<string, string>> = {
+			"/api/keys": {},
+			"/api/no-store": { "Cache-Control": "private, no-store, max-age=60" },
+			"/api/public": { "Cache-Control": "public" },
+			"/api/fresh": { "Cache-Control": "max-age=60" },
+			"/api/private": { "Cache-Control": "private, max-age=60" },
+			"/api/stale": { "Cache-Control": "max-age=0, stale-while-revalidate=30" },
+			"/api/modified": { "Last-Modified": "Tue, 01 Jan 2030 00:00:00 GMT" },
+		};
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42", paths: (path) => path.startsWith("/api/") })],
+			render: async (incoming) =>
+				Response.json({}, { headers: headers[new URL(incoming.url).pathname] ?? {} }),
+		});
+
+		const responses = await Promise.all(
+			[...Object.keys(headers), "/status.json"].map(async (path) => request(path)),
+		);
+
+		expect(responses.map((response) => response.headers.get("Server-Timing"))).toStrictEqual([
+			'build;desc="v42"',
+			'build;desc="v42"',
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+		]);
+		expect(responses.map((response) => response.headers.get("X-Build-Id"))).toStrictEqual(
+			Array.from(responses, () => null),
+		);
+	});
+
+	it("replaces the build of an upstream API, and keeps the other metrics", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42", paths: (path) => path.startsWith("/api/") })],
+			render: async (incoming) =>
+				Response.json(
+					{},
+					{
+						headers: {
+							"Cache-Control": incoming.url.endsWith("/cached") ? "max-age=60" : "no-store",
+							"Server-Timing": String.raw`db;dur=5, build;desc="api-v7", cache;desc="a\", b"`,
+							"X-Build-Id": "api-v7",
+						},
+					},
+				),
+		});
+
+		const responses = await Promise.all(
+			["/api/keys", "/api/cached", "/status/cached"].map(async (path) => request(path)),
+		);
+
+		expect(responses.map((response) => response.headers.get("Server-Timing"))).toStrictEqual([
+			String.raw`db;dur=5, cache;desc="a\", b", build;desc="v42"`,
+			String.raw`db;dur=5, cache;desc="a\", b"`,
+			String.raw`db;dur=5, cache;desc="a\", b"`,
+		]);
+		expect(responses.map((response) => response.headers.get("X-Build-Id"))).toStrictEqual([
+			null,
+			null,
+			null,
+		]);
+	});
+
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {
 		const serve = async (value: string) =>
 			testServer({ plugins: [buildId({ value }), prerendered()], clientDirectory });
