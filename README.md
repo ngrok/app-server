@@ -312,16 +312,16 @@ defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION }
 
 - `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
 - The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
-- The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, and a history step each act as the router acts.
+- The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, a history step, and `blocker.proceed()` each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never gets the new data.
-- If the tab already knows of a new build, the next navigation loads its target as a document before the old code renders it. With React Router, the root middleware does this for each `navigate` call, also to a route with no loader, and the router sends no data request. TanStack Router does this for each navigation to a new path or query.
-- The document load keeps the URL fragment, such as `#usage`.
+- If the tab already knows of a new build, the next navigation loads its target as a document before the old code renders it. With React Router, the root middleware does this for each `navigate` call, also to a route with no loader, and the router sends no data request. TanStack Router does this for each navigation to a new path or query, and clears its cache first, so the old code never renders the data of a preload.
+- The document load keeps the URL fragment, such as `#usage`, and a replace navigation stays a replace.
 - A revalidation, a fetcher, an action, the loaders after an action, and a request outside a navigation get their response, and only mark the tab. The page that the visitor reads never reloads, and a form keeps its result.
 - A change to the fragment stays in the page.
 - `onNewBuild(served)` runs once, when the tab first sees another build. Use it to count stale tabs in the app's RUM tool.
 - `app/root.tsx` also runs on the server. The module reads no browser state until React Router calls it.
 - With React Router, a history step to a route with no loader stays on the old build. The next link moves the tab.
-- `unstable_fetch` is an experimental React Router prop, and React Router can change it. The other two hooks are stable React Router APIs.
+- `unstable_fetch` is an experimental React Router prop, and the middleware reads `unstable_initiator` and `unstable_navigationType` from its arguments. React Router can change them.
 
 The module sees a build only in a response from this server. By default, that is a document, a data request of the router, or a route discovery request. An app that loads its data in the browser, such as with TanStack Query, sends few of those. Send its queries through proxy routes on this server, as the next section shows, and each query also carries the build. A request that goes to another service directly carries no build, and that service must stay compatible with old clients.
 
@@ -342,7 +342,7 @@ const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] 
 - The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
 - Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
 - The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
-- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build.
+- The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build. `staleBuildTanStack()` also reads it from each `fetch` response, so a loader that gets the new build's data in a navigation loads the page as a document.
 - `buildId()` removes the `X-Build-Id` header and the `build` metric of the upstream API from each response, so the client reads only this app's build.
 - A response that a cache can use again without the server gets no build, so a cached copy never reports an old build. That is a response with `public`, a `max-age`, an `s-maxage`, a stale time, a future `Expires`, or a `Last-Modified`, and with no `no-cache` or `no-store`.
 

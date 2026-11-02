@@ -50,14 +50,22 @@ function isReusable(response: ResponseHeaders): boolean {
 	);
 }
 
-/** The `Server-Timing` metrics of `header` that are not a build. */
-function otherMetrics(header: string | null): string[] {
+/** The metrics of a `Server-Timing` header, such as `build;desc="v42"`. */
+export function serverTimingMetrics(header: string | null): string[] {
 	// Why match the quoted strings: a comma or an escaped quote in a description does not end a metric.
 	return (header?.match(/(?:[^",]|"(?:[^"\\]|\\.)*")+/gu) ?? [])
 		.map((metric) => metric.trim())
-		.filter(
-			(metric) => metric !== "" && metric.split(";")[0]?.trim().toLowerCase() !== BUILD_ID_METRIC,
-		);
+		.filter((metric) => metric !== "");
+}
+
+/** Whether a `Server-Timing` metric is a build. */
+export function isBuildMetric(metric: string): boolean {
+	return metric.split(";")[0]?.trim().toLowerCase() === BUILD_ID_METRIC;
+}
+
+/** The `Server-Timing` metrics of `header` that are not a build. */
+function otherMetrics(header: string | null): string[] {
+	return serverTimingMetrics(header).filter((metric) => !isBuildMetric(metric));
 }
 
 /** The data check before `setup` runs. */

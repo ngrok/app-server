@@ -161,31 +161,6 @@ describe("staleBuildReactRouter", () => {
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
 	});
 
-	it("never takes a fetcher's middleware call for a navigation", async () => {
-		const { documentLoads } = page({ serverBuild: "v2" });
-		const staleBuild = staleBuildReactRouter({ build: "v1" });
-		const { navigate, fetch: fetcher } = instrumentations(staleBuild);
-		await staleBuild.fetch(dataRequest("/dashboard.data"), { type: "revalidation" });
-		const loaded = Promise.withResolvers<undefined>();
-		void fetcher(async () => loaded.promise);
-		let result: Promise<string> | undefined;
-
-		void navigate(
-			async () => {
-				result = staleBuild.middleware(
-					{ request: dataRequest("/notifications") },
-					async () => "next",
-				);
-				return result;
-			},
-			{ to: "/settings" },
-		);
-		loaded.resolve(undefined);
-
-		await expect(result).resolves.toBe("next");
-		expect(documentLoads).toStrictEqual([]);
-	});
-
 	it("returns the data of a navigation with one request while the server runs the same build", async () => {
 		const { requests, documentLoads } = page({ serverBuild: "v1" });
 		const routerFetch = started({ build: "v1" }).fetch;
@@ -256,11 +231,15 @@ describe("staleBuildReactRouter", () => {
 
 		// Why two signals: a browser gives each `Request` its own signal.
 		const action = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
-		const loaders = await routerFetch(dataRequest("/settings.data?_routes=root"), PUSH);
+		// Why two loader requests: a `clientLoader` that calls `serverLoader()` gets its own request.
+		const loaders = await Promise.all([
+			routerFetch(dataRequest("/settings.data?_routes=root"), PUSH),
+			routerFetch(dataRequest("/settings.data?_routes=routes/settings"), PUSH),
+		]);
 		const next = routerFetch(dataRequest("/usage.data"), PUSH);
 
 		expect(action.status).toBe(200);
-		expect(loaders.status).toBe(200);
+		expect(loaders.map((response) => response.status)).toStrictEqual([200, 200]);
 		await expect(settles(next)).resolves.toBe(false);
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
 	});
@@ -430,6 +409,7 @@ describe("staleBuildReactRouter with a real router and no loaders", () => {
 						{ path: "dashboard" },
 						{ path: "settings", action: () => "saved" },
 						{ path: "usage" },
+						{ path: "notifications", loader: async () => new Promise(() => {}) },
 					],
 				},
 			],
@@ -462,6 +442,50 @@ describe("staleBuildReactRouter with a real router and no loaders", () => {
 
 		await expect(settles(navigation)).resolves.toBe(false);
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
+		expect(router.state.location.pathname).toBe("/dashboard");
+	});
+
+	it("keeps a replace navigation a replace when it loads the target as a document", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+
+		void router.navigate("/settings", { replace: true });
+
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual(["replace http://localhost:3000/settings"]);
+		});
+	});
+
+	it("loads the target of a navigation as a document while a fetcher runs", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+
+		void router.fetch("notifications", "root", "/notifications");
+		void router.navigate("/usage");
+
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
+		});
+		expect(router.state.location.pathname).toBe("/dashboard");
+	});
+
+	it("loads the target with its fragment as a document when a blocker lets the navigation go on", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { report } = fakeObserver();
+		const router = reactRouter(staleBuildReactRouter({ build: "v1" }));
+		report("http://localhost:3000/api/keys", "v2");
+		router.getBlocker("unsaved", () => true);
+
+		await router.navigate("/settings#usage");
+		router.state.blockers.get("unsaved")?.proceed?.();
+
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
+		});
 		expect(router.state.location.pathname).toBe("/dashboard");
 	});
 
@@ -499,13 +523,17 @@ describe("staleBuildReactRouter with a real router and no loaders", () => {
 		report("http://localhost:3000/api/keys", "v2");
 		let fetcher: Promise<string> | undefined;
 
+		// Why these fields: React Router gives the middleware the arguments of its data strategy.
+		const call = (path: string) => ({
+			request: dataRequest(path),
+			unstable_initiator: "navigation",
+			unstable_navigationType: "PUSH",
+		});
+
 		void navigate(
 			async () => {
-				void staleBuild.middleware({ request: dataRequest("/settings") }, async () => "next");
-				fetcher = staleBuild.middleware(
-					{ request: dataRequest("/notifications") },
-					async () => "next",
-				);
+				void staleBuild.middleware(call("/settings"), async () => "next");
+				fetcher = staleBuild.middleware(call("/notifications"), async () => "next");
 				return fetcher;
 			},
 			{ to: "/settings" },
@@ -706,6 +734,47 @@ describe("staleBuildTanStack", () => {
 		await expect(settles(navigation)).resolves.toBe(false);
 		expect(slow).toHaveBeenCalledTimes(1);
 		expect(loaded).toStrictEqual(["/dashboard"]);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
+	});
+
+	it("reloads when the data of a navigation comes from a proxy route of a new build", async () => {
+		const { documentLoads } = page({ serverBuild: "v1" });
+		const { router, loaded } = tanstack({ "/settings": ["/api/keys"] });
+		await router.load();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<typeof fetch>(
+				async () =>
+					new Response("data", {
+						headers: { "Server-Timing": String.raw`db;dur=5, build;desc="v\"2"` },
+					}),
+			),
+		);
+		const onNewBuild = vi.fn<(served: string) => void>();
+		cleanups.push(staleBuildTanStack(router, { build: "v1", onNewBuild }));
+
+		const navigation = router.navigate({ to: "/settings" });
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(loaded).toStrictEqual(["/dashboard"]);
+		expect(onNewBuild).toHaveBeenCalledExactlyOnceWith('v"2');
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
+	});
+
+	it("never renders the data of a preload from a new build while the target loads as a document", async () => {
+		const { server, documentLoads } = page({ serverBuild: "v1" });
+		const { router, loaded } = tanstack({ "/settings": ["/_serverFn/settings"] });
+		await router.load();
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
+		server.build = "v2";
+
+		// Why the cast: the test router has no registered route types.
+		await router.preloadRoute({ to: "/settings" } as Parameters<typeof router.preloadRoute>[0]);
+		const navigation = router.navigate({ to: "/settings" });
+
+		await expect(settles(navigation)).resolves.toBe(false);
+		expect(loaded).toStrictEqual(["/dashboard", "/settings"]);
+		expect(router.state.resolvedLocation?.pathname).toBe("/dashboard");
 		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
 	});
 

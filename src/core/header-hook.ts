@@ -51,7 +51,10 @@ export async function withHeaderHook(
 			write(name, value, { append: true });
 		},
 		delete: (name) => {
-			write(name, undefined, { append: false });
+			// Why check first: the first write copies the response, and a missing header needs no copy.
+			if (context.res.headers.has(name)) {
+				write(name, undefined, { append: false });
+			}
 		},
 	};
 	hook(headers);

@@ -1,4 +1,9 @@
-import { BUILD_ID_HEADER, BUILD_ID_METRIC } from "../core/plugins/build-id.js";
+import {
+	BUILD_ID_HEADER,
+	BUILD_ID_METRIC,
+	isBuildMetric,
+	serverTimingMetrics,
+} from "../core/plugins/build-id.js";
 
 /** Options for {@link staleBuildReactRouter} and {@link staleBuildTanStack}. */
 export type StaleBuildOptions = {
@@ -36,6 +41,7 @@ type EventLocation = { pathname: string; searchStr: string };
 /** The part of a TanStack Router that {@link staleBuildTanStack} reads. */
 export type NavigationEvents = {
 	history: { flush: () => void };
+	clearCache: () => void;
 	subscribe: (
 		type: "onBeforeNavigate" | "onResolved",
 		listener: (event: { fromLocation?: EventLocation; toLocation: EventLocation }) => void,
@@ -60,6 +66,15 @@ function timingBuild(entries: PerformanceEntryList): string | undefined {
 			.flatMap((entry) => entry.serverTiming)
 			.find((metric) => metric.name === BUILD_ID_METRIC)?.description
 	);
+}
+
+/** The build in a `Server-Timing` header, as `buildId()` writes it. */
+function headerBuild(header: string | null): string | undefined {
+	const { quoted, token } =
+		serverTimingMetrics(header)
+			.find((metric) => isBuildMetric(metric))
+			?.match(/;\s*desc\s*=\s*(?:"(?<quoted>(?:[^"\\]|\\.)*)"|(?<token>[^;\s]*))/iu)?.groups ?? {};
+	return quoted?.replaceAll(/\\(?<char>.)/gu, "$<char>") ?? token;
 }
 
 /** The page of `url`: the router renders a new route for a new path or query, not for a new fragment. */
@@ -155,9 +170,10 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
 		isStale: () => stale,
 		/** Whether `response` comes from a new build of this origin. `url` is the URL of the request. */
 		isNew: (response: Response, url: string) => {
-			// Why the final URL: a redirect can end on another origin.
+			// Why the final URL: a redirect can end on another origin. Why `Server-Timing`: a proxy
+			// route of `buildId({ paths })` sends no build header.
 			const served = isOwn(response.url === "" ? url : response.url)
-				? response.headers.get(header)
+				? (response.headers.get(header) ?? headerBuild(response.headers.get("Server-Timing")))
 				: null;
 			see(served);
 			return served != null && served !== current;
@@ -172,7 +188,17 @@ type NavigateInfo = { to: string | number; formMethod?: string };
 /** The router instrumentations that {@link staleBuildReactRouter} adds. */
 type RouterInstrumentations = {
 	navigate: (handler: () => Promise<unknown>, info: NavigateInfo) => Promise<void>;
-	fetch: (handler: () => Promise<unknown>) => Promise<void>;
+};
+
+/**
+ * The arguments of a client middleware call. Why the `unstable_` fields: React
+ * Router gives the middleware the arguments of its data strategy, which tell a
+ * navigation from a fetcher and give its history action.
+ */
+type MiddlewareArgs = {
+	request: Request;
+	unstable_initiator?: string;
+	unstable_navigationType?: string | null;
 };
 
 /** The hooks that {@link staleBuildReactRouter} gives to React Router. */
@@ -239,17 +265,18 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 		watched ??= { watch: watchBuild(options) };
 		return watched.watch;
 	};
-	/** The path of the last action. The router revalidates the page with the loaders after it. */
+	/**
+	 * The path of the action of the `navigate` call that runs now. The router
+	 * revalidates the page with one or more loader requests after it.
+	 */
 	let action: string | undefined;
 	/** The target that the tab loads as a document now. */
 	let leaving: string | undefined;
 	/**
-	 * The `navigate` call that runs now. `claimed` is true when its first
-	 * middleware call already ran, or when it is not a page load.
+	 * The last `navigate` call. `claimed` is true when its first middleware call
+	 * already ran, or when it is not a page load.
 	 */
 	let navigating: { hash: string; claimed: boolean } | undefined;
-	/** The number of fetcher calls that run now. */
-	let fetchers = 0;
 	const load = async (
 		request: Request,
 		target: string,
@@ -284,13 +311,15 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 			// Why the hash of the `navigate` call: the router removes it from the data request.
 			const target = targetOf(request) + (navigationType === "POP" ? "" : (navigating?.hash ?? ""));
 			const path = new URL(target).pathname;
-			const isAfterAction = action === path;
-			action = request.method === "GET" ? undefined : path;
-			onAbort(request.signal, () => {
-				if (action === path) {
-					action = undefined;
-				}
-			});
+			const isAfterAction = request.method === "GET" && action === path;
+			if (request.method !== "GET") {
+				action = path;
+				onAbort(request.signal, () => {
+					if (action === path) {
+						action = undefined;
+					}
+				});
+			}
 			// Why check the signal: a canceled navigation must never load its target.
 			const isNavigation = () =>
 				request.method === "GET" && !isAfterAction && !request.signal.aborted;
@@ -314,31 +343,45 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 							claimed: typeof to === "number" || (formMethod ?? "GET").toUpperCase() !== "GET",
 						};
 						navigating = current;
+						action = undefined;
 						await handler();
-						if (navigating === current) {
+						// Why keep an unclaimed call: a blocker stops it, and `blocker.proceed()` starts it
+						// again with no `navigate` call.
+						if (navigating === current && current.claimed) {
 							navigating = undefined;
 						}
-					},
-					fetch: async (handler) => {
-						fetchers += 1;
-						await handler();
-						fetchers -= 1;
 					},
 				});
 			},
 		},
-		middleware: async ({ request }, next) => {
+		middleware: async (args, next) => {
+			const {
+				request,
+				unstable_initiator: initiator,
+				unstable_navigationType: navigationType,
+			} = args as MiddlewareArgs;
 			const current = navigating;
-			// Why the first call only: the router runs the middleware of a `navigate` call before the
-			// fetchers that it revalidates. Why no fetcher: a fetcher call has its own middleware.
-			if (current == null || current.claimed || fetchers > 0 || request.signal.aborted) {
+			// Why no history step: it comes from no `navigate` call, and the fetch hook reloads it.
+			// Why the first call only: the router runs the middleware of a navigation before the
+			// fetchers that it revalidates, and they have the same initiator.
+			if (
+				initiator !== "navigation" ||
+				navigationType == null ||
+				navigationType === "POP" ||
+				current == null ||
+				current.claimed
+			) {
 				return next();
 			}
 			current.claimed = true;
-			if (watch()?.isStale() !== true || pageOf(request.url) === pageOf(location.href)) {
+			if (
+				request.signal.aborted ||
+				watch()?.isStale() !== true ||
+				pageOf(request.url) === pageOf(location.href)
+			) {
 				return next();
 			}
-			return load(request, request.url + current.hash);
+			return load(request, request.url + current.hash, { navigationType });
 		},
 	};
 }
@@ -354,7 +397,7 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
  *   runs, such as from a server function in a loader, the browser loads the
  *   page as a document.
  * - When the tab already knows of a new build, a navigation to a new path or
- *   query loads the page as a document.
+ *   query clears the router cache and loads the page as a document.
  * - A request outside a navigation gets its response, and only marks the tab.
  *
  * It sends no request of its own and adds no wait. It needs `buildId()` in
@@ -401,6 +444,9 @@ export function staleBuildTanStack(
 			}
 			navigation = { leaving: false };
 			if (watch.isStale()) {
+				// Why clear: the router matches the target after this event, and a preload can hold the
+				// new build's data. With no cache, each loader fetches again, and `fetch` holds it.
+				router.clearCache();
 				void reload(navigation);
 			}
 		}),
