@@ -97,19 +97,32 @@ function matchesEtag(ifNoneMatch: string | undefined, etag: string): boolean {
 	);
 }
 
-/** A weak ETag from a file's size, its modification time, and the request's `etagParts`. */
-async function fileEtag(file: StaticFile, parts: readonly string[]): Promise<string> {
-	const base = `${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}`;
-	if (parts.length === 0) {
-		return `W/"${base}"`;
+/**
+ * The last `etagParts` and their hash. Why one entry: each request has the
+ * same parts for the life of the process.
+ */
+let lastParts: { key: string; hash: string } | undefined;
+
+/** A short hash of the request's `etagParts`. */
+async function partsHash(parts: readonly string[]): Promise<string> {
+	const key = parts.join("\0");
+	if (lastParts?.key === key) {
+		return lastParts.hash;
 	}
 	// Why Web Crypto: each host has it, and the core imports no Node module.
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(parts.join("\0")));
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
 	const hash = btoa(String.fromCodePoint(...new Uint8Array(digest)))
 		.replaceAll("+", "-")
 		.replaceAll("/", "_")
 		.slice(0, 16);
-	return `W/"${base}-${hash}"`;
+	lastParts = { key, hash };
+	return hash;
+}
+
+/** A weak ETag from a file's size, its modification time, and the request's `etagParts`. */
+async function fileEtag(file: StaticFile, parts: readonly string[]): Promise<string> {
+	const base = `${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}`;
+	return parts.length === 0 ? `W/"${base}"` : `W/"${base}-${await partsHash(parts)}"`;
 }
 
 /**
@@ -205,5 +218,9 @@ export async function staticResponse(
 			headers: responseHeaders,
 		});
 	}
-	return new Response(await files.open(file.path), { headers: responseHeaders });
+	// Why the size as a range: the body then never has more bytes than its `Content-Length`, even
+	// when the file grew after `stat`, and a small file reads into a small buffer.
+	const body =
+		file.size === 0 ? null : await files.open(file.path, { start: 0, end: file.size - 1 });
+	return new Response(body, { headers: responseHeaders });
 }

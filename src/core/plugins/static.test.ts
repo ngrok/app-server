@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ const files: Record<string, string> = {
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
 	"digits.bin": "0123456789",
+	"growing.txt": "0123456789",
 	"legacy.htm": "<h1>Legacy</h1>",
 	"images/logo.svg": "<svg></svg>",
 	"llms-full.txt": "x".repeat(200_000),
@@ -187,6 +188,16 @@ describe("prerendered", () => {
 
 		expect(response.headers.get("Content-Length")).toBe("200000");
 		expect(first?.value?.byteLength).toBeLessThan(200_000);
+	});
+
+	it("sends no more bytes than its Content-Length when the file grows after the lookup", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/growing.txt");
+		appendFileSync(join(clientDirectory, "growing.txt"), "more");
+
+		expect(response.headers.get("Content-Length")).toBe("10");
+		await expect(response.text()).resolves.toBe("0123456789");
 	});
 
 	it("answers HEAD with the length and no body", async () => {

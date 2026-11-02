@@ -4,37 +4,60 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ByteRange, StaticFiles } from "../core/types.js";
 
+/** Why: one read fills one chunk, so a slow client holds one chunk, not the whole file. */
+const CHUNK_BYTES = 65_536;
+
 /**
- * A file's bytes, one chunk for each pull, so a slow client holds one chunk,
- * not the whole file. With `range`, it reads only those bytes. The handle
- * closes at the end, on an error, or on cancel.
+ * A file's bytes, one chunk for each pull. With `range`, it reads only those
+ * bytes. The file opens on the first pull and closes at the end, on an error,
+ * or on cancel.
+ *
+ * Why open on the first pull: a stage can drop a response that no one reads,
+ * such as when a later stage throws. Node.js 26 throws an uncaught error when
+ * garbage collection closes an open `FileHandle`.
  */
-function fileStream(handle: FileHandle, range: ByteRange | undefined): ReadableStream<Uint8Array> {
+function fileStream(path: string, range: ByteRange | undefined): ReadableStream<Uint8Array> {
+	let handle: FileHandle | undefined;
 	let position = range?.start ?? 0;
 	const end = range == null ? Number.POSITIVE_INFINITY : range.end + 1;
-	return new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			try {
-				const length = Math.min(65_536, end - position);
-				const { bytesRead, buffer } =
-					length <= 0
-						? { bytesRead: 0, buffer: new Uint8Array(0) }
-						: await handle.read({ buffer: new Uint8Array(length), position });
-				if (bytesRead === 0) {
-					await handle.close();
-					controller.close();
-				} else {
-					position += bytesRead;
-					controller.enqueue(buffer.subarray(0, bytesRead));
+	const close = async () => {
+		const opened = handle;
+		handle = undefined;
+		await opened?.close();
+	};
+	return new ReadableStream<Uint8Array>(
+		{
+			async pull(controller) {
+				try {
+					const length = Math.min(CHUNK_BYTES, end - position);
+					if (length > 0) {
+						handle ??= await open(path);
+					}
+					const { bytesRead, buffer } =
+						length <= 0 || handle == null
+							? { bytesRead: 0, buffer: new Uint8Array(0) }
+							: await handle.read({ buffer: new Uint8Array(length), position });
+					if (bytesRead === 0) {
+						await close();
+						controller.close();
+					} else {
+						position += bytesRead;
+						controller.enqueue(buffer.subarray(0, bytesRead));
+					}
+				} catch (error) {
+					await close();
+					throw error;
 				}
-			} catch (error) {
-				await handle.close();
-				throw error;
-			}
+			},
+			cancel: close,
 		},
-		cancel: async () => handle.close(),
-	});
+		// Why 0: the stream opens and reads nothing until the consumer reads.
+		{ highWaterMark: 0 },
+	);
 }
+
+/** Why: these codes mean that nothing is at the path. Any other error, such as `EACCES`, throws. */
+const MISSING_CODES = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 
 /**
  * The client build on the file system. A relative `clientDirectory` is
@@ -59,7 +82,12 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 	};
 	return {
 		stat: async (path) => {
-			const stats = await stat(filePath(path)).catch(() => undefined);
+			const stats = await stat(filePath(path)).catch((error: unknown) => {
+				if (error instanceof Error && "code" in error && MISSING_CODES.has(String(error.code))) {
+					return;
+				}
+				throw error;
+			});
 			if (stats?.isFile() === true) {
 				return { kind: "file", size: stats.size, mtimeMs: stats.mtimeMs };
 			}
@@ -67,6 +95,6 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
 				: undefined;
 		},
-		open: async (path, range) => fileStream(await open(filePath(path)), range),
+		open: async (path, range) => fileStream(filePath(path), range),
 	};
 }
