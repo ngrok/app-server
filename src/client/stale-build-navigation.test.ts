@@ -975,4 +975,22 @@ describe("staleBuildTanStack", () => {
 		expect(patched).not.toBe(server);
 		expect(fetch).toBe(server);
 	});
+
+	it("keeps a later `fetch` wrapper when it stops, and then passes each request on", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const { router } = tanstack();
+		await router.load();
+		const stop = staleBuildTanStack(router, { build: "v1" });
+		const patched = fetch;
+		const wrapper = vi.fn<typeof fetch>(async (input, init) => patched(input, init));
+		vi.stubGlobal("fetch", wrapper);
+
+		void router.navigate({ to: "/settings" });
+		stop();
+		const response = await fetch("/_serverFn/settings");
+
+		expect(fetch).toBe(wrapper);
+		expect(response.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+	});
 });

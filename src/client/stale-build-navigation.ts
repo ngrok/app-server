@@ -434,7 +434,8 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
  *
  * It sends no request of its own and adds no wait. It needs `buildId()` in
  * the server's pipeline, and it does nothing on a document with no build.
- * It returns a function that stops it and gives back `fetch`.
+ * It returns a function that stops it and gives back `fetch`. If the app
+ * wrapped `fetch` after it, the wrapper stays, and each request passes on.
  *
  * @example
  * // src/router.tsx
@@ -487,7 +488,11 @@ export function staleBuildTanStack(
 		}),
 	];
 	const send = globalThis.fetch;
-	globalThis.fetch = async (input, init) => {
+	let isStopped = false;
+	const patched: typeof fetch = async (input, init) => {
+		if (isStopped) {
+			return send.call(globalThis, input, init);
+		}
 		const isGet = methodOf(input, init) === "GET";
 		if (isGet && navigation != null && watch.isStale()) {
 			return reload(navigation);
@@ -500,11 +505,17 @@ export function staleBuildTanStack(
 		}
 		return reload(navigation, response);
 	};
+	globalThis.fetch = patched;
 	return () => {
 		for (const stop of unsubscribe) {
 			stop();
 		}
 		watch.stop();
-		globalThis.fetch = send;
+		isStopped = true;
+		navigation = undefined;
+		// Why check: a wrapper that the app adds later still calls this one, and must stay.
+		if (globalThis.fetch === patched) {
+			globalThis.fetch = send;
+		}
 	};
 }
