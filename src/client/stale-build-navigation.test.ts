@@ -110,6 +110,22 @@ function instrumentations(staleBuild: ReturnType<typeof staleBuildReactRouter>) 
 	return added;
 }
 
+/** The middleware calls of navigations, with the arguments that React Router gives them. */
+function navigationCalls(staleBuild: ReturnType<typeof staleBuildReactRouter>) {
+	return async <Result>(
+		path: string,
+		next: () => Promise<Result>,
+		{ method = "GET", navigationType = "PUSH" } = {},
+	): Promise<Result> => {
+		const args = {
+			request: dataRequest(path, { method }),
+			unstable_initiator: "navigation",
+			unstable_navigationType: navigationType,
+		};
+		return staleBuild.middleware(args, next);
+	};
+}
+
 /** The functions that undo what a test started. */
 const cleanups: (() => void)[] = [];
 
@@ -150,15 +166,47 @@ describe("staleBuildReactRouter", () => {
 		let data: Promise<Response> | undefined;
 
 		void navigate(
-			async () => {
-				data = staleBuild.fetch(dataRequest("/settings.data"), PUSH);
-				return data;
-			},
+			async () =>
+				navigationCalls(staleBuild)("/settings", async () => {
+					data = staleBuild.fetch(dataRequest("/settings.data"), PUSH);
+					return data;
+				}),
 			{ to: "/settings#usage" },
 		);
 
 		await expect(settles(data)).resolves.toBe(false);
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings#usage"]);
+	});
+
+	it("drops the fragment of the `navigate` call at a redirect to another page", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
+		const { navigate } = instrumentations(staleBuild);
+		let data: Promise<Response> | undefined;
+
+		void navigate(
+			async () =>
+				navigationCalls(staleBuild)("/settings", async () => {
+					// Why `/login`: a client loader of `/settings` redirects with no `navigate` call.
+					data = staleBuild.fetch(dataRequest("/login.data"), PUSH);
+					return data;
+				}),
+			{ to: "/settings#usage" },
+		);
+
+		await expect(settles(data)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/login"]);
+	});
+
+	it("loads the page as a document when a navigation removes the fragment", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = started({ build: "v1" }).fetch;
+		history.replaceState(null, "", "/dashboard#usage");
+
+		const data = routerFetch(dataRequest("/dashboard.data"), PUSH);
+
+		await expect(settles(data)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/dashboard"]);
 	});
 
 	it("returns the data of a navigation with one request while the server runs the same build", async () => {
@@ -225,22 +273,6 @@ describe("staleBuildReactRouter", () => {
 		},
 	);
 
-	/** The middleware calls of navigations, with the arguments that React Router gives them. */
-	function navigationCalls(staleBuild: ReturnType<typeof staleBuildReactRouter>) {
-		return async <Result>(
-			path: string,
-			next: () => Promise<Result>,
-			{ method = "GET", navigationType = "PUSH" } = {},
-		): Promise<Result> => {
-			const args = {
-				request: dataRequest(path, { method }),
-				unstable_initiator: "navigation",
-				unstable_navigationType: navigationType,
-			};
-			return staleBuild.middleware(args, next);
-		};
-	}
-
 	it.each([
 		["an action", true],
 		["a `clientAction` with no request", false],
@@ -275,6 +307,58 @@ describe("staleBuildReactRouter", () => {
 			expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
 		},
 	);
+
+	it("keeps the mark of an action when a blocker stops another navigation", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = staleBuildReactRouter({ build: "v1" });
+		const { navigate } = instrumentations(staleBuild);
+		const call = navigationCalls(staleBuild);
+		const answer = Promise.withResolvers<undefined>();
+		const action = call("/settings", async () => answer.promise, { method: "POST" });
+
+		// Why no middleware call: a blocker stops the navigation before the router loads it.
+		await navigate(async () => undefined, { to: "/usage" });
+		answer.resolve(undefined);
+		await action;
+		const loaders = await call("/settings", async () =>
+			staleBuild.fetch(dataRequest("/settings.data"), PUSH),
+		);
+
+		expect(loaders.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("keeps the mark of a newer action when the loaders of an older one end", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = started({ build: "v1" });
+		const call = navigationCalls(staleBuild);
+		await call("/a", async () => undefined, { method: "POST" });
+		const older = Promise.withResolvers<undefined>();
+		const olderLoaders = call("/a", async () => older.promise);
+
+		await call("/b", async () => undefined, { method: "POST" });
+		older.resolve(undefined);
+		await olderLoaders;
+		const loaders = await call("/b", async () => staleBuild.fetch(dataRequest("/b.data"), PUSH));
+
+		expect(loaders.status).toBe(200);
+		expect(documentLoads).toStrictEqual([]);
+	});
+
+	it("loads the page of an action as a document at a later navigation after a redirect", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const staleBuild = started({ build: "v1" });
+		const call = navigationCalls(staleBuild);
+		await call("/settings", async () => undefined, { method: "POST" });
+		await call("/done", async () => undefined);
+
+		const later = call("/settings", async () =>
+			staleBuild.fetch(dataRequest("/settings.data"), PUSH),
+		);
+
+		await expect(settles(later)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+	});
 
 	it("reloads a history step to the page of an action after its loaders ran", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });

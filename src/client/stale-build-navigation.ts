@@ -120,8 +120,11 @@ async function loadDocument(
 	// Why no wait: the cancel of a cloned body waits for the other branch.
 	response?.body?.cancel().catch(() => undefined);
 	// Why reload on this page: the router can move history first, and `assign` to the same page
-	// with a fragment scrolls with no document load. A history step already moved history.
-	if (navigationType === "POP" || pageOf(target) === pageOf(location.href)) {
+	// with a fragment scrolls with no document load. A history step already moved history. Why
+	// not to remove a fragment: `assign` to a URL with no fragment loads the document.
+	const isSamePage = pageOf(target) === pageOf(location.href);
+	const removesFragment = new URL(target, location.href).hash === "" && location.hash !== "";
+	if (navigationType === "POP" || (isSamePage && !removesFragment)) {
 		location.reload();
 	} else if (navigationType === "REPLACE") {
 		location.replace(target);
@@ -268,15 +271,17 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 	/**
 	 * The path of the last action of a navigation, until its loaders run. The
 	 * router revalidates the page with one or more loader requests after it.
+	 * `loading` is true while they run.
 	 */
-	let action: string | undefined;
+	let action: { path: string; loading: boolean } | undefined;
 	/** The target that the tab loads as a document now. */
 	let leaving: string | undefined;
 	/**
 	 * The last `navigate` call. `claimed` is true when its first middleware call
-	 * already ran, or when it is not a page load.
+	 * already ran, or when it is not a page load. `page` is the target page of
+	 * that first call.
 	 */
-	let navigating: { hash: string; claimed: boolean } | undefined;
+	let navigating: { hash: string; claimed: boolean; page?: string } | undefined;
 	const load = async (
 		request: Request,
 		target: string,
@@ -308,10 +313,14 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 			if (watch() == null || navigationType == null) {
 				return (await send()).response;
 			}
-			// Why the hash of the `navigate` call: the router removes it from the data request.
-			const target = targetOf(request) + (navigationType === "POP" ? "" : (navigating?.hash ?? ""));
+			// Why the hash of the `navigate` call: the router removes it from the data request. Why
+			// its page only: a redirect goes to another page with no `navigate` call.
+			const page = targetOf(request);
+			const hash =
+				navigationType !== "POP" && navigating?.page === pageOf(page) ? navigating.hash : "";
+			const target = page + hash;
 			const path = new URL(target).pathname;
-			const isAfterAction = request.method === "GET" && action === path;
+			const isAfterAction = request.method === "GET" && action?.path === path;
 			// Why check the signal: a canceled navigation must never load its target.
 			const isNavigation = () =>
 				request.method === "GET" && !isAfterAction && !request.signal.aborted;
@@ -335,7 +344,6 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 							claimed: typeof to === "number" || (formMethod ?? "GET").toUpperCase() !== "GET",
 						};
 						navigating = current;
-						action = undefined;
 						await handler();
 						// Why keep an unclaimed call: a blocker stops it, and `blocker.proceed()` starts it
 						// again with no `navigate` call.
@@ -352,29 +360,38 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 				unstable_initiator: initiator,
 				unstable_navigationType: navigationType,
 			} = args as MiddlewareArgs;
+			const current = navigating;
 			if (initiator === "navigation") {
 				// Why here: a `clientAction` sends no request, and the router runs the middleware once
 				// for an action and once for all the loaders after it.
 				const path = new URL(request.url).pathname;
+				const mark = action;
 				if (navigationType === "POP") {
 					action = undefined;
 				} else if (request.method !== "GET") {
-					action = path;
+					const started = { path, loading: false };
+					action = started;
 					onAbort(request.signal, () => {
-						if (action === path) {
+						if (action === started) {
 							action = undefined;
 						}
 					});
 					return next();
-				} else if (action === path) {
+				} else if (mark?.path === path) {
+					mark.loading = true;
 					try {
 						return await next();
 					} finally {
-						action = undefined;
+						if (action === mark) {
+							action = undefined;
+						}
 					}
+				} else if (mark?.loading === false) {
+					// Why: a redirect after the action goes to another page, and its loaders never run.
+					// Why not while they run: the router revalidates the fetchers next to them.
+					action = undefined;
 				}
 			}
-			const current = navigating;
 			// Why no history step: it comes from no `navigate` call, and the fetch hook reloads it.
 			// Why the first call only: the router runs the middleware of a navigation before the
 			// fetchers that it revalidates, and they have the same initiator.
@@ -388,6 +405,7 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 				return next();
 			}
 			current.claimed = true;
+			current.page = pageOf(request.url);
 			if (
 				request.signal.aborted ||
 				watch()?.isStale() !== true ||
