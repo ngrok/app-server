@@ -225,23 +225,83 @@ describe("staleBuildReactRouter", () => {
 		},
 	);
 
-	it("returns the action and its loaders from a new build, so the form keeps its result", async () => {
+	/** The middleware calls of navigations, with the arguments that React Router gives them. */
+	function navigationCalls(staleBuild: ReturnType<typeof staleBuildReactRouter>) {
+		return async <Result>(
+			path: string,
+			next: () => Promise<Result>,
+			{ method = "GET", navigationType = "PUSH" } = {},
+		): Promise<Result> => {
+			const args = {
+				request: dataRequest(path, { method }),
+				unstable_initiator: "navigation",
+				unstable_navigationType: navigationType,
+			};
+			return staleBuild.middleware(args, next);
+		};
+	}
+
+	it.each([
+		["an action", true],
+		["a `clientAction` with no request", false],
+	])(
+		"returns the loaders after %s from a new build, so the form keeps its result",
+		async (_, isServerAction) => {
+			const { documentLoads } = page({ serverBuild: "v2" });
+			const staleBuild = started({ build: "v1" });
+			const call = navigationCalls(staleBuild);
+
+			// Why two signals: a browser gives each `Request` its own signal.
+			const action = await call(
+				"/settings",
+				async () =>
+					isServerAction
+						? staleBuild.fetch(dataRequest("/settings.data", { method: "POST" }), PUSH)
+						: undefined,
+				{ method: "POST" },
+			);
+			// Why two loader requests: a `clientLoader` that calls `serverLoader()` gets its own request.
+			const loaders = await call("/settings", async () =>
+				Promise.all([
+					staleBuild.fetch(dataRequest("/settings.data?_routes=root"), PUSH),
+					staleBuild.fetch(dataRequest("/settings.data?_routes=routes/settings"), PUSH),
+				]),
+			);
+			const next = staleBuild.fetch(dataRequest("/usage.data"), PUSH);
+
+			expect(action?.status ?? 200).toBe(200);
+			expect(loaders.map((response) => response.status)).toStrictEqual([200, 200]);
+			await expect(settles(next)).resolves.toBe(false);
+			expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
+		},
+	);
+
+	it("reloads a history step to the page of an action after its loaders ran", async () => {
 		const { documentLoads } = page({ serverBuild: "v2" });
-		const routerFetch = started({ build: "v1" }).fetch;
+		const staleBuild = started({ build: "v1" });
+		const call = navigationCalls(staleBuild);
+		await call(
+			"/settings?page=2",
+			async () => staleBuild.fetch(dataRequest("/settings.data?page=2", { method: "POST" }), PUSH),
+			{ method: "POST" },
+		);
+		await call("/settings?page=2", async () =>
+			staleBuild.fetch(dataRequest("/settings.data?page=2"), PUSH),
+		);
+		history.replaceState(null, "", "/settings");
 
-		// Why two signals: a browser gives each `Request` its own signal.
-		const action = await routerFetch(dataRequest("/settings.data", { method: "POST" }), PUSH);
-		// Why two loader requests: a `clientLoader` that calls `serverLoader()` gets its own request.
-		const loaders = await Promise.all([
-			routerFetch(dataRequest("/settings.data?_routes=root"), PUSH),
-			routerFetch(dataRequest("/settings.data?_routes=routes/settings"), PUSH),
-		]);
-		const next = routerFetch(dataRequest("/usage.data"), PUSH);
+		const back = call(
+			"/settings",
+			async () =>
+				staleBuild.fetch(dataRequest("/settings.data"), {
+					type: "navigation",
+					navigationType: "POP",
+				}),
+			{ navigationType: "POP" },
+		);
 
-		expect(action.status).toBe(200);
-		expect(loaders.map((response) => response.status)).toStrictEqual([200, 200]);
-		await expect(settles(next)).resolves.toBe(false);
-		expect(documentLoads).toStrictEqual(["http://localhost:3000/usage"]);
+		await expect(settles(back)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["reload http://localhost:3000/settings"]);
 	});
 
 	it("loads the document once for parallel requests of a navigation, and again after the router cancels it", async () => {

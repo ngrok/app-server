@@ -266,8 +266,8 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 		return watched.watch;
 	};
 	/**
-	 * The path of the action of the `navigate` call that runs now. The router
-	 * revalidates the page with one or more loader requests after it.
+	 * The path of the last action of a navigation, until its loaders run. The
+	 * router revalidates the page with one or more loader requests after it.
 	 */
 	let action: string | undefined;
 	/** The target that the tab loads as a document now. */
@@ -312,14 +312,6 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 			const target = targetOf(request) + (navigationType === "POP" ? "" : (navigating?.hash ?? ""));
 			const path = new URL(target).pathname;
 			const isAfterAction = request.method === "GET" && action === path;
-			if (request.method !== "GET") {
-				action = path;
-				onAbort(request.signal, () => {
-					if (action === path) {
-						action = undefined;
-					}
-				});
-			}
 			// Why check the signal: a canceled navigation must never load its target.
 			const isNavigation = () =>
 				request.method === "GET" && !isAfterAction && !request.signal.aborted;
@@ -360,6 +352,28 @@ export function staleBuildReactRouter(options: StaleBuildOptions = {}): StaleBui
 				unstable_initiator: initiator,
 				unstable_navigationType: navigationType,
 			} = args as MiddlewareArgs;
+			if (initiator === "navigation") {
+				// Why here: a `clientAction` sends no request, and the router runs the middleware once
+				// for an action and once for all the loaders after it.
+				const path = new URL(request.url).pathname;
+				if (navigationType === "POP") {
+					action = undefined;
+				} else if (request.method !== "GET") {
+					action = path;
+					onAbort(request.signal, () => {
+						if (action === path) {
+							action = undefined;
+						}
+					});
+					return next();
+				} else if (action === path) {
+					try {
+						return await next();
+					} finally {
+						action = undefined;
+					}
+				}
+			}
 			const current = navigating;
 			// Why no history step: it comes from no `navigate` call, and the fetch hook reloads it.
 			// Why the first call only: the router runs the middleware of a navigation before the
