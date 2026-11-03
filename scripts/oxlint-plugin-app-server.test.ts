@@ -71,6 +71,20 @@ describe.each([
 		],
 	},
 	{
+		rule: "prefer-url-parse",
+		invalid: [
+			"function f(value: string) { if (!URL.canParse(value)) { return null; } return new URL(value).protocol; }",
+			"const f = (raw: string) => (URL.canParse(raw) ? new URL(raw).href : raw);",
+			"function f(url: string, base: string) { if (URL.canParse(url, base)) { return new URL(url, base); } }",
+		],
+		valid: [
+			"function f(value: string) { return URL.parse(value)?.protocol; }",
+			"function f(path: string) { return URL.canParse(path); }",
+			"function f(a: string, b: string) { return URL.canParse(a) ? new URL(b) : null; }",
+			"function f(a: string) { return URL.canParse(a); }\nfunction g(a: string) { return new URL(a); }",
+		],
+	},
+	{
 		rule: "descriptive-names",
 		invalid: [
 			"try { run(); } catch (e) { report(e); }",

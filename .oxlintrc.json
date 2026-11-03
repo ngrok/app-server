@@ -20,6 +20,7 @@
     "app-server/no-boolean-positional-param": "error",
     "app-server/prefer-function-declaration": "error",
     "app-server/prefer-null-check": "error",
+    "app-server/prefer-url-parse": "error",
     "app-server/require-suppression-reason": "error",
 
     // Options that match the code's idioms.

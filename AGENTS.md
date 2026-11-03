@@ -9,12 +9,12 @@ This file follows the [AGENTS.md standard](https://agents.md) and is canonical f
 Read the files for your task before the first edit. Work is incomplete until you check your diff against them.
 
 - **Any code:** [Rules](#rules).
-- **`src/core`:** it runs on each host and with each framework. Apply [pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md) and [stream, don't buffer](./docs/principles/stream-dont-buffer.md).
+- **`src/core`:** it runs on each host and with each framework. Apply [pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md), [stream, don't buffer](./docs/principles/stream-dont-buffer.md), and [keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md).
 - **A host or framework adapter:** `HostRuntime` and `FrameworkRuntime` in `src/core/types.ts`, and `HostBuild` and `FrameworkBuild` in `src/vite/index.ts`, are the contract.
 - **A listener, shutdown, a stream, the CLI, or the build:** also run `pnpm run build` and `pnpm run test:runtimes`.
 - **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md).
 - **A custom lint rule:** `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
-- **A performance claim:** apply [explain the number](./docs/principles/explain-the-number.md).
+- **A performance change or claim:** apply [explain the number](./docs/principles/explain-the-number.md) and [redesign before you cache](./docs/principles/redesign-before-you-cache.md).
 - **Comments, JSDoc, changesets, commits, PR descriptions, and repo markdown:** load the [`simplified-technical-english`](./.claude/skills/simplified-technical-english/SKILL.md) skill.
 
 ## Principles
@@ -39,6 +39,8 @@ Short, named rules for how to work. Each name links to its full rule. Use the na
 - [Encode lessons in structure](./docs/principles/encode-lessons-in-structure.md) (code, prose): a check beats a doc rule.
 - [Guard the context window](./docs/principles/guard-the-context-window.md) (code, prose): load only what the task needs.
 - [Stream, don't buffer](./docs/principles/stream-dont-buffer.md) (code): read on pull, flush each chunk, cancel the source.
+- [Keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md) (code): do work once, at setup. Per request, start independent work together and parse once.
+- [Redesign before you cache](./docs/principles/redesign-before-you-cache.md) (code): a cache must beat the best design with no cache, in a benchmark.
 - [One pipeline for development and production](./docs/principles/one-pipeline.md) (code): a stage differs only where its job differs.
 - [Add no round trips to a client navigation](./docs/principles/no-added-round-trips.md) (code): a client navigation makes only the router's requests.
 
