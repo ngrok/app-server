@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { vercel } from "./vite.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
@@ -114,6 +114,28 @@ describe("vercel", () => {
 				},
 			],
 		});
+	});
+
+	it("copies the client build once when it is inside the server build", () => {
+		const nested = mkdtempSync(join(tmpdir(), "app-server-vercel-nested-"));
+		onTestFinished(() => {
+			rmSync(nested, { recursive: true, force: true });
+		});
+		write(join(nested, "dist/app-server.js"), "export const appServer = {};\n");
+		write(join(nested, "dist/client/assets/app-abc.js"), "app();");
+		write(join(nested, "dist/client/robots.txt"), "User-agent: *");
+
+		vercel().output?.({
+			root: nested,
+			clientDirectory: join(nested, "dist/client"),
+			entryFile: join(nested, "dist/app-server.js"),
+		});
+
+		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
+			"app-server.js",
+			"client/robots.txt",
+			"vercel-function.js",
+		]);
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

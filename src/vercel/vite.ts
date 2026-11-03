@@ -137,7 +137,13 @@ function writeOutput(
 	// Why the whole server build: it runs with no install, and it keeps the client build's path.
 	const serverDirectory = dirname(entryFile);
 	const functionFile = join(serverDirectory, FUNCTION_FILE);
-	cpSync(serverDirectory, join(functionDirectory, fromRoot(serverDirectory)), { recursive: true });
+	cpSync(serverDirectory, join(functionDirectory, fromRoot(serverDirectory)), {
+		recursive: true,
+		// Why: a link that keeps its target can point at the build machine.
+		dereference: true,
+		// Why: the client build can be inside the server build, and the loop above copied its part.
+		filter: (path) => path !== clientDirectory,
+	});
 	writeFileSync(
 		join(functionDirectory, fromRoot(functionFile)),
 		[
