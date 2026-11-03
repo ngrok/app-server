@@ -206,7 +206,7 @@ export type SetupInfo = {
 	/** The headers of each prerendered file, by URL path, that the Vite plugin captured. */
 	capturedHeaders: ReadonlyMap<string, Readonly<Record<string, string>>>;
 	/**
-	 * The base64 SHA-256 of each inline script of each HTML file in the client
+	 * The base64 `SHA-256` of each inline script of each HTML file in the client
 	 * build, by the file's URL path, that the Vite plugin recorded.
 	 */
 	scriptHashes: ReadonlyMap<string, readonly string[]>;

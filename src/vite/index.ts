@@ -157,7 +157,7 @@ const ATTRIBUTE_VALUE = /[=]\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gu;
 const SRC_ATTRIBUTE = /(?:^|[\s/])src(?:[\s/=]|$)/iu;
 
 /**
- * The base64 SHA-256 of each inline script in `html`, once each, in
+ * The base64 `SHA-256` of each inline script in `html`, once each, in
  * document order. Why each type: a hash of a data block, such as JSON, trusts
  * no code, and a scan that skips a type that runs breaks the page. Why LF:
  * the browser changes each CRLF and CR to LF before it hashes a script.

@@ -13,7 +13,7 @@ export type BuildManifest = {
 	/** The headers of each prerendered file that is not an HTML document, by URL path. */
 	headers: Record<string, Record<string, string>>;
 	/**
-	 * The base64 SHA-256 of each inline script of each HTML file in the client
+	 * The base64 `SHA-256` of each inline script of each HTML file in the client
 	 * build, by the file's URL path, such as `/about/index.html`. A CSP trusts
 	 * the scripts of a prerendered page by these hashes.
 	 */
