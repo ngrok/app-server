@@ -16,6 +16,9 @@ aqua.github_attestations = false
 # Why not npm:pnpm: mise skips pnpm's install script, so the bin stays a
 # placeholder that fails under Node.
 "aqua:pnpm/pnpm" = "{{ exec(command='./scripts/package-manager-version') }}"
+# The load generator for `pnpm run bench`. Why a native binary: a load generator on Node takes
+# CPU from the server that it measures.
+"aqua:hatoo/oha" = "1.16.0"
 
 [env]
 # Make node_modules/.bin available to `mise x --` and to shells that activate mise.

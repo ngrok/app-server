@@ -2,7 +2,7 @@
 // each: `node ./test/runtimes.ts [node|bun|deno ...]`. Build the package first. A runtime that is
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { constants, createGunzip } from "node:zlib";
+import { buildFixtures, commands, startServer } from "./harness.ts";
 
-const packageDirectory = join(import.meta.dirname, "..");
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
 const portArgs = ["dist/cli.js", "serve", "test/fixtures/port-entry.js"];
 const devDirectory = join(import.meta.dirname, "fixtures/dev");
@@ -22,69 +22,6 @@ const reactRouterDirectory = join(import.meta.dirname, "fixtures/react-router");
 const tanstackStartDirectory = join(import.meta.dirname, "fixtures/tanstack-start");
 const binDirectory = join(import.meta.dirname, "../node_modules/.bin");
 const cliPath = join(import.meta.dirname, "../dist/cli.js");
-const commands: Record<string, (args: string[]) => [string, string[]]> = {
-	node: (args) => ["node", args],
-	bun: (args) => ["bun", args],
-	deno: (args) => [
-		"deno",
-		[
-			"run",
-			"--allow-net",
-			"--allow-env",
-			"--allow-read",
-			"--allow-sys",
-			// Why: in `start`, Vite loads its native bundler and writes its cache. On Linux, Vite also
-			// reads a WSL file that Deno gives only to `--allow-all`, so Deno ignores that read.
-			...(args.includes("start")
-				? ["--allow-ffi", "--allow-write", "--ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop"]
-				: []),
-			...args,
-		],
-	],
-};
-
-type Line = { level: string; message: string; [attribute: string]: unknown };
-
-/** Starts the CLI and resolves with its URL once it logs `listening`. */
-function startServer(
-	runtime: string,
-	cliArgs = serveArgs,
-	{
-		cwd = packageDirectory,
-		env = {},
-		stderr = "inherit",
-	}: { cwd?: string; env?: Record<string, string>; stderr?: "inherit" | "ignore" } = {},
-) {
-	const [command, args] = commands[runtime]?.(cliArgs) ?? ["", []];
-	const child = spawn(command, args, {
-		cwd,
-		env: { ...process.env, ...env },
-		stdio: ["ignore", "pipe", stderr],
-	});
-	const lines: Line[] = [];
-	let buffered = "";
-	const url = new Promise<string>((resolve, reject) => {
-		child.once("error", reject);
-		child.once("exit", (code) => {
-			reject(new Error(`${runtime} exited with ${code} before it listened`));
-		});
-		child.stdout.on("data", (chunk: Buffer) => {
-			buffered += chunk.toString();
-			const parts = buffered.split("\n");
-			buffered = parts.pop() ?? "";
-			// Why the filter: Vite in `start` and the fixture at shutdown write lines that are not JSON.
-			for (const part of parts.filter((candidate) => candidate.startsWith("{"))) {
-				const line: Line = JSON.parse(part);
-				lines.push(line);
-				const urls = line["app_server.urls"];
-				if (line.message === "listening" && Array.isArray(urls)) {
-					resolve(String(urls[0]));
-				}
-			}
-		});
-	});
-	return { child, lines, url };
-}
 
 async function request(
 	url: string,
@@ -170,7 +107,7 @@ async function checkPort(runtime: string): Promise<void> {
 
 async function check(runtime: string): Promise<void> {
 	await checkPort(runtime);
-	const { child, lines, url } = startServer(runtime);
+	const { child, lines, url } = startServer(runtime, serveArgs);
 	try {
 		const base = await url;
 
@@ -309,18 +246,6 @@ async function checkStart(): Promise<void> {
 	} finally {
 		child.kill("SIGKILL");
 	}
-}
-
-/** Builds the framework fixture apps with the built package, as an app's build does. */
-function buildFixtures(): void {
-	execFileSync(`${binDirectory}/react-router`, ["build"], {
-		cwd: reactRouterDirectory,
-		stdio: ["ignore", "ignore", "inherit"],
-	});
-	execFileSync(`${binDirectory}/vite`, ["build"], {
-		cwd: tanstackStartDirectory,
-		stdio: ["ignore", "ignore", "inherit"],
-	});
 }
 
 /** The first chunk of a response body, and the whole body. */
