@@ -159,13 +159,21 @@ describe("appServer", () => {
 			],
 		);
 
-		expect(() => {
+		const loadEntry = (mode: string): void => {
 			Reflect.apply(
 				(typeof load === "function" ? load : load?.handler) ?? (() => {}),
-				{ environment: { mode: "build" } },
+				{ environment: { mode } },
 				[`\0${SERVER_ENTRY_ID}`],
 			);
+		};
+
+		expect(() => {
+			loadEntry("build");
 		}).toThrow("needs the server build outside the client build");
+		// Why: development serves no build directory, so a config can share one there.
+		expect(() => {
+			loadEntry("dev");
+		}).not.toThrow();
 	});
 
 	it("fails the build for a server build that is not an ES module", () => {

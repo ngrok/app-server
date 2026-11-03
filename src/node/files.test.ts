@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -13,6 +13,8 @@ mkdirSync(join(root, "client/docs"), { recursive: true });
 writeFileSync(join(root, "client/llms.txt"), "llms");
 writeFileSync(join(root, "secret.txt"), "secret");
 symlinkSync("loop", join(root, "client/loop"));
+writeFileSync(join(root, "client/unreadable.txt"), "unreadable");
+chmodSync(join(root, "client/unreadable.txt"), 0o000);
 
 /** Runs full garbage collections, and waits for the cleanup that each one queues. */
 async function collectGarbage(): Promise<void> {
@@ -45,6 +47,13 @@ describe("nodeFiles", () => {
 
 		await expect(files.stat("/llms.txt/child")).resolves.toBeUndefined();
 		await expect(files.stat("/loop")).rejects.toMatchObject({ code: "ELOOP" });
+	});
+
+	// Why skip for root: root reads a file with no permissions.
+	it.skipIf(process.getuid?.() === 0)("throws at open for a file that it cannot read", async () => {
+		const files = nodeFiles(join(root, "client"));
+
+		await expect(files.open("/unreadable.txt")).rejects.toMatchObject({ code: "EACCES" });
 	});
 
 	it("refuses a path outside the client build", async () => {

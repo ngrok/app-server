@@ -1,4 +1,5 @@
-import { open, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, open, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +96,12 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
 				: undefined;
 		},
-		open: async (path, range) => fileStream(filePath(path), range),
+		open: async (path, range) => {
+			const candidate = filePath(path);
+			// Why: an unreadable file then gets a logged 500, not a 200 whose body fails. The check
+			// holds no `FileHandle`, so a response that no one reads leaves nothing open.
+			await access(candidate, constants.R_OK);
+			return fileStream(candidate, range);
+		},
 	};
 }

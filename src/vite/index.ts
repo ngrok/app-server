@@ -237,8 +237,13 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin {
 			const clientDirectory = outDir(config, "client");
 			const serverDirectory = outDir(config, SERVER_ENVIRONMENT);
 			const fromClient = relative(clientDirectory, serverDirectory);
-			// Why: the static stages serve each file in the client build, so they would serve the server's code.
-			if (!fromClient.startsWith("..") && !isAbsolute(fromClient)) {
+			// Why: the static stages serve each file in the client build, so they would serve the server's
+			// code. Why a build only: development serves no build directory.
+			if (
+				this.environment.mode === "build" &&
+				!fromClient.startsWith("..") &&
+				!isAbsolute(fromClient)
+			) {
 				throw new Error(
 					`@ngrok/app-server needs the server build outside the client build, and both are in ${clientDirectory}.`,
 				);

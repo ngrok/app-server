@@ -173,6 +173,12 @@ export type StaticResponseOptions = {
  * after the end of the file gets a 416. A request with `If-Range` gets the
  * full file. Why: the ETag is weak, and `If-Range` needs a strong match. An
  * HTML file gets no ranges.
+ *
+ * @example
+ * const file = await findStaticFile(files, "/llms.txt");
+ * if (file != null) {
+ *   return staticResponse(context, { files, file, headers: {}, contentTypes: {} });
+ * }
  */
 export async function staticResponse(
 	context: Context<AppServerEnv>,

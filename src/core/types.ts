@@ -86,7 +86,7 @@ export type StaticFiles = {
 	 * The bytes of the file at `path`. With `range`, only the bytes from
 	 * `start` to `end`, both inclusive. A host must honor `range`, because the
 	 * static stages answer a `Range` request with these bytes. Open the file on
-	 * the first read: a stage can drop a response that no one reads.
+	 * the first read. Why: a stage can drop a response that no one reads.
 	 */
 	open: (path: string, range?: ByteRange) => Promise<ReadableStream<Uint8Array>>;
 };

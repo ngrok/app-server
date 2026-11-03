@@ -71,34 +71,50 @@ function injectBeforeHeadEnd(
 	// Why decode every chunk: a chunk can end inside a multi-byte character.
 	const decoder = new TextDecoder();
 	const encoder = new TextEncoder();
+	const reader = body.getReader();
 	let pending: string | undefined = "";
-	return body.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				const text = decoder.decode(chunk, { stream: true });
-				if (pending == null) {
-					controller.enqueue(encoder.encode(text));
-					return;
-				}
-				pending += text;
-				const index = pending.search(/<\/head>/iu);
-				if (index !== -1) {
-					controller.enqueue(
-						encoder.encode(`${pending.slice(0, index)}${html}${pending.slice(index)}`),
-					);
-					pending = undefined;
-				} else if (pending.length > HEAD_SEARCH_LIMIT) {
-					controller.enqueue(encoder.encode(pending));
-					pending = undefined;
+	/** The text to send for `text`, or `undefined` while the search for `</head>` goes on. */
+	const transform = (text: string): string | undefined => {
+		if (pending == null) {
+			return text;
+		}
+		pending += text;
+		const index = pending.search(/<\/head>/iu);
+		if (index === -1 && pending.length <= HEAD_SEARCH_LIMIT) {
+			return undefined;
+		}
+		const out = index === -1 ? pending : `${pending.slice(0, index)}${html}${pending.slice(index)}`;
+		pending = undefined;
+		return out;
+	};
+	// Why not `pipeThrough`: a pipe reads the source before the client reads. On Node.js 26, a
+	// static file that a later stage drops then holds an open `FileHandle` until garbage collection.
+	return new ReadableStream<Uint8Array>(
+		{
+			async pull(controller) {
+				// Why a loop: a pull that enqueues nothing is not called again.
+				for (;;) {
+					// oxlint-disable-next-line no-await-in-loop -- each read depends on the one before it.
+					const { done, value } = await reader.read();
+					if (done) {
+						const rest = `${pending ?? ""}${decoder.decode()}`;
+						if (rest !== "") {
+							controller.enqueue(encoder.encode(rest));
+						}
+						controller.close();
+						return;
+					}
+					const out = transform(decoder.decode(value, { stream: true }));
+					if (out != null) {
+						controller.enqueue(encoder.encode(out));
+						return;
+					}
 				}
 			},
-			flush(controller) {
-				const rest = `${pending ?? ""}${decoder.decode()}`;
-				if (rest !== "") {
-					controller.enqueue(encoder.encode(rest));
-				}
-			},
-		}),
+			cancel: async (reason) => reader.cancel(reason),
+		},
+		// Why 0: the stream reads its source only when the client reads.
+		{ highWaterMark: 0 },
 	);
 }
 

@@ -4,6 +4,9 @@ import { constants, createGzip } from "node:zlib";
  * Gzips a byte stream. `Z_SYNC_FLUSH` makes each written chunk readable at
  * once. It reads the next source chunk only when the consumer pulls, so a slow
  * client holds back the source.
+ *
+ * @example
+ * new Response(gzipStream(response.body), response);
  */
 export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
 	const gzip = createGzip({ flush: constants.Z_SYNC_FLUSH });

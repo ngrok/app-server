@@ -7,8 +7,8 @@ const COMPRESSIBLE =
 
 /**
  * The smallest body, by `Content-Length`, that the plugin gzips. Why: gzip
- * makes a smaller body larger, and each gzip stream allocates about 300 KiB
- * of zlib state. `hono/compress` uses the same value.
+ * makes a smaller body larger, and each gzip stream allocates about 300 kibibytes
+ * (KiB) of zlib state. `hono/compress` uses the same value.
  */
 const MIN_BYTES = 1024;
 
