@@ -1,6 +1,8 @@
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
-import { acceptsGzip, forbidsTransform, gzipCopyName } from "./gzip-rules.js";
+import { COPY_ENCODINGS, copyName, forbidsTransform, preferredEncoding } from "./compression.js";
+import type { Encoding } from "./compression.js";
+import { hookedHeaders } from "./header-hook.js";
 import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
@@ -130,10 +132,24 @@ async function partsHash(parts: readonly string[]): Promise<string> {
 	return hash;
 }
 
-/** A weak ETag from a file's size, its modification time, and the request's `etagParts`. */
-async function fileEtag(file: StaticFile, parts: readonly string[]): Promise<string> {
-	const base = `${file.size.toString(16)}-${Math.trunc(file.mtimeMs).toString(16)}`;
-	return parts.length === 0 ? `W/"${base}"` : `W/"${base}-${await partsHash(parts)}"`;
+/**
+ * A weak ETag from a file's size, its modification time, the request's
+ * `etagParts`, and the encoding of the body. Why the encoding: after a 304,
+ * a cache that holds more than one encoding of the file picks the stored
+ * response by its ETag (RFC 9111, section 4.3.4).
+ */
+async function fileEtag(
+	file: StaticFile,
+	parts: readonly string[],
+	encoding: Encoding | undefined,
+): Promise<string> {
+	const tag = [
+		file.size.toString(16),
+		Math.trunc(file.mtimeMs).toString(16),
+		...(parts.length === 0 ? [] : [await partsHash(parts)]),
+		...(encoding == null ? [] : [encoding]),
+	];
+	return `W/"${tag.join("-")}"`;
 }
 
 /**
@@ -222,27 +238,50 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 	};
 }
 
+/** A compressed copy of a static file that the build wrote. */
+type Copy = StaticFile & { encoding: Encoding };
+
 /**
- * The gzip copy of the file at `path` that the build wrote, when the request
- * gets it. When the copy exists, it adds `Accept-Encoding` to the `Vary` in
- * `headers`, also for a request that does not get it.
+ * The copy of the file at `path` that the request prefers, from the copies
+ * that the build wrote. When a copy exists, it adds `Accept-Encoding` to the
+ * `Vary` in `headers`, also for a request that gets no copy.
  */
-async function gzipCopy(
+async function preferredCopy(
 	context: Context<AppServerEnv>,
 	{ files, path, headers }: { files: StaticFiles; path: string; headers: Headers },
-): Promise<StaticFile | undefined> {
-	const copyPath = path.replace(/[^/]*$/u, gzipCopyName);
-	const info = await files.stat(copyPath);
-	if (info?.kind !== "file") {
+): Promise<Copy | undefined> {
+	// Why not for an encoded file: the copy would encode it again, under one `Content-Encoding`.
+	if (
+		headers.has("Content-Encoding") ||
+		(context.get("rewritesHtml") === true &&
+			(headers.get("Content-Type")?.startsWith("text/html") ?? false))
+	) {
+		return undefined;
+	}
+	const copies: Copy[] = [];
+	for (const encoding of COPY_ENCODINGS) {
+		const copyPath = path.replace(/[^/]*$/u, (name) => copyName(name, encoding));
+		// oxlint-disable-next-line no-await-in-loop -- two lookups, and a snapshot answers each at once.
+		const info = await files.stat(copyPath);
+		if (info?.kind === "file") {
+			copies.push({ path: copyPath, size: info.size, mtimeMs: info.mtimeMs, encoding });
+		}
+	}
+	if (copies.length === 0) {
 		return undefined;
 	}
 	const vary = withVary(headers.get("Vary"), "Accept-Encoding");
 	if (vary != null) {
 		headers.set("Vary", vary);
 	}
-	return acceptsGzip(context) && !forbidsTransform(headers.get("Cache-Control"))
-		? { path: copyPath, size: info.size, mtimeMs: info.mtimeMs }
-		: undefined;
+	if (forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"))) {
+		return undefined;
+	}
+	const encoding = preferredEncoding(
+		context.req.header("Accept-Encoding"),
+		copies.map((copy) => copy.encoding),
+	);
+	return copies.find((copy) => copy.encoding === encoding);
 }
 
 /**
@@ -268,7 +307,7 @@ export type StaticResponseOptions = {
 
 /**
  * The response for a static file, with a weak ETag from its size,
- * modification time, and the request's `etagParts`. A matching
+ * modification time, the request's `etagParts`, and its encoding. A matching
  * `If-None-Match` gets a 304, and `HEAD` gets the headers only.
  *
  * A GET with one `bytes` range gets a 206 with those bytes, and a range
@@ -276,10 +315,13 @@ export type StaticResponseOptions = {
  * full file. Why: the ETag is weak, and `If-Range` needs a strong match. An
  * HTML file gets no ranges.
  *
- * When the build wrote a gzip copy of the file (`.<file>.gz`), the response
- * gets `Vary: Accept-Encoding`. A request that accepts gzip gets the copy with
- * `Content-Encoding: gzip`, and no range. An HTML file, a response marked
- * `no-transform`, and a response that `headers` encode never get the copy.
+ * When the build wrote a compressed copy of the file (`.<file>.br` or
+ * `.<file>.gz`), the response gets `Vary: Accept-Encoding`. A request gets
+ * the copy that its `Accept-Encoding` prefers, brotli before gzip, with its
+ * `Content-Encoding`, an ETag for that encoding, and no range. A response
+ * marked `no-transform`, also by the header hook of an earlier stage, and a
+ * response that `headers` encode, never get a copy. An HTML file gets no
+ * copy when an earlier stage sets `rewritesHtml`.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
@@ -291,34 +333,29 @@ export async function staticResponse(
 	context: Context<AppServerEnv>,
 	{ files, file, headers, contentTypes }: StaticResponseOptions,
 ): Promise<Response> {
-	const etag = await fileEtag(file, context.get("etagParts") ?? []);
-	const responseHeaders = new Headers({
-		"Content-Type": contentType(file.path, contentTypes),
-		ETag: etag,
-	});
+	const responseHeaders = new Headers({ "Content-Type": contentType(file.path, contentTypes) });
 	for (const [name, value] of Object.entries(headers)) {
 		responseHeaders.set(name, value);
 	}
-	// Why no ranges and no gzip copy for HTML: `runtimeEnv` adds a script to a page, so the bytes of
-	// the file are not the bytes of the page.
+	// Why no ranges for HTML: a stage such as `runtimeEnv` can change the bytes of a page.
 	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
 	if (html) {
 		context.set("staticDocument", file.path);
 	}
-	// Why before the 304: a 304 sends the `Vary` of its 200. Why not for an encoded file: the copy
-	// would encode it again, under one `Content-Encoding`.
-	const copy =
-		html || responseHeaders.has("Content-Encoding")
-			? undefined
-			: await gzipCopy(context, { files, path: file.path, headers: responseHeaders });
-	// Why the final header: `headers` can replace the ETag.
-	if (matchesEtag(context.req.header("If-None-Match"), responseHeaders.get("ETag") ?? etag)) {
+	// Why before the 304: a 304 sends the `Vary` and the ETag of its 200.
+	const copy = await preferredCopy(context, { files, path: file.path, headers: responseHeaders });
+	// Why the header first: `headers` can replace the ETag.
+	const etag =
+		responseHeaders.get("ETag") ??
+		(await fileEtag(file, context.get("etagParts") ?? [], copy?.encoding));
+	responseHeaders.set("ETag", etag);
+	if (matchesEtag(context.req.header("If-None-Match"), etag)) {
 		responseHeaders.delete("Content-Type");
 		return new Response(null, { status: 304, headers: responseHeaders });
 	}
 	if (copy != null) {
-		// Why no ranges: a client asks for a range of the file, not of its gzip copy.
-		responseHeaders.set("Content-Encoding", "gzip");
+		// Why no ranges: a client asks for a range of the file, not of its compressed copy.
+		responseHeaders.set("Content-Encoding", copy.encoding);
 		responseHeaders.set("Content-Length", String(copy.size));
 		const body = context.req.method === "HEAD" ? null : await wholeFile(files, copy);
 		return new Response(body, { headers: responseHeaders });

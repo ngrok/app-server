@@ -96,7 +96,7 @@ Run it:
 
 `appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. The build also bundles the dependencies, so the build directory runs with no install. See [Deploy](#deploy).
 
-After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) next to each text file of 1 kibibyte (KiB) or more in the client build, except HTML. `app-server serve` sends the copy to a client that accepts gzip, so it does not gzip the file for each request. The copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copy. The build does not change a `.gz` file of the app. The copies include the prerendered files, in any plugin order. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
+After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) and a brotli copy (`.<file>.br`) next to each text file of 1 kibibyte (KiB) or more in the client build, HTML pages included. It writes the gzip copy when it is smaller than the file, and the brotli copy when it is smaller than the gzip copy. `app-server serve` sends the copy that the client's `Accept-Encoding` prefers, brotli before gzip, so it does not compress the file for each request. Each copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copies. The build does not change a `.gz` or `.br` file of the app. The copies include the prerendered files, in any plugin order. The brotli copies use quality 9, not 11: on a docs build with 70 megabytes (MB) of text, quality 11 adds 46 s to the build, and quality 9 adds 0.6 s for copies that are 9% larger. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
@@ -149,7 +149,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 1. `health()`: the liveness and readiness probes at `/livez` and `/readyz`. A probe skips the access log. `defaultPlugins({ health })` changes them, and `false` turns them off. See [Health checks](#health-checks).
 2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 3. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-4. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a gzip copy from the build gets that copy, and this plugin skips it. The host gives the gzip stream. On a host with none, the plugin does nothing.
+4. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses gzip. The host gives the gzip stream. On a host with none, the plugin does nothing.
 5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
 6. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
 7. The plugins of the named options. They see every response, prerendered pages included:
@@ -161,7 +161,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 9. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 10. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
 11. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a gzip copy from the build gets `Vary: Accept-Encoding`, and a client that accepts gzip gets the copy with no byte ranges. HTML and a `no-transform` response never get the copy. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. A `no-transform` response never gets a copy, and an HTML page gets none when `runtimeEnv` adds values to it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
 13. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
@@ -183,7 +183,7 @@ const frameOptions: Plugin = {
 };
 ```
 
-A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
+A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages also run the hook on a copy of the headers before they choose a compressed copy, so a `no-transform` from a hook keeps the file as it is. A hook can run more than once for one request. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -197,6 +197,8 @@ const version: Plugin = {
 		}),
 };
 ```
+
+A `beforeStatic` plugin that changes the bytes of an HTML page, as `runtimeEnv` does, calls `c.set("rewritesHtml", true)` before its `next()`. The static stages then send the HTML file as it is on disk, not its compressed copy. Without it, a client that accepts gzip or brotli gets the copy, with a `Content-Encoding` that the plugin must not change.
 
 ## Protect pages
 
@@ -301,7 +303,7 @@ export function getRouter() {
 
 After a deploy, an open tab still runs the old build. Two things can then go wrong:
 
-- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build, with their `.<file>.gz` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
+- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build, with their `.<file>.gz` and `.<file>.br` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
 - **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
 
 `buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. For React Router, create the module once, and give its three hooks to the router:
@@ -667,6 +669,8 @@ The values whose names start with `PUBLIC_` go into each HTML document at serve 
 const publicEnv = JSON.parse(document.getElementById("app-server-public-env")?.textContent ?? "{}");
 ```
 
+When there are public values, the server sends each prerendered page from its file, not from its compressed copy, because the values change the bytes of the page. `streamingCompress()` then gzips the page for each request.
+
 ## Long-lived responses
 
 `eventStream()` makes a server-sent event response that sends a heartbeat every 15 s, stops when the client disconnects, and closes at shutdown so the drain does not wait for it:
@@ -692,7 +696,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` copies count in that limit. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
 
 ## Options
 

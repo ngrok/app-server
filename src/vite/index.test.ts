@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { build as viteBuild, preview, resolveConfig } from "vite";
 import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -295,10 +295,14 @@ describe("appServer", () => {
 		});
 	});
 
-	it("writes the gzip copy of each prerendered file after the pass, before the framework's plugin too", async () => {
+	it("writes the copies of each file that the pass changed, before the framework's plugin too", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const client = join(root, "build/client");
 		const text = "Prerendered text for an agent.\n".repeat(50);
-		writeFileSync(join(root, "build/client/agents.txt"), text);
+		// Why: copies from an earlier build of a page that the pass writes again.
+		writeFileSync(join(client, "flat.html"), "<p>old</p>".repeat(200));
+		writeFileSync(join(client, ".flat.html.gz"), "stale");
+		writeFileSync(join(client, ".flat.html.br"), "stale");
 		const server = await preview({
 			root,
 			configFile: false,
@@ -308,13 +312,30 @@ describe("appServer", () => {
 			build: { outDir: "build/client" },
 			preview: { port: 0, host: "127.0.0.1" },
 		});
+		// Why after the start: the framework writes each file while the pass runs. TanStack Start with
+		// `autoSubfolderIndex: false` writes `/flat` to `flat.html`.
+		writeFileSync(join(client, "agents.txt"), text);
+		mkdirSync(join(client, "page"), { recursive: true });
+		writeFileSync(join(client, "page/index.html"), `<p>${text}</p>`);
+		writeFileSync(join(client, "flat.html"), `<p>${text}</p>`);
 
-		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		for (const path of ["/agents.txt", "/page", "/flat"]) {
+			await (await fetch(new URL(path, server.resolvedUrls?.local[0]))).text();
+		}
 		await server.close();
 
-		expect(gunzipSync(readFileSync(join(root, "build/client/.agents.txt.gz"))).toString()).toBe(
+		expect(gunzipSync(readFileSync(join(client, ".agents.txt.gz"))).toString()).toBe(text);
+		expect(brotliDecompressSync(readFileSync(join(client, ".agents.txt.br"))).toString()).toBe(
 			text,
 		);
+		for (const page of ["page/.index.html", ".flat.html"]) {
+			expect(brotliDecompressSync(readFileSync(join(client, `${page}.br`))).toString()).toBe(
+				`<p>${text}</p>`,
+			);
+			expect(gunzipSync(readFileSync(join(client, `${page}.gz`))).toString()).toBe(
+				`<p>${text}</p>`,
+			);
+		}
 	});
 
 	it("writes a build ID from the client bundle, which changes with its code and outlasts the prerender pass", async () => {
@@ -537,7 +558,7 @@ describe("appServer", () => {
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');
 	});
 
-	it("writes a gzip copy of each text file of 1 KiB or more after the build, except HTML", async () => {
+	it("writes a gzip and a brotli copy of each text file of 1 KiB or more after the build", async () => {
 		const client = join(root, "gzip-build");
 		const text = "export const value = 1;\n".repeat(100);
 		const files: Record<string, string | Uint8Array> = {
@@ -545,21 +566,23 @@ describe("appServer", () => {
 			"docs/llms.txt": text,
 			"index.html": `<p>${text}</p>`,
 			"small.txt": "small",
-			// Why: a copy from an earlier build of a file that is now too small.
+			// Why: copies from an earlier build of a file that is now too small.
 			".small.txt.gz": "stale",
+			".small.txt.br": "stale",
 			"photo.png": text,
 			"release.tar": text,
 			"release.tar.gz": "archive",
 			"data.json": "{}",
 			"data.json.gz": "app data",
+			"data.json.br": "app data",
 			".app-server.json": JSON.stringify({ prerendered: [text] }),
 		};
 		for (const [path, content] of Object.entries(files)) {
 			mkdirSync(dirname(join(client, path)), { recursive: true });
 			writeFileSync(join(client, path), content);
 		}
-		const [, gzipCopies] = appServer({ framework: reactRouterAdapter(), host: node() });
-		const hook = gzipCopies?.buildApp;
+		const [, copies] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const hook = copies?.buildApp;
 		const builder = {
 			config: {
 				root,
@@ -575,21 +598,22 @@ describe("appServer", () => {
 			builder as unknown as ViteBuilder,
 		);
 
-		const copy = (path: string) => join(client, dirname(path), `.${basename(path)}.gz`);
-		for (const path of ["assets/app-abc.js", "docs/llms.txt"]) {
-			expect(gunzipSync(readFileSync(copy(path))).toString()).toBe(text);
+		const copy = (path: string, extension: string) =>
+			join(client, dirname(path), `.${basename(path)}.${extension}`);
+		for (const path of ["assets/app-abc.js", "docs/llms.txt", "index.html"]) {
+			const content = files[path]?.toString();
+			expect(gunzipSync(readFileSync(copy(path, "gz"))).toString()).toBe(content);
+			expect(brotliDecompressSync(readFileSync(copy(path, "br"))).toString()).toBe(content);
 		}
-		for (const path of [
-			"index.html",
-			"small.txt",
-			"photo.png",
-			"release.tar",
-			".app-server.json",
-		]) {
-			expect(existsSync(copy(path))).toBe(false);
+		for (const path of ["small.txt", "photo.png", "release.tar", ".app-server.json"]) {
+			expect([existsSync(copy(path, "gz")), existsSync(copy(path, "br"))]).toStrictEqual([
+				false,
+				false,
+			]);
 		}
 		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
 		expect(readFileSync(join(client, "data.json.gz"), "utf8")).toBe("app data");
+		expect(readFileSync(join(client, "data.json.br"), "utf8")).toBe("app data");
 	});
 });
 

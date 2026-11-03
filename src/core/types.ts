@@ -171,6 +171,13 @@ export type AppServerEnv = {
 		 * static stages add them to each file's ETag. The server sets this list.
 		 */
 		etagParts?: readonly string[];
+		/**
+		 * Whether a stage that the request passed changes the bytes of an HTML
+		 * body, as `runtimeEnv` does. The stage sets it before its `next()`.
+		 * The static stages then send an HTML file as it is on disk, not its
+		 * compressed copy, so the stage can change it.
+		 */
+		rewritesHtml?: boolean;
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
 		headerHooks?: readonly HeaderHook[];
 	};
@@ -189,6 +196,8 @@ export type ResponseHeaders = {
  * A change to the headers of a response, from a stage that runs before the
  * response. The stage runs it after the later stages, and a dev server
  * middleware that sends its own response runs it before it sends the head.
+ * The static stages also run it on a copy of the headers, so it can run more
+ * than once for one request.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;

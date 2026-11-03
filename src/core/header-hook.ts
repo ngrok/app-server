@@ -85,3 +85,34 @@ export async function withHeaderHook(
 	};
 	hook(headers);
 }
+
+/**
+ * A copy of `headers` after the header hook of each stage that the request
+ * passed, in the order that production runs them. Why: a stage that picks a
+ * body by a header, such as `Cache-Control: no-transform`, must see the value
+ * that an earlier stage sets after it. So a hook can run more than once.
+ *
+ * @example
+ * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
+ */
+export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers): Headers {
+	const copy = new Headers(headers);
+	const view: ResponseHeaders = {
+		get: (name) => copy.get(name),
+		has: (name) => copy.has(name),
+		set: (name, value) => {
+			copy.set(name, value);
+		},
+		append: (name, value) => {
+			copy.append(name, value);
+		},
+		delete: (name) => {
+			copy.delete(name);
+		},
+	};
+	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
+	for (const hook of (context.get("headerHooks") ?? []).toReversed()) {
+		hook(view);
+	}
+	return copy;
+}

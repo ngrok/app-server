@@ -1,4 +1,9 @@
-import { acceptsGzip, forbidsTransform, isCompressible, MIN_GZIP_BYTES } from "../gzip-rules.js";
+import {
+	forbidsTransform,
+	isCompressible,
+	MIN_COMPRESS_BYTES,
+	preferredEncoding,
+} from "../compression.js";
 import { replaceResponse, writableHeaders } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 import { withVary } from "../vary.js";
@@ -100,8 +105,8 @@ export function streamingCompress(): Plugin {
 				type == null ||
 				body == null ||
 				context.req.method === "HEAD" ||
-				(length != null && Number(length) < MIN_GZIP_BYTES) ||
-				!acceptsGzip(context) ||
+				(length != null && Number(length) < MIN_COMPRESS_BYTES) ||
+				preferredEncoding(context.req.header("Accept-Encoding"), ["gzip"]) == null ||
 				response.headers.has("Content-Encoding") ||
 				// Why: gzip changes the bytes, so a `Content-Range` would no longer match them.
 				response.headers.has("Content-Range") ||
@@ -119,7 +124,7 @@ export function streamingCompress(): Plugin {
 				const queued = await readQueued(reader);
 				const size = queued.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
 				// Why: gzip makes a small body larger, and a body from a string has no `Content-Length`.
-				gzipped = !queued.done || size >= MIN_GZIP_BYTES;
+				gzipped = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
 			// Why one copy: the new body needs a new response, and its headers change in place.

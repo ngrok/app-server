@@ -138,14 +138,25 @@ describe("streamingCompress", () => {
 		await expect(response.text()).resolves.toBe("abc");
 	});
 
-	it("leaves a client that refuses gzip with q=0 alone", async () => {
-		const { request } = await testServer({ plugins: [streamingCompress()] });
-
-		const response = await request("/", {
-			headers: { "Accept-Encoding": "gzip;q=0, identity;q=1" },
+	it("follows the q values of Accept-Encoding, with q=0 as a refusal", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
 		});
+		const encodings: Record<string, string | null> = {
+			"gzip;q=0, identity;q=1": null,
+			"identity, gzip;q=0.5": null,
+			"*;q=0": null,
+			"*": "gzip",
+			"br, gzip;q=0.1": "gzip",
+		};
 
-		expect(response.headers.get("Content-Encoding")).toBeNull();
+		for (const [header, encoding] of Object.entries(encodings)) {
+			const response = await request("/", { headers: { "Accept-Encoding": header } });
+
+			expect([header, response.headers.get("Content-Encoding")]).toStrictEqual([header, encoding]);
+		}
 	});
 
 	it("reads the source only as fast as the client reads", async () => {

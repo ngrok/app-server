@@ -1,11 +1,14 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { z } from "zod";
 import { createServer, serverInternals } from "../create-server.js";
+import { withHeaderHook } from "../header-hook.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
+import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
 import type { Plugin } from "../types.js";
@@ -419,31 +422,85 @@ describe("assets", () => {
 	});
 });
 
-describe("gzip copies from the build", () => {
+describe("compressed copies from the build", () => {
 	const text = "export const value = 1;\n".repeat(100);
-	const gzip = { headers: { "Accept-Encoding": "gzip, deflate, br" } };
-	for (const path of ["assets/copy-abc123.js", "copy.txt", "plain/index.html"]) {
+	const page = `<html><head></head><body>${text}</body></html>`;
+	const withBrotli = { headers: { "Accept-Encoding": "gzip, deflate, br" } };
+	const gzip = { headers: { "Accept-Encoding": "gzip" } };
+	const contents: Record<string, string> = {
+		"assets/copy-abc123.js": text,
+		"copy.txt": text,
+		"plain/index.html": page,
+	};
+	for (const [path, content] of Object.entries(contents)) {
 		mkdirSync(dirname(join(clientDirectory, path)), { recursive: true });
-		writeFileSync(join(clientDirectory, path), text);
-		writeFileSync(join(clientDirectory, dirname(path), `.${basename(path)}.gz`), gzipSync(text));
+		writeFileSync(join(clientDirectory, path), content);
+		writeFileSync(join(clientDirectory, dirname(path), `.${basename(path)}.gz`), gzipSync(content));
+		writeFileSync(
+			join(clientDirectory, dirname(path), `.${basename(path)}.br`),
+			brotliCompressSync(content),
+		);
 	}
+	// Why: a build that wrote no brotli copy, because it was not smaller than the gzip copy.
+	writeFileSync(join(clientDirectory, "gzip-only.txt"), text);
+	writeFileSync(join(clientDirectory, ".gzip-only.txt.gz"), gzipSync(text));
 
-	it("sends the gzip copy to a request that accepts gzip, with its length and no ranges", async () => {
+	it("sends the brotli copy to a request that accepts br, with its length and no ranges", async () => {
 		const { request } = await staticServer();
 
-		for (const path of ["/assets/copy-abc123.js", "/copy.txt"]) {
-			const response = await request(path, gzip);
+		const served: readonly (readonly [string, string])[] = [
+			["/assets/copy-abc123.js", text],
+			["/copy.txt", text],
+			["/plain", page],
+		];
+
+		for (const [path, content] of served) {
+			const response = await request(path, withBrotli);
 			const body = new Uint8Array(await response.arrayBuffer());
 
-			expect(response.headers.get("Content-Encoding")).toBe("gzip");
+			expect(response.headers.get("Content-Encoding")).toBe("br");
 			expect(response.headers.get("Content-Length")).toBe(String(body.byteLength));
 			expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 			expect(response.headers.get("Accept-Ranges")).toBeNull();
-			expect(gunzipSync(body).toString()).toBe(text);
+			expect(brotliDecompressSync(body).toString()).toBe(content);
 		}
 	});
 
-	it("sends the file with Vary: Accept-Encoding to a request that does not accept gzip", async () => {
+	it("sends the gzip copy to a request that does not accept br, or when no brotli copy exists", async () => {
+		const { request } = await staticServer();
+
+		const copy = await request("/copy.txt", gzip);
+		const gzipOnly = await request("/gzip-only.txt", withBrotli);
+
+		for (const response of [copy, gzipOnly]) {
+			expect(response.headers.get("Content-Encoding")).toBe("gzip");
+			expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+			expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe(text);
+		}
+	});
+
+	it("follows the q values of Accept-Encoding, with q=0 as a refusal", async () => {
+		const { request } = await staticServer();
+		const encodings: Record<string, string | null> = {
+			"br;q=0, gzip": "gzip",
+			"gzip;q=1, br;q=0.5": "gzip",
+			"br;q=0.5, gzip;q=0.5": "br",
+			"*": "br",
+			"*;q=0.5, br;q=0": "gzip",
+			"identity, gzip;q=0.5": null,
+			"br;q=0, gzip;q=0": null,
+			"*;q=0": null,
+			deflate: null,
+		};
+
+		for (const [header, encoding] of Object.entries(encodings)) {
+			const response = await request("/copy.txt", { headers: { "Accept-Encoding": header } });
+
+			expect([header, response.headers.get("Content-Encoding")]).toStrictEqual([header, encoding]);
+		}
+	});
+
+	it("sends the file with Vary: Accept-Encoding to a request that accepts no copy", async () => {
 		const { request } = await staticServer();
 
 		const response = await request("/assets/copy-abc123.js");
@@ -453,51 +510,114 @@ describe("gzip copies from the build", () => {
 		await expect(response.text()).resolves.toBe(text);
 	});
 
-	it("answers HEAD with the length of the copy, and keeps the Vary on a 304", async () => {
+	it("gives each encoding its own ETag", async () => {
 		const { request } = await staticServer();
-		const etag = (await request("/copy.txt")).headers.get("ETag") ?? "";
+		const etag = async (init?: RequestInit) =>
+			(await request("/copy.txt", init)).headers.get("ETag") ?? "";
+
+		const tags = [await etag(withBrotli), await etag(gzip), await etag()];
+
+		expect(new Set(tags).size).toBe(3);
+	});
+
+	it("answers 304 only to the ETag of the encoding that the request gets", async () => {
+		const { request } = await staticServer();
+		const brotliTag = (await request("/copy.txt", withBrotli)).headers.get("ETag") ?? "";
+		const revalidate = async (accept: string) =>
+			request("/copy.txt", { headers: { "Accept-Encoding": accept, "If-None-Match": brotliTag } });
+
+		const notModified = await revalidate("br");
+		const gzipped = await revalidate("gzip");
+
+		expect([notModified.status, gzipped.status]).toStrictEqual([304, 200]);
+		expect(notModified.headers.get("ETag")).toBe(brotliTag);
+		expect(notModified.headers.get("Vary")).toBe("Accept-Encoding");
+		expect(gzipped.headers.get("Content-Encoding")).toBe("gzip");
+	});
+
+	it("answers HEAD with the length of the copy", async () => {
+		const { request } = await staticServer();
 
 		const head = await request("/copy.txt", { method: "HEAD", ...gzip });
-		const notModified = await request("/copy.txt", { headers: { "If-None-Match": etag } });
 
 		expect(head.headers.get("Content-Length")).toBe(String(gzipSync(text).byteLength));
 		await expect(head.text()).resolves.toBe("");
-		expect(notModified.status).toBe(304);
-		expect(notModified.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
-	it("never sends the copy for a file that its headers already encode", async () => {
+	it("never sends a copy for a file that its headers already encode", async () => {
 		const { request } = await staticServer({
 			headers: (path) => (path === "/copy.txt" ? { "Content-Encoding": "gzip" } : undefined),
 		});
 
-		const response = await request("/copy.txt", gzip);
+		const response = await request("/copy.txt", withBrotli);
 
 		expect(response.headers.get("Content-Encoding")).toBe("gzip");
 		expect(response.headers.get("Content-Length")).toBe(String(text.length));
 		await expect(response.text()).resolves.toBe(text);
 	});
 
-	it("gives the copy no URL of its own, so a skip rule for its file also blocks it", async () => {
+	it("gives a copy no URL of its own, so a skip rule for its file also blocks it", async () => {
 		const { request } = await staticServer({ skip: (path) => path === "/copy.txt" });
 
-		for (const path of ["/copy.txt", "/.copy.txt.gz", "/copy.txt.gz"]) {
-			await expect((await request(path, gzip)).text()).resolves.toBe("rendered");
+		for (const path of ["/copy.txt", "/.copy.txt.gz", "/copy.txt.gz", "/.copy.txt.br"]) {
+			await expect((await request(path, withBrotli)).text()).resolves.toBe("rendered");
 		}
 	});
 
-	it("never sends the copy of an HTML file, or for a response marked no-transform", async () => {
+	it("never sends a copy for a response marked no-transform", async () => {
 		const { request } = await staticServer({
 			headers: (path) => (path === "/copy.txt" ? { "Cache-Control": "no-transform" } : undefined),
 		});
 
-		const page = await request("/plain", gzip);
-		const marked = await request("/copy.txt", gzip);
+		const response = await request("/copy.txt", withBrotli);
 
-		expect(page.headers.get("Content-Encoding")).toBeNull();
-		await expect(page.text()).resolves.toBe(text);
-		expect(marked.headers.get("Content-Encoding")).toBeNull();
-		await expect(marked.text()).resolves.toBe(text);
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		await expect(response.text()).resolves.toBe(text);
+	});
+
+	it("never sends a copy for a response that an earlier stage's header hook marks no-transform", async () => {
+		const noTransform: Plugin = {
+			name: "no-transform",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.set("Cache-Control", "public, no-transform");
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [noTransform, prerendered()],
+			clientDirectory,
+		});
+
+		for (const path of ["/copy.txt", "/plain"]) {
+			const response = await request(path, withBrotli);
+
+			expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+			expect(response.headers.get("Content-Encoding")).toBeNull();
+		}
+	});
+
+	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {
+		const withValues = await testServer({
+			plugins: [
+				runtimeEnv(z.object({ PUBLIC_A: z.string() }), { source: { PUBLIC_A: "1" } }),
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const noValues = await testServer({
+			plugins: [
+				runtimeEnv(z.object({ SECRET: z.string() }), { source: { SECRET: "1" } }),
+				prerendered(),
+			],
+			clientDirectory,
+		});
+
+		const injected = await withValues.request("/plain", withBrotli);
+		const copied = await noValues.request("/plain", withBrotli);
+
+		expect(injected.headers.get("Content-Encoding")).toBeNull();
+		await expect(injected.text()).resolves.toContain('<script id="app-server-public-env"');
+		expect(copied.headers.get("Content-Encoding")).toBe("br");
 	});
 });
 
