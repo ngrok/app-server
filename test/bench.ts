@@ -110,17 +110,30 @@ async function load(
 		...Object.keys(output.statusCodeDistribution).filter((code) => !code.startsWith("2")),
 		...Object.keys(output.errorDistribution).filter((error) => error !== "aborted due to deadline"),
 	];
-	if (failed.length > 0) {
-		return { failure: failed.join(", ") };
-	}
 	const responses = Object.values(output.statusCodeDistribution).reduce(
 		(sum, count) => sum + count,
 		0,
 	);
+	if (failed.length > 0 || responses === 0) {
+		return { failure: failed.length > 0 ? failed.join(", ") : "no responses" };
+	}
 	return {
 		rps: responses / output.summary.total,
 		p99Ms: (output.latencyPercentiles.p99 ?? 0) * 1000,
 	};
+}
+
+/** Gets `url` and returns its status and body, or the reason when the request fails. */
+async function get(
+	url: string,
+): Promise<{ ok: boolean; status: number; body: string } | { failure: string }> {
+	try {
+		const response = await fetch(url);
+		return { ok: response.ok, status: response.status, body: await response.text() };
+	} catch (error) {
+		// Why the cause: `fetch` rejects with "fetch failed" and puts the network error in `cause`.
+		return { failure: String(error instanceof Error && error.cause != null ? error.cause : error) };
+	}
 }
 
 /** Stops the server, and kills it when it does not exit within 10 s. */
@@ -161,32 +174,39 @@ async function measure(
 	const key = { runtime, app: app.name, route, side };
 	try {
 		const base = await url;
-		const home = await (await fetch(new URL("/", base))).text();
+		const home = await get(new URL("/", base).href);
+		const asset =
+			"body" in home ? /"(?<path>\/assets\/[^"]+\.js)"/u.exec(home.body)?.groups?.path : null;
 		const paths: Record<Route, string> = {
 			page: "/",
 			ssr: "/ssr",
-			asset: /"(?<path>\/assets\/[^"]+\.js)"/u.exec(home)?.groups?.path ?? "/assets/none.js",
+			asset: asset ?? "/assets/none.js",
 			api: "/ping",
 		};
 		const target = new URL(paths[route], base).href;
-		const probe = await fetch(target);
-		await probe.arrayBuffer();
-		if (!probe.ok) {
-			// Why skip on the base: the base checkout can be older than a route.
-			return side === "base"
-				? undefined
-				: { ...key, outcome: "fails", reason: `${target} answered with ${probe.status}` };
+		const probe = await get(target);
+		// Why skip on the base: the base checkout can be older than a route.
+		if (side === "base" && "ok" in probe && !probe.ok) {
+			return undefined;
 		}
-		await load(target, warmupSeconds);
-		const measured = await load(target, seconds);
+		let result: Awaited<ReturnType<typeof load>>;
+		if ("failure" in probe) {
+			result = probe;
+		} else if (probe.ok) {
+			// Why keep a warmup failure: the timed load alone can miss a route that fails at the start.
+			const warmup = await load(target, warmupSeconds);
+			result = "failure" in warmup ? warmup : await load(target, seconds);
+		} else {
+			result = { failure: `status ${probe.status}` };
+		}
 		// Why wait: the server can exit just after `oha` closes its connections at the end.
 		if (await Promise.race([exit, delay(500).then(() => false)])) {
 			return { ...key, outcome: "exits" };
 		}
-		if ("failure" in measured) {
-			return { ...key, outcome: "fails", reason: `${target} failed with ${measured.failure}` };
+		if ("failure" in result) {
+			return { ...key, outcome: "fails", reason: `${target} failed with ${result.failure}` };
 		}
-		return { ...key, outcome: "ok", ...measured };
+		return { ...key, outcome: "ok", ...result };
 	} finally {
 		await stop(child);
 	}
