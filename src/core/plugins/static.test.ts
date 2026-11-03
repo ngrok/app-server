@@ -655,9 +655,10 @@ describe("prerendered markdownTwins in development", () => {
 	/**
 	 * A development server whose framework renders each `.md` URL as markdown,
 	 * with a 304 for an `If-None-Match`. `/docs/missing.md` is a markdown 404,
-	 * and `/tags/react.md` is an HTML page.
+	 * and `/tags/react.md` is an HTML page. With no `prerenderedPaths`, it is
+	 * a framework that finds them only during the build.
 	 */
-	async function devServer(options: PrerenderedOptions) {
+	async function devServer(options: PrerenderedOptions, prerenderedPaths?: readonly string[]) {
 		const seen: string[] = [];
 		const framework = stubFramework(async (request) => {
 			const { pathname } = new URL(request.url);
@@ -687,6 +688,7 @@ describe("prerendered markdownTwins in development", () => {
 			...(await productionSetup({ clientDirectory, logger })),
 			mode: "development",
 			devServer: async (_, next) => next(),
+			prerenderedPaths,
 		});
 		// Why a listener: the Node.js listener's request differs from the `Request` of `app.request`.
 		const server = await internals?.listen(framework, []);
@@ -749,6 +751,24 @@ describe("prerendered markdownTwins in development", () => {
 			"GET /tags/react",
 			"GET /docs/button",
 			"GET /app",
+		]);
+	});
+
+	it("asks only for a twin that the build will prerender, when the framework knows them", async () => {
+		const { request, seen } = await devServer({ markdownTwins: true }, ["/docs/button.md"]);
+		const none = await devServer({ markdownTwins: true }, []);
+
+		const twin = await request("/docs/button", markdown);
+		const notPrerendered = await request("/docs/other", markdown);
+		const noPaths = await none.request("/docs/button", markdown);
+
+		await expect(twin.text()).resolves.toBe("# /docs/button.md");
+		await expect(notPrerendered.text()).resolves.toBe("rendered");
+		await expect(noPaths.text()).resolves.toBe("rendered");
+		expect([...seen, ...none.seen]).toStrictEqual([
+			"GET /docs/button.md",
+			"GET /docs/other",
+			"GET /docs/button",
 		]);
 	});
 

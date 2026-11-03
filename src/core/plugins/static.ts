@@ -87,8 +87,11 @@ export type PrerenderedOptions = {
 	 *   for the twin's own URL gets none.
 	 * - In development, the client build has no twins. A request that prefers
 	 *   markdown gets the framework's answer for the twin's URL, so an edit
-	 *   shows at once. An error, or an answer that is not markdown, gives the
-	 *   HTML.
+	 *   shows at once. When the framework knows the paths that the build will
+	 *   prerender, as React Router does, only those twins count. An error, or
+	 *   an answer that is not markdown, gives the HTML.
+	 * - A plugin after `prerendered` does not see a twin, as it does not see
+	 *   a prerendered file.
 	 *
 	 * `true` uses the default `twinOf`: the path with no trailing slash plus
 	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
@@ -174,12 +177,14 @@ function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
 /**
  * The development stage of `markdownTwins`. The client build has no twins
  * then, so a request that prefers markdown gets the framework's answer for
- * the twin's URL: the route that prerenders the twin. An error, or an answer
- * that is not markdown, sends the request on for the HTML.
+ * the twin's URL: the route that prerenders the twin. A twin path that is not
+ * in `prerenderedPaths`, an error, or an answer that is not markdown sends the
+ * request on for the HTML.
  */
 function developmentTwins(
 	twinOf: (path: string) => string | undefined,
 	skip: PrerenderedOptions["skip"],
+	prerenderedPaths: ReadonlySet<string> | undefined,
 ): MiddlewareHandler<AppServerEnv> {
 	return async (context, next) => {
 		const { method, path } = context.req;
@@ -189,8 +194,12 @@ function developmentTwins(
 			prefersMarkdown(context.req.raw)
 				? twinOf(path)
 				: undefined;
-		// Why `isFilePath`: production finds no twin at such a path.
-		if (twinPath == null || !isFilePath(twinPath)) {
+		// Why both checks: production has no twin that the build does not prerender, or at a path that fails `isFilePath`.
+		if (
+			twinPath == null ||
+			(prerenderedPaths != null && !prerenderedPaths.has(twinPath)) ||
+			!isFilePath(twinPath)
+		) {
 			return next();
 		}
 		const url = new URL(context.req.url);
@@ -253,7 +262,11 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 		setup: async (info) => {
 			const twinOf = twinOfOption(options.markdownTwins);
 			if (info.mode === "development") {
-				stage = twinOf == null ? undefined : developmentTwins(twinOf, options.skip);
+				const paths = info.prerenderedPaths;
+				stage =
+					twinOf == null
+						? undefined
+						: developmentTwins(twinOf, options.skip, paths == null ? undefined : new Set(paths));
 				return;
 			}
 			const { files, contentTypes, capturedHeaders } = info;
