@@ -42,8 +42,8 @@ export type SecurityHeadersOptions = {
  * A response that has a header keeps its own value. The exception is
  * `Content-Security-Policy`, which has no default: the plugin adds a set
  * value as a second policy, and a browser enforces both.
- * `defaultPlugins()` puts it before the `beforeStatic` plugins, so it also
- * sees prerendered pages.
+ * `defaultPlugins()` puts it before the static stages, so it also sees
+ * prerendered pages.
  *
  * @example
  * defaultPlugins({
@@ -111,14 +111,16 @@ function randomNonce(): string {
  *   visitor, so a nonce protects nothing. Why no `'strict-dynamic'`: a hash,
  *   unlike a nonce, does not carry to the imports of an inline module script.
  *
- * Put it before the static stages, so it sees the prerendered documents. A
- * response that has a `Content-Security-Policy` keeps it.
+ * The `contentSecurityPolicy` option of `defaultPlugins()` takes these
+ * options, and puts the plugin before the static stages, so it sees the
+ * prerendered documents. A response that has a `Content-Security-Policy`
+ * keeps it.
  *
  * @example
  * defaultPlugins({
- * 	beforeStatic: [
- * 		contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'` }),
- * 	],
+ * 	contentSecurityPolicy: {
+ * 		policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+ * 	},
  * });
  */
 export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions): Plugin {

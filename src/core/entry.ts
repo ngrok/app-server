@@ -107,14 +107,15 @@ export function createEntry({
 			const snapshot = await shared.files.snapshot?.();
 			// Why only with a snapshot: it promises that the client build does not change while the server runs.
 			const files = snapshot == null ? shared.files : keptFiles(snapshot);
-			const { prerendered, headers, scriptHashes } = await readBuildManifest(files);
+			const manifest = await readBuildManifest(files);
 			const info: SetupInfo = {
 				...shared,
 				files,
 				mode: "production",
-				prerenderedPaths: runtime.prerenderedPaths ?? prerendered,
-				capturedHeaders: new Map(Object.entries(headers)),
-				scriptHashes: new Map(Object.entries(scriptHashes)),
+				prerenderedPaths: runtime.prerenderedPaths ?? manifest.prerendered,
+				capturedHeaders: new Map(Object.entries(manifest.headers)),
+				scriptHashes: new Map(Object.entries(manifest.scriptHashes)),
+				buildId: manifest.buildId,
 			};
 			await internals.prepare(info);
 			const server = await internals.listen(runtime, host.listeners());
@@ -134,6 +135,8 @@ export function createEntry({
 				prerenderedPaths: development.prerenderedPaths,
 				capturedHeaders: new Map(),
 				scriptHashes: new Map(),
+				// Why none: development has no client build, and Vite's HMR updates an open tab after each edit.
+				buildId: undefined,
 			});
 			return app.fetch(request, { ...bindings, framework: development });
 		},

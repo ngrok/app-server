@@ -11,7 +11,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
-import type { Plugin, PreviewServer, ResolvedConfig } from "vite";
+import type { Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
@@ -196,6 +196,7 @@ function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] 
 
 /** Writes `.app-server.json` into the client build. */
 function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): void {
+	mkdirSync(clientDirectory, { recursive: true });
 	writeFileSync(
 		join(clientDirectory, BUILD_MANIFEST_FILE),
 		`${JSON.stringify(manifest, null, "\t")}\n`,
@@ -203,12 +204,12 @@ function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): v
 }
 
 /**
- * Writes the script hashes of the client build ({@link scriptHashesOf}) into
- * `.app-server.json`, and keeps the rest of the file. Why after the build
- * too: a build with no prerender pass can have HTML files, such as
- * `public/offline.html`.
+ * Writes the build ID and the script hashes of the client build
+ * ({@link scriptHashesOf}) into `.app-server.json`, and keeps the rest of the
+ * file. Why after the build too: a build with no prerender pass can have HTML
+ * files, such as `public/offline.html`.
  */
-function recordScriptHashes(clientDirectory: string): void {
+function completeBuildManifest(clientDirectory: string, buildId: string | undefined): void {
 	if (!existsSync(clientDirectory)) {
 		return;
 	}
@@ -218,8 +219,87 @@ function recordScriptHashes(clientDirectory: string): void {
 		prerendered: [],
 		headers: {},
 		...(typeof recorded === "object" && recorded != null ? recorded : {}),
+		...(buildId == null ? {} : { buildId }),
 		scriptHashes: scriptHashesOf(clientDirectory),
 	});
+}
+
+/**
+ * The ID of a client build: a hash of the name and the content of each file
+ * in its bundle. Why the bundle: it is the code that an open tab runs, so the
+ * ID changes when that code changes, and not for a change to the server, a
+ * `public/` file, or a prerendered page. Why the content, not the file
+ * names: a name has a content hash only when the output names ask for one.
+ */
+function bundleBuildId(bundle: Rolldown.OutputBundle): string {
+	const hash = createHash("sha256");
+	// Why `<`, not `localeCompare`: the order of `localeCompare` changes with the locale of the
+	// machine, so two machines would give one bundle two IDs.
+	for (const file of Object.values(bundle).toSorted((first, second) =>
+		first.fileName < second.fileName ? -1 : 1,
+	)) {
+		hash.update(`${file.fileName}\0`);
+		hash.update(file.type === "chunk" ? file.code : file.source);
+		hash.update("\0");
+	}
+	// Why 16 hex digits: 64 bits keep two builds apart, and the ID goes in each document's headers.
+	return hash.digest("hex").slice(0, 16);
+}
+
+/** The path of each file under `directory` that is not a dotfile, in code unit order. */
+function filesIn(directory: string): string[] {
+	if (!existsSync(directory)) {
+		return [];
+	}
+	return readdirSync(directory, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile() && !entry.name.startsWith("."))
+		.map((entry) => relative(directory, join(entry.parentPath, entry.name)).split(sep).join("/"))
+		.toSorted();
+}
+
+/** The client build, as its `writeBundle` hook saw it. */
+type ClientBuild = {
+	/** The {@link bundleBuildId} of the client bundle. */
+	bundleId: string;
+	/** The assets directory of the client build, such as `build/client/assets`. */
+	assetsDirectory: string;
+	/** The files in the assets directory ({@link filesIn}) after the client build wrote its bundle. */
+	assets: ReadonlySet<string>;
+};
+
+/**
+ * The ID of the whole build: the {@link bundleBuildId} of the client bundle,
+ * with the name and the content of each file that a later build step added to
+ * the assets directory. Why: React Router writes its route manifest
+ * (`assets/manifest-*.js`) during the server build, and a route change, such
+ * as a new path for one module, can keep the client bundle the same.
+ */
+function appBuildId({ bundleId, assetsDirectory, assets }: ClientBuild): string {
+	const added = filesIn(assetsDirectory).filter((file) => !assets.has(file));
+	if (added.length === 0) {
+		return bundleId;
+	}
+	const hash = createHash("sha256").update(bundleId);
+	for (const file of added) {
+		hash.update(`\0${file}\0`);
+		hash.update(readFileSync(join(assetsDirectory, file)));
+	}
+	return hash.digest("hex").slice(0, 16);
+}
+
+/** The `buildId` of the build manifest that the client build wrote, if any. */
+function writtenBuildId(clientDirectory: string): string | undefined {
+	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
+	if (!existsSync(path)) {
+		return undefined;
+	}
+	const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
+	return typeof manifest === "object" &&
+		manifest != null &&
+		"buildId" in manifest &&
+		typeof manifest.buildId === "string"
+		? manifest.buildId
+		: undefined;
 }
 
 /**
@@ -261,8 +341,10 @@ function capture(server: PreviewServer): void {
 		next();
 	});
 	server.httpServer.once("close", () => {
-		mkdirSync(clientDirectory, { recursive: true });
+		const buildId = writtenBuildId(clientDirectory);
 		writeBuildManifest(clientDirectory, {
+			// Why keep it: the prerender pass runs after the client build, which derived it.
+			...(buildId == null ? {} : { buildId }),
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
@@ -326,6 +408,11 @@ function writeGzipCopies(clientDirectory: string): void {
  *   (the default export of `app`) with the framework's server module, so the
  *   server gets the app's path aliases and its one copy of the framework.
  *   The framework's own entry does not change.
+ * - After the client build, it writes `.app-server.json` in the client
+ *   build with the build ID: a hash of the client bundle. After the build,
+ *   it adds the files that the server build wrote to the client's assets
+ *   directory, such as React Router's route manifest. The `buildId` plugin
+ *   sends the ID.
  * - During the framework's prerender pass, it records each prerendered path
  *   and the headers of each prerendered file that is not an HTML document into
  *   `.app-server.json` in the client build. The `prerendered` plugin replays
@@ -349,6 +436,7 @@ function writeGzipCopies(clientDirectory: string): void {
  */
 export function appServer({ framework, host, app }: AppServerOptions): Plugin[] {
 	let config: ResolvedConfig | undefined;
+	let clientBuild: ClientBuild | undefined;
 	const gzipCopies: Plugin = {
 		name: "@ngrok/app-server:gzip-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
@@ -357,7 +445,10 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 			order: "post",
 			handler: async (builder) => {
 				const clientDirectory = outDir(builder.config, "client");
-				recordScriptHashes(clientDirectory);
+				completeBuildManifest(
+					clientDirectory,
+					clientBuild == null ? undefined : appBuildId(clientBuild),
+				);
 				writeGzipCopies(clientDirectory);
 			},
 		},
@@ -373,6 +464,23 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 			// preview reads that entry.
 			if (this.environment.name === SERVER_ENVIRONMENT && this.environment.mode === "build") {
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
+			}
+		},
+		writeBundle(options, bundle) {
+			if (this.environment.name === "client") {
+				const directory = options.dir ?? outDir(this.environment.config, "client");
+				const assetsDirectory = join(directory, this.environment.config.build.assetsDir);
+				clientBuild = {
+					bundleId: bundleBuildId(bundle),
+					assetsDirectory,
+					assets: new Set(filesIn(assetsDirectory)),
+				};
+				writeBuildManifest(directory, {
+					buildId: clientBuild.bundleId,
+					prerendered: [],
+					headers: {},
+					scriptHashes: {},
+				});
 			}
 		},
 		renderStart(options) {

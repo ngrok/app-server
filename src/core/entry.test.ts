@@ -7,6 +7,7 @@ import { renderedFramework, stubFramework } from "../test-server.js";
 import type { AppServer } from "./create-server.js";
 import { createServer } from "./create-server.js";
 import { createEntry } from "./entry.js";
+import { buildId } from "./plugins/build-id.js";
 import { prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
 import { requestContext } from "./request-context.js";
@@ -15,7 +16,12 @@ import type { FetchHandler, HostRuntime, Listener, LogSink } from "./types.js";
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
 	join(clientDirectory, ".app-server.json"),
-	JSON.stringify({ prerendered: ["/cpu", "/gone"], headers: {}, scriptHashes: {} }),
+	JSON.stringify({
+		buildId: "b42",
+		prerendered: ["/cpu", "/gone"],
+		headers: {},
+		scriptHashes: {},
+	}),
 );
 mkdirSync(join(clientDirectory, "cpu"));
 writeFileSync(join(clientDirectory, "cpu/index.html"), "<h1>CPU</h1>");
@@ -90,6 +96,29 @@ describe("createEntry", () => {
 		);
 
 		await expect(response.text()).resolves.toBe("# Twin");
+	});
+
+	it("sends the build ID of the build manifest in production, and none in development", async () => {
+		const { host, fetch } = testHost();
+		const entry = (): ReturnType<typeof createEntry> =>
+			createEntry({
+				app: createServer({ plugins: [buildId()], logger: recordingLogger([]) }),
+				host,
+				clientDirectory,
+				framework: () => ({ name: "stub", fetch: renderedFramework }),
+			});
+		const production = entry();
+		const development = entry();
+
+		await production.start();
+		const built = await fetch()?.(new Request("http://localhost/"), {});
+		const dev = await development.fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
+			next(),
+		);
+
+		expect(built?.headers.get("X-Build-Id")).toBe("b42");
+		expect(dev.headers.get("X-Build-Id")).toBeNull();
+		expect(dev.headers.get("Server-Timing")).toBeNull();
 	});
 
 	it("listens on the host's listeners when the app sets none", async () => {

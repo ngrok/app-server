@@ -14,7 +14,7 @@ Add `staleBuildReactRouter()` and `staleBuildTanStack()` from the new `@ngrok/ap
 - A prefetch, such as a `<Link prefetch="intent">` hover, can show the new build before the click.
 - `onNewBuild(served)` runs once when the tab first sees another build, for the app's RUM tool.
 
-They send no request of their own and add no wait, so a client navigation makes the same requests as before. Keep `buildId()` in the server's pipeline. `buildId()` now also sends the build as `Server-Timing: build;desc="<value>"` on each document and data response, so the client can read the build with no request.
+They send no request of their own and add no wait, so a client navigation makes the same requests as before. `defaultPlugins()` runs `buildId()`, so the server needs no code. `buildId()` now also sends the build as `Server-Timing: build;desc="<value>"` on each document and data response, so the client can read the build with no request.
 
 Add the `paths` option of `buildId()`. The responses of those request paths, such as the app's API proxy routes, also carry the build in `Server-Timing`. Each query and mutation through them then tells an open tab about a new deploy, with no extra request. In a TanStack navigation, such a response from a new build loads the page as a document. A response that a cache can use again without the server gets no build. `buildId()` removes the build header and the `build` metric of an upstream API from each response, so the client reads only this app's build.
 

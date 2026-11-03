@@ -21,15 +21,15 @@ defaultPlugins({
 
 `Content-Security-Policy` has no default. To stop other sites from putting a page in a frame, set `frame-ancestors 'none'` in it.
 
-`contentSecurityPolicy({ policy })` sets a `Content-Security-Policy` on each HTML document, prerendered pages included. Put it in `beforeStatic`. `policy` gets the request's Hono context, so the policy can change by path. It also gets the `script-src` source list that trusts the document's scripts:
+`contentSecurityPolicy({ policy })` sets a `Content-Security-Policy` on each HTML document, prerendered pages included. Turn it on with the `contentSecurityPolicy` option of `defaultPlugins()`. `policy` gets the request's Hono context, so the policy can change by path. It also gets the `script-src` source list that trusts the document's scripts:
 
 - A rendered document gets `'nonce-…' 'strict-dynamic'`, with a new nonce for each request. Read the nonce from `requestContext()?.cspNonce`, from `appServerContext` in React Router, or from `context.appServer` in TanStack Start. Give it to the render.
 - A prerendered document gets `'self'` and the hash of each of its inline scripts. The `appServer` Vite plugin records the hashes of each HTML file in the client build, so an app needs no code to read or hash its pages.
 
 ```ts
 defaultPlugins({
-	beforeStatic: [
-		contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'` }),
-	],
+	contentSecurityPolicy: {
+		policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+	},
 });
 ```

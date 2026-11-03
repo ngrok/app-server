@@ -381,7 +381,23 @@ async function checkFrameworkShared(
 		{ fromContext: "abc-123", fromStorage: "abc-123" },
 		"the framework and requestContext() get the request ID",
 	);
-	assert.equal(await (await fetch(new URL("/livez", base))).text(), "ok", "the app's routes run");
+	assert.equal(await (await fetch(new URL("/ping", base))).text(), "pong", "the app's routes run");
+	assert.equal(await (await fetch(new URL("/livez", base))).text(), "ok", "the probes answer");
+
+	const manifest: unknown = JSON.parse(
+		readFileSync(join(clientDirectory, ".app-server.json"), "utf8"),
+	);
+	const buildId =
+		typeof manifest === "object" && manifest != null && "buildId" in manifest
+			? String(manifest.buildId)
+			: "";
+	assert.match(buildId, /^[0-9a-f]{16}$/u, "the build writes a build ID");
+	assert.equal(page.headers.get("x-build-id"), buildId, "a page sends the build's ID");
+	assert.equal(
+		page.headers.get("server-timing"),
+		`build;desc="${buildId}"`,
+		"the stale-build client reads the build's ID",
+	);
 }
 
 /** Stops a server with SIGTERM and checks that it exits cleanly. */

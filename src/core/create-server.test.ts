@@ -1,14 +1,19 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { basicAuth } from "hono/basic-auth";
+import { z } from "zod";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
+import { renewShutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
+import { buildId } from "./plugins/build-id.js";
+import { runtimeEnv } from "./plugins/runtime-env.js";
 import { tcp } from "../node/tcp.js";
 import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
 import type { FrameworkRuntime, Listener, LogSink, Plugin, StartedListener } from "./types.js";
@@ -482,5 +487,157 @@ describe("createServer", () => {
 		await server.shutdown();
 
 		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
+	});
+});
+
+describe("defaultPlugins", () => {
+	const theme = "document.documentElement.dataset.theme = 'dark';";
+	const themeHash = createHash("sha256").update(theme).digest("base64");
+	const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-defaults-"));
+	mkdirSync(join(clientDirectory, "about"));
+	writeFileSync(
+		join(clientDirectory, "about/index.html"),
+		`<html><head><script>${theme}</script></head><body>About</body></html>`,
+	);
+	writeFileSync(
+		join(clientDirectory, ".app-server.json"),
+		JSON.stringify({
+			buildId: "build-from-vite",
+			prerendered: ["/about"],
+			headers: {},
+			scriptHashes: { "/about/index.html": [themeHash] },
+		}),
+	);
+
+	afterAll(() => {
+		rmSync(clientDirectory, { recursive: true, force: true });
+	});
+	const env = runtimeEnv(z.object({ PUBLIC_REGION: z.string() }), {
+		source: { PUBLIC_REGION: "eu" },
+	});
+
+	it("answers the liveness and readiness probes by default", async () => {
+		// Why: a shutdown test above marks the process as stopping.
+		renewShutdownSignal();
+		const { request } = await testServer({ plugins: defaultPlugins(), clientDirectory });
+
+		const live = await request("/livez");
+		const ready = await request("/readyz");
+
+		expect([live.status, await live.text()]).toStrictEqual([200, "ok"]);
+		expect([ready.status, await ready.text()]).toStrictEqual([200, "ok"]);
+	});
+
+	it("leaves /livez and /readyz to the app with health: false", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ health: false }),
+			clientDirectory,
+		});
+
+		await expect((await request("/livez")).text()).resolves.toBe("rendered");
+		await expect((await request("/readyz")).text()).resolves.toBe("rendered");
+	});
+
+	it("gives a prerendered page the CSP of the contentSecurityPolicy option", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({
+				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+			}),
+			clientDirectory,
+		});
+
+		const page = await request("/about");
+
+		await expect(page.text()).resolves.toContain("About");
+		expect(page.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'self' 'sha256-${themeHash}'`,
+		);
+	});
+
+	it("writes the public env values and the noindex header on a prerendered page", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ env, noindex: true }),
+			clientDirectory,
+		});
+
+		const page = await request("/about");
+
+		await expect(page.text()).resolves.toContain('{"PUBLIC_REGION":"eu"}');
+		expect(page.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+	});
+
+	it("gives the app's beforeStatic plugins the CSP nonce, and adds the headers to their responses", async () => {
+		const login: Plugin = {
+			name: "login",
+			middleware: async (c) => c.html(`<script nonce="${c.get("cspNonce") ?? ""}"></script>`, 401),
+		};
+		const { request } = await testServer({
+			plugins: defaultPlugins({
+				noindex: true,
+				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				beforeStatic: [login],
+			}),
+			clientDirectory,
+		});
+
+		const response = await request("/about");
+		const nonce = /nonce="(?<nonce>[^"]+)"/u.exec(await response.text())?.groups?.nonce ?? "";
+
+		expect(nonce).not.toBe("");
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'nonce-${nonce}' 'strict-dynamic'`,
+		);
+		expect(response.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+	});
+
+	it("sends the build ID from the build by default, on prerendered and rendered documents", async () => {
+		const { request } = await testServer({ plugins: defaultPlugins(), clientDirectory });
+
+		const prerendered = await request("/about");
+		const rendered = await request("/dashboard");
+
+		expect(prerendered.headers.get("X-Build-Id")).toBe("build-from-vite");
+		expect(prerendered.headers.get("Server-Timing")).toBe('build;desc="build-from-vite"');
+		expect(rendered.headers.get("X-Build-Id")).toBe("build-from-vite");
+	});
+
+	it("sends an explicit build ID in place of the build's", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ buildId: { value: "v42" } }),
+			clientDirectory,
+		});
+
+		expect((await request("/about")).headers.get("X-Build-Id")).toBe("v42");
+	});
+
+	it("sends the build's ID for an empty value, such as an empty variable", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ buildId: { value: "" } }),
+			clientDirectory,
+		});
+
+		expect((await request("/about")).headers.get("X-Build-Id")).toBe("build-from-vite");
+	});
+
+	it("sends no build ID with buildId: false", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ buildId: false }),
+			clientDirectory,
+		});
+
+		expect((await request("/about")).headers.get("X-Build-Id")).toBeNull();
+	});
+
+	it("stops startup for a plugin of a named option in beforeStatic", () => {
+		expect(() => defaultPlugins({ beforeStatic: [buildId({ value: "v42" })] })).toThrow(
+			'Set the "buildId" option of defaultPlugins(), not the build-id plugin in beforeStatic.',
+		);
+		expect(() => defaultPlugins({ beforeStatic: [env] })).toThrow('Set the "env" option');
+	});
+
+	it("takes an app plugin whose name is a property of every object, such as constructor", () => {
+		expect(defaultPlugins({ beforeStatic: [{ name: "constructor" }] })).toContainEqual({
+			name: "constructor",
+		});
 	});
 });
