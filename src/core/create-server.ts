@@ -3,13 +3,22 @@ import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
+import { buildId } from "./plugins/build-id.js";
+import type { BuildIdOptions } from "./plugins/build-id.js";
+import { health } from "./plugins/health.js";
+import type { HealthOptions } from "./plugins/health.js";
+import { noindex } from "./plugins/noindex.js";
 import { privateDocuments } from "./plugins/private-documents.js";
 import { redirects } from "./plugins/redirects.js";
 import type { RedirectRule } from "./plugins/redirects.js";
-import { securityHeaders } from "./plugins/security-headers.js";
-import type { SecurityHeadersOptions } from "./plugins/security-headers.js";
+import { contentSecurityPolicy, securityHeaders } from "./plugins/security-headers.js";
+import type {
+	ContentSecurityPolicyOptions,
+	SecurityHeadersOptions,
+} from "./plugins/security-headers.js";
 import { requestId } from "./plugins/request-id.js";
 import type { RequestIdOptions } from "./plugins/request-id.js";
+import type { RuntimeEnv } from "./plugins/runtime-env.js";
 import { assets, prerendered } from "./plugins/static.js";
 import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
@@ -70,6 +79,12 @@ const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024;
 
 /** Options for {@link defaultPlugins}. */
 export type DefaultPluginsOptions = {
+	/**
+	 * The options of the liveness and readiness probes. `false` turns them
+	 * off, such as for an app with its own `/livez` route. See {@link health}.
+	 * @default {}
+	 */
+	health?: HealthOptions | false;
 	requestId?: RequestIdOptions;
 	accessLog?: AccessLogOptions;
 	prerendered?: PrerenderedOptions;
@@ -96,32 +111,88 @@ export type DefaultPluginsOptions = {
 	 */
 	securityHeaders?: SecurityHeadersOptions | false;
 	/**
-	 * Plugins that go after compression and before the static stages, so they
-	 * see every response, prerendered pages included. `runtimeEnv` and
-	 * `buildId` go here.
+	 * Sets `X-Robots-Tag: noindex, nofollow` on each response, such as on a
+	 * preview deploy. See {@link noindex}.
+	 * @default false
+	 */
+	noindex?: boolean;
+	/**
+	 * The options of the build ID on each document and data response. `false`
+	 * turns it off. See {@link buildId}.
+	 * @default {}, with the ID that the `appServer` Vite plugin derives from the client build
+	 */
+	buildId?: BuildIdOptions | false;
+	/**
+	 * The options of the `Content-Security-Policy` of each HTML document. It
+	 * has no default. See {@link contentSecurityPolicy}.
+	 */
+	contentSecurityPolicy?: ContentSecurityPolicyOptions;
+	/**
+	 * The plugin from `runtimeEnv(schema)`. It writes the public values into
+	 * each HTML document, prerendered pages included.
+	 */
+	env?: RuntimeEnv<unknown>;
+	/**
+	 * The app's own plugins that see every response, prerendered pages
+	 * included, such as an auth check. They go after the plugins of the
+	 * options above and before the static stages.
 	 */
 	beforeStatic?: readonly Plugin[];
 };
 
+/** The option of `defaultPlugins` for each plugin that it places, by plugin name. */
+const NAMED_PLUGINS: Readonly<Record<string, string>> = {
+	health: "health",
+	noindex: "noindex",
+	"build-id": "buildId",
+	"content-security-policy": "contentSecurityPolicy",
+	"runtime-env": "env",
+};
+
 /**
- * The default pipeline, in order: `requestId`, `accessLog`,
- * `streamingCompress`, `securityHeaders`, `bodyLimit`, the `beforeStatic`
- * plugins, `assets`, `redirects` (when the option has rules),
+ * The default pipeline, in order: `health`, `requestId`, `accessLog`,
+ * `streamingCompress`, `securityHeaders`, `bodyLimit`, `noindex` (when
+ * set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
+ * `beforeStatic` plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
  * array, so an app can filter it or splice into it.
  *
+ * A plugin from a named option, such as `buildId()`, in `beforeStatic`
+ * throws, so a plugin never runs twice.
+ *
  * @example
- * createServer({ plugins: defaultPlugins({ accessLog: { redactQuery: false }, beforeStatic: [env] }) });
+ * createServer({
+ * 	plugins: defaultPlugins({ env, noindex: process.env.PREVIEW === "1", health: { ready: async () => db.ping() } }),
+ * });
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
+	for (const plugin of options.beforeStatic ?? []) {
+		const option = NAMED_PLUGINS[plugin.name];
+		if (option != null) {
+			throw new Error(
+				`Set the "${option}" option of defaultPlugins(), not the ${plugin.name} plugin in beforeStatic.`,
+			);
+		}
+	}
 	const maxBytes = options.bodyLimit ?? DEFAULT_BODY_LIMIT;
 	return [
+		// Why first: a probe skips the access log, and a load balancer gets its answer with no other work.
+		...(options.health === false ? [] : [health(options.health)]),
 		requestId(options.requestId),
 		accessLog(options.accessLog),
 		streamingCompress(),
 		// Why before `bodyLimit`: its 413 must also get the security headers.
 		...(options.securityHeaders === false ? [] : [securityHeaders(options.securityHeaders)]),
 		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
+		// Why before the static stages: these plugins must see the prerendered pages. Why before
+		// `beforeStatic`: an app plugin, such as an auth check, then gets the CSP nonce, and its own
+		// responses get these headers. Their order among themselves changes no response.
+		...(options.noindex === true ? [noindex()] : []),
+		...(options.buildId === false ? [] : [buildId(options.buildId)]),
+		...(options.contentSecurityPolicy == null
+			? []
+			: [contentSecurityPolicy(options.contentSecurityPolicy)]),
+		...(options.env == null ? [] : [options.env]),
 		...(options.beforeStatic ?? []),
 		assets(),
 		...(options.redirects == null || options.redirects.length === 0
@@ -242,8 +313,8 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  *
  * @example
  * // server.ts
- * const app = createServer({ logger: slogSink, plugins: defaultPlugins({ beforeStatic: [env] }) });
- * app.get("/livez", (c) => c.text("ok"));
+ * const app = createServer({ logger: slogSink, plugins: defaultPlugins({ env }) });
+ * app.get("/api/status", (c) => c.json({ ok: true }));
  * export default app;
  */
 export function createServer({

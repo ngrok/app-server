@@ -3,11 +3,12 @@ import type { Plugin } from "../types.js";
 
 /**
  * Sets `X-Robots-Tag: noindex, nofollow` on each response, so a search
- * engine does not index a preview deploy. Turn it on from the environment,
- * and put it in `beforeStatic`, so it also sees prerendered pages.
+ * engine does not index a preview deploy. Turn it on from the environment
+ * with the `noindex` option of `defaultPlugins()`, which puts it before the
+ * static stages, so it also sees prerendered pages.
  *
  * @example
- * defaultPlugins({ beforeStatic: process.env.PREVIEW === "1" ? [noindex()] : [] });
+ * defaultPlugins({ noindex: process.env.PREVIEW === "1" });
  */
 export function noindex(): Plugin {
 	return {

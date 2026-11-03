@@ -31,11 +31,14 @@ function probe(text: string, status: 200 | 503): Response {
  * `createServer`, the listeners serve on for that time, so the load
  * balancer removes the server before the drain starts.
  *
- * Put it first, so a probe skips the access log. It is not in
- * `defaultPlugins()`, because an app can have its own route at `/livez`.
+ * `defaultPlugins()` runs it first, so a probe skips the access log. Its
+ * `health` option takes these options, and `false` turns it off.
  *
  * @example
- * createServer({ plugins: [health(), ...defaultPlugins()], shutdownDelayMs: 5_000 });
+ * createServer({
+ * 	plugins: defaultPlugins({ health: { ready: async () => db.ping() } }),
+ * 	shutdownDelayMs: 5_000,
+ * });
  */
 export function health({
 	livePath = "/livez",

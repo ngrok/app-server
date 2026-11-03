@@ -127,14 +127,15 @@ function injectBeforeHeadEnd(
  * The values whose names start with `PUBLIC_` go into each HTML document,
  * prerendered or rendered, as a JSON `<script id="app-server-public-env">`.
  * So one image serves every environment, and a prerendered page never keeps
- * the values of the build. Put this plugin before the static stages, so it
- * sees the prerendered pages.
+ * the values of the build. Give it to the `env` option of `defaultPlugins()`,
+ * which puts it before the static stages, so it sees the prerendered pages.
  *
  * @example
  * export const env = runtimeEnv(
  * 	z.object({ PUBLIC_API_URL: z.url(), SESSION_KEY: z.string().min(32) }),
  * );
  * env.values.SESSION_KEY; // => string
+ * createServer({ plugins: defaultPlugins({ env }) });
  *
  * // In the browser:
  * const publicEnv = JSON.parse(document.getElementById("app-server-public-env")?.textContent ?? "{}");

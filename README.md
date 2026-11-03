@@ -77,10 +77,10 @@ Write the server. Its default export is the app:
 // server.ts
 import { createServer, defaultPlugins } from "@ngrok/app-server";
 
-const app = createServer({ plugins: defaultPlugins() });
-app.get("/livez", (c) => c.text("ok"));
-export default app;
+export default createServer({ plugins: defaultPlugins() });
 ```
+
+`defaultPlugins()` answers the health probes at `/livez` and `/readyz`, and sends the build ID that tells an open tab about a deploy. Its options turn on the other plugins, each in its correct place. See [The pipeline](#the-pipeline).
 
 Run it:
 
@@ -114,21 +114,27 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 
 `createServer` runs the plugins in list order, then the app's own Hono routes, then the framework. `defaultPlugins()` returns this order:
 
-1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
-2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a gzip copy from the build gets that copy, and this plugin skips it. The host gives the gzip stream. On a host with none, the plugin does nothing.
-4. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
-5. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
-6. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, and an auth check go here.
-7. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
-8. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
-9. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-10. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a gzip copy from the build gets `Vary: Accept-Encoding`, and a client that accepts gzip gets the copy with no byte ranges. HTML and a `no-transform` response never get the copy. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
-11. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
+1. `health()`: the liveness and readiness probes at `/livez` and `/readyz`. A probe skips the access log. `defaultPlugins({ health })` changes them, and `false` turns them off. See [Health checks](#health-checks).
+2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
+3. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
+4. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a gzip copy from the build gets that copy, and this plugin skips it. The host gives the gzip stream. On a host with none, the plugin does nothing.
+5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
+6. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
+7. The plugins of the named options. They see every response, prerendered pages included:
+   - `noindex()`, with `defaultPlugins({ noindex: true })`. See [Preview deploys](#preview-deploys).
+   - `buildId()`, on by default. `defaultPlugins({ buildId })` changes it, and `false` turns it off. See [Deploys and open tabs](#deploys-and-open-tabs).
+   - `contentSecurityPolicy()`, with `defaultPlugins({ contentSecurityPolicy })`. See [A CSP for each document](#a-csp-for-each-document).
+   - The plugin from `runtimeEnv()`, with `defaultPlugins({ env })`. See [Environment](#environment).
+8. The `beforeStatic` plugins: the app's own plugins that see every response, prerendered pages included, such as an auth check. They come after the plugins of the named options, so they get the CSP nonce, and their responses get the headers of those plugins.
+9. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
+10. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
+11. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
+12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a gzip copy from the build gets `Vary: Accept-Encoding`, and a client that accepts gzip gets the copy with no byte ranges. HTML and a `no-transform` response never get the copy. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+13. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin is Hono middleware plus optional hooks:
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin of a named option in `beforeStatic`, such as `buildId()`, stops startup, so a plugin never runs twice. Use the option. A plugin is Hono middleware plus optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";
@@ -229,16 +235,14 @@ defaultPlugins({
 - A rendered document gets `'nonce-…' 'strict-dynamic'`, with a new nonce for each request.
 - A prerendered document gets `'self'` and the hash of each of its inline scripts, such as `'self' 'sha256-…'`. The `appServer` Vite plugin records the hashes. The prerender writes one nonce into the file, and every visitor can read it, so a nonce protects nothing. A hash does not carry to the imports of an inline module script, so this list has no `'strict-dynamic'`.
 
-If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. A 304 for a prerendered document gets the policy too, because a browser replaces the policy of its cached copy with the policy of the 304. Put the plugin in `beforeStatic`, so it sees the prerendered documents.
+If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. A 304 for a prerendered document gets the policy too, because a browser replaces the policy of its cached copy with the policy of the 304. The `contentSecurityPolicy` option of `defaultPlugins()` puts the plugin before the static stages, so it sees the prerendered documents.
 
 ```ts
 createServer({
 	plugins: defaultPlugins({
-		beforeStatic: [
-			contentSecurityPolicy({
-				policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
-			}),
-		],
+		contentSecurityPolicy: {
+			policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+		},
 	}),
 });
 ```
@@ -312,15 +316,16 @@ export function getRouter() {
 }
 ```
 
-And keep `buildId()` in the server's pipeline:
+The server needs no code: `defaultPlugins()` runs `buildId()` with the ID of the client build.
 
-```ts
-// server.ts
-defaultPlugins({ beforeStatic: [buildId()] });
-```
+- After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code that an open tab runs changes. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
+- To send another ID, such as the image tag, set `value`. With no value, such as an unset variable, the server sends the build's ID:
 
-- With no `value`, `buildId()` sends the ID of the client build. After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code that an open tab runs changes. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
-- To send another ID, such as the image tag, set `value`. With no value, such as an unset variable, the server sends the build's ID: `buildId({ value: process.env.IMAGE_TAG })`.
+  ```ts
+  // server.ts
+  defaultPlugins({ buildId: { value: process.env.IMAGE_TAG } });
+  ```
+
 - In development, the server sends no build ID unless `value` is set, because Vite's hot module replacement (HMR) updates an open tab after each edit.
 - A build with no `appServer` Vite plugin has no ID. Set `value` for it.
 - `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
@@ -344,9 +349,9 @@ A proxy route on this server forwards a request from the browser to the app's AP
 
 ```ts
 // server.ts
-const build = buildId({ paths: (path) => path.startsWith("/api/") });
-
-const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] }) });
+const app = createServer({
+	plugins: defaultPlugins({ buildId: { paths: (path) => path.startsWith("/api/") } }),
+});
 ```
 
 - The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
@@ -370,7 +375,7 @@ The client module sends no request of its own and adds no wait. A client navigat
 | `always`   | 308 to `/docs/button/` | 200                   |
 | `preserve` | 200                    | 200                   |
 
-The redirect applies to rendered and prerendered pages, and it keeps the query string. It does not apply to `/`, a method other than GET or HEAD, a data request of the framework, or a path that one of the app's own Hono routes matches, such as `app.get("/livez")`. `always` adds no slash to a file in the client build, such as `/LICENSE`, or to a path whose last segment has a dot, such as `/llms.txt` or a `.data` request. React Router's route discovery manifest (`/__manifest`) counts as a data request.
+The redirect applies to rendered and prerendered pages, and it keeps the query string. It does not apply to `/`, a method other than GET or HEAD, a data request of the framework, or a path that one of the app's own Hono routes matches, such as `app.get("/api/status")`. `always` adds no slash to a file in the client build, such as `/LICENSE`, or to a path whose last segment has a dot, such as `/llms.txt` or a `.data` request. React Router's route discovery manifest (`/__manifest`) counts as a data request.
 
 Why 308: it is permanent, as 301 is, and a client keeps the method. Next.js and Vercel send the same status for this redirect.
 
@@ -425,10 +430,10 @@ defaultPlugins({
 
 ### Preview deploys
 
-`noindex()` sets `X-Robots-Tag: noindex, nofollow` on each response, so a search engine does not index a preview deploy. Turn it on from the environment:
+`noindex()` sets `X-Robots-Tag: noindex, nofollow` on each response, prerendered pages included, so a search engine does not index a preview deploy. Turn it on from the environment:
 
 ```ts
-defaultPlugins({ beforeStatic: process.env.PREVIEW === "1" ? [noindex()] : [] });
+defaultPlugins({ noindex: process.env.PREVIEW === "1" });
 ```
 
 ## Content negotiation
@@ -584,14 +589,16 @@ defaultPlugins({
 
 ## Health checks
 
-`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. When the check starts to fail, one warn line goes to the log, and when it passes again, one info line. A stop signal during the check also gives 503. Put the plugin first, so a probe skips the access log:
+`health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. When the check starts to fail, one warn line goes to the log, and when it passes again, one info line. A stop signal during the check also gives 503. `defaultPlugins()` runs `health()` first, so a probe skips the access log. Its `health` option takes the options of `health()`:
 
 ```ts
 export default createServer({
-	plugins: [health({ ready: async () => db.ping() }), ...defaultPlugins()],
+	plugins: defaultPlugins({ health: { ready: async () => db.ping() } }),
 	shutdownDelayMs: 5_000,
 });
 ```
+
+`livePath` and `readyPath` move the probes. `defaultPlugins({ health: false })` turns them off, such as for an app with its own `/livez` route.
 
 On a stop signal, a load balancer removes the server some seconds later. Without a delay, the requests that it sends in that time fail. With `shutdownDelayMs`, the server answers 503 on `/readyz` and serves the other requests for that time. Then it drains. In Kubernetes, set `terminationGracePeriodSeconds` to more than the delay plus `shutdownDeadlineMs`:
 
@@ -609,7 +616,7 @@ spec:
 
 ## Environment
 
-`runtimeEnv(schema)` validates the environment once, at startup, with any [Standard Schema](https://standardschema.dev) (zod, valibot, arktype). A bad value stops the server with a message that names it.
+`runtimeEnv(schema)` validates the environment once, at startup, with any [Standard Schema](https://standardschema.dev) (zod, valibot, arktype). A bad value stops the server with a message that names it. Give the plugin to the `env` option of `defaultPlugins()`.
 
 ```ts
 import { createServer, defaultPlugins, runtimeEnv } from "@ngrok/app-server";
@@ -619,7 +626,7 @@ export const env = runtimeEnv(
 	z.object({ PUBLIC_API_URL: z.url(), SESSION_KEY: z.string().min(32) }),
 );
 
-export default createServer({ plugins: defaultPlugins({ beforeStatic: [env] }) });
+export default createServer({ plugins: defaultPlugins({ env }) });
 ```
 
 The values whose names start with `PUBLIC_` go into each HTML document at serve time, prerendered pages included, so one build serves every environment. Read them in the browser:
