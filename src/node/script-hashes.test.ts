@@ -22,6 +22,12 @@ describe("publicScriptHashes", () => {
 		]);
 	});
 
+	it("decodes the path before it checks the file type", () => {
+		expect(publicScriptHashes(directory, "/a%20b/page%2ehtml")).toStrictEqual([
+			"5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw=",
+		]);
+	});
+
 	it.each([
 		["a path outside the directory", directory, "/../secret.html"],
 		["an encoded path outside the directory", directory, "/%2e%2e/secret.html"],
@@ -29,6 +35,7 @@ describe("publicScriptHashes", () => {
 		["a directory", directory, "/a%20b"],
 		["a file that is not HTML", directory, "/data.txt"],
 		["a path that does not decode", directory, "/%E0%A4%A.html"],
+		["a path with a null byte", directory, "/%00.html"],
 		["no public directory", "", "/a%20b/page.html"],
 	])("gives no hashes for %s", (_, from, path) => {
 		expect(publicScriptHashes(from, path)).toBeUndefined();

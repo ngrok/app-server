@@ -87,12 +87,25 @@ function runHooksAtHead(outgoing: ServerResponse, hooks: readonly HeaderHook[]):
 /** Options for {@link devServerStage}. */
 export type DevServerStageOptions = {
 	/**
-	 * The directory that the middleware serves as it is, such as Vite's
-	 * `publicDir`. An HTML file from it gets the `contentSecurityPolicy` with
-	 * the hashes of its inline scripts, as it does in production.
+	 * The directory that the middleware serves as it is, and the URL base that
+	 * it serves the directory at, such as Vite's `publicDir` and `base`. An HTML
+	 * file from it gets the `contentSecurityPolicy` with the hashes of its
+	 * inline scripts, as it does in production. Why a function: a Vite restart
+	 * can change both.
 	 */
-	publicDirectory?: string;
+	publicFiles?: () => { directory: string; base: string };
 };
+
+/** The script hashes of the public HTML file at `pathname`, or `undefined` when there is none. */
+function publicFileHashes(
+	{ directory, base }: { directory: string; base: string },
+	pathname: string,
+): string[] | undefined {
+	const prefix = base.replace(/\/$/u, "");
+	return pathname.startsWith(`${prefix}/`)
+		? publicScriptHashes(directory, pathname.slice(prefix.length))
+		: undefined;
+}
 
 /**
  * Runs a Connect middleware, such as Vite's, inside the pipeline. The
@@ -100,11 +113,13 @@ export type DevServerStageOptions = {
  * response goes on.
  *
  * @example
- * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares, { publicDirectory: viteServer.config.publicDir }));
+ * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares, {
+ *   publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
+ * }));
  */
 export function devServerStage(
 	middleware: NodeMiddleware,
-	{ publicDirectory }: DevServerStageOptions = {},
+	{ publicFiles }: DevServerStageOptions = {},
 ): MiddlewareHandler<AppServerEnv> {
 	return async (context, next) => {
 		const { incoming, outgoing } = context.env;
@@ -112,9 +127,10 @@ export function devServerStage(
 			return next();
 		}
 		const hashes =
-			publicDirectory == null
+			publicFiles == null
 				? undefined
-				: publicScriptHashes(publicDirectory, new URL(context.req.url).pathname);
+				: publicFileHashes(publicFiles(), new URL(context.req.url).pathname);
+		const earlierHashes = context.get("documentScriptHashes");
 		if (hashes != null) {
 			context.set("documentScriptHashes", hashes);
 		}
@@ -133,6 +149,10 @@ export function devServerStage(
 				outgoing.off("finish", onFinish);
 				// Why: the later stages answer, and each hook runs on their response.
 				undoHooks();
+				// Why: the middleware did not send the public file, so its hashes do not apply.
+				if (hashes != null) {
+					context.set("documentScriptHashes", earlierHashes);
+				}
 				if (error == null) {
 					resolve(false);
 				} else {

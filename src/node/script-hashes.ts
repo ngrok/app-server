@@ -49,21 +49,24 @@ export function inlineScriptHashes(html: string): string[] {
  * publicScriptHashes("/app/public", "/offline.html"); // => ["…base64…"]
  */
 export function publicScriptHashes(directory: string, path: string): string[] | undefined {
-	if (directory === "" || !contentType(path, {}).startsWith("text/html")) {
+	if (directory === "") {
 		return undefined;
 	}
-	let file: string;
+	// Why one `try`: a path that does not decode, a path with a null byte, and a file that the
+	// developer deletes or locks between the checks each throw. The middleware then answers.
 	try {
-		file = resolve(directory, `.${decodeURIComponent(path)}`);
+		const decoded = decodeURIComponent(path);
+		const file = resolve(directory, `.${decoded}`);
+		// Why: a path such as `/../secret.html` must not leave the directory.
+		if (
+			!contentType(decoded, {}).startsWith("text/html") ||
+			!file.startsWith(`${resolve(directory)}${sep}`) ||
+			statSync(file, { throwIfNoEntry: false })?.isFile() !== true
+		) {
+			return undefined;
+		}
+		return inlineScriptHashes(readFileSync(file, "utf8"));
 	} catch {
 		return undefined;
 	}
-	// Why: a path such as `/../secret.html` must not leave the directory.
-	if (
-		!file.startsWith(`${resolve(directory)}${sep}`) ||
-		statSync(file, { throwIfNoEntry: false })?.isFile() !== true
-	) {
-		return undefined;
-	}
-	return inlineScriptHashes(readFileSync(file, "utf8"));
 }

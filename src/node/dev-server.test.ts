@@ -48,7 +48,9 @@ describe("devServerStage", () => {
 		await internals?.prepare({
 			...(await productionSetup({ logger: { log: () => {} } })),
 			mode: "development",
-			devServer: devServerStage(viteMiddleware, { publicDirectory }),
+			devServer: devServerStage(viteMiddleware, {
+				publicFiles: () => ({ directory: publicDirectory, base: "/" }),
+			}),
 		});
 		const server = await internals?.listen(stubFramework(), []);
 		const url = new URL("/docs/offline.html", server?.urls[0]);
@@ -63,6 +65,49 @@ describe("devServerStage", () => {
 		expect(notModified.status).toBe(304);
 		expect(notModified.headers.get("Content-Security-Policy")).toBe(policy);
 		expect(notPublic.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
+	});
+
+	it("finds the public file under Vite's base, and keeps the nonce policy when the middleware passes", async () => {
+		const publicDirectory = mkdtempSync(join(tmpdir(), "app-server-public-"));
+		onTestFinished(() => {
+			rmSync(publicDirectory, { recursive: true, force: true });
+		});
+		writeFileSync(join(publicDirectory, "offline.html"), "<script>go()</script>");
+		const app = createServer({
+			plugins: [
+				contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` }),
+				assets(),
+			],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (request, response, next) => {
+			if (request.method === "POST") {
+				next();
+				return;
+			}
+			response.setHeader("Content-Type", "text/html");
+			response.end("<script>go()</script>");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware, {
+				publicFiles: () => ({ directory: publicDirectory, base: "/docs/" }),
+			}),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+		const url = new URL("/docs/offline.html", server?.urls[0]);
+
+		const served = await fetch(url);
+		const passed = await fetch(url, { method: "POST" });
+		await server?.shutdown();
+
+		expect(served.headers.get("Content-Security-Policy")).toBe(
+			"script-src 'self' 'sha256-5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw='",
+		);
+		expect(passed.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
 	});
 
 	it("sends the request ID with the middleware's answer and logs its status and length", async () => {

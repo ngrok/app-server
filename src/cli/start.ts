@@ -44,7 +44,7 @@ export async function start(): Promise<void> {
 		);
 	}
 	const devServer = devServerStage(viteServer.middlewares, {
-		publicDirectory: viteServer.config.publicDir,
+		publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
 	});
 	const sink = jsonSink();
 	const apps = servedApps();

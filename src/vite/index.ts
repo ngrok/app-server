@@ -253,6 +253,7 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
  * Makes the server build run with no install. The build bundles each
  * dependency, except the packages that the app keeps external (`ssr.external`
  * or the bundler's `external`), each native package (see `isNativePackage`),
+ * each package that reads a file next to its own module (see `readsOwnFiles`),
  * and each package that the bundle shares with a package that the app keeps
  * external: the whole package of an external subpath, and each peer, at each
  * level. Those stay external, so the plugin copies each one, whole, with its
@@ -274,11 +275,42 @@ function standalone(): Plugin {
 	};
 	// Why: many modules import one package, and each check reads the file.
 	const ownFiles = new Map<string, boolean>();
-	/** Whether a bundled package must stay external: it is native, or `file` reads a file next to it. */
-	const staysExternal = (file: string, directory: string | undefined): boolean => {
-		const reads = ownFiles.get(file) ?? readsOwnFiles(file);
+	// Why `existsSync`: another plugin can give a module that is not on disk.
+	const readsOwnFile = (file: string): boolean => {
+		const reads = ownFiles.get(file) ?? (existsSync(file) && readsOwnFiles(file));
 		ownFiles.set(file, reads);
-		return reads || (directory != null && isNative(directory));
+		return reads;
+	};
+	// Why: a package that stays external after the bundle holds one of its peers gets a second copy.
+	const inBundle = new Set<string>();
+	/**
+	 * Whether the bundled module `file` of package `name` must stay external:
+	 * the package is native, or `file` reads a file next to it. Then the
+	 * package and each of its peers stay external, so the bundle shares them.
+	 */
+	const staysExternal = (
+		{ name, file, directory }: { name: string; file: string; directory: string | undefined },
+		logger: Environment["logger"],
+	): boolean => {
+		const native = directory != null && isNative(directory);
+		if (directory == null || (!native && !readsOwnFile(file))) {
+			inBundle.add(name);
+			return false;
+		}
+		const group = withPeers([{ name, from: directory }]);
+		const held = [...group].find((peer) => inBundle.has(peer));
+		// Why bundle it: a second copy of a peer, such as `react`, breaks more than a lost file.
+		if (held != null && !native) {
+			logger.warn(
+				`@ngrok/app-server bundles "${name}", but it reads a file next to its own module, so the server can fail when it reads that file. The bundle already holds "${held}", so "${name}" cannot stay external alone. Add "${name}" to \`ssr.external\`.`,
+			);
+			inBundle.add(name);
+			return false;
+		}
+		for (const peer of group) {
+			shared.add(peer);
+		}
+		return true;
 	};
 	return {
 		name: "@ngrok/app-server:standalone",
@@ -307,6 +339,7 @@ function standalone(): Plugin {
 			natives.clear();
 			scans.clear();
 			ownFiles.clear();
+			inBundle.clear();
 			const { resolve: resolveOptions, build, root } = this.environment.config;
 			const kept = [
 				...(resolveOptions.external === true ? [] : resolveOptions.external),
@@ -338,16 +371,10 @@ function standalone(): Plugin {
 					externals.set(name, directory);
 				}
 			}
-			const queue = [...names, ...matched].map((name) => ({ name, from: root }));
-			// Why each level: a peer can have peers, such as `react` for `react-router`.
-			for (const { name, from } of queue) {
-				const directory = shared.has(name) ? undefined : findPackage(name, from);
+			for (const name of withPeers(
+				[...names, ...matched].map((dependency) => ({ name: dependency, from: root })),
+			)) {
 				shared.add(name);
-				if (directory != null) {
-					for (const peer of dependencyNames(directory, ["peerDependencies"])) {
-						queue.push({ name: peer, from: directory });
-					}
-				}
 			}
 		},
 		resolveId: {
@@ -372,7 +399,11 @@ function standalone(): Plugin {
 							? dirname(importer)
 							: this.environment.config.root,
 					);
-				if (bundled && !shared.has(name) && !staysExternal(resolved.id, directory)) {
+				if (
+					bundled &&
+					!shared.has(name) &&
+					!staysExternal({ name, file: resolved.id, directory }, this.environment.logger)
+				) {
 					return resolved;
 				}
 				const known = externals.get(name);
@@ -400,11 +431,13 @@ function standalone(): Plugin {
 				for (const { groups } of code.matchAll(RESOLVE_CALL)) {
 					const source = groups?.source ?? "";
 					const name = packageName(source);
-					if (BARE_IMPORT.test(source) && !isBuiltin(source) && !externals.has(name)) {
-						externals.set(
-							name,
-							findPackage(name, isAbsolute(id) ? dirname(id) : this.environment.config.root),
-						);
+					const directory =
+						BARE_IMPORT.test(source) && !isBuiltin(source) && !externals.has(name)
+							? findPackage(name, isAbsolute(id) ? dirname(id) : this.environment.config.root)
+							: undefined;
+					// Why only a package it finds: the module-graph pass in `writeBundle` can find it from another importer.
+					if (directory != null) {
+						externals.set(name, directory);
 					}
 				}
 				return null;
@@ -453,6 +486,25 @@ function standalone(): Plugin {
 			}
 		},
 	};
+}
+
+/**
+ * Each package of `start` and each of its peers, at each level. Why each
+ * level: a peer can have peers, such as `react` for `react-router`.
+ */
+function withPeers(start: { name: string; from: string }[]): Set<string> {
+	const names = new Set<string>();
+	const queue = [...start];
+	for (const { name, from } of queue) {
+		const directory = names.has(name) ? undefined : findPackage(name, from);
+		names.add(name);
+		if (directory != null) {
+			for (const peer of dependencyNames(directory, ["peerDependencies"])) {
+				queue.push({ name: peer, from: directory });
+			}
+		}
+	}
+	return names;
 }
 
 /** The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path. */
