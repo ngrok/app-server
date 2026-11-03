@@ -233,6 +233,9 @@ function isJavaScriptFile(id: string): boolean {
 	return isAbsolute(id) && !id.includes("?") && JAVASCRIPT_EXTENSIONS.has(extname(id));
 }
 
+/** The dependency fields of the app's `package.json` that can name a package the server imports. */
+const APP_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "devDependencies"];
+
 /** Whether `environment` builds the server. */
 function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean {
 	return environment.name === SERVER_ENVIRONMENT && environment.mode === "build";
@@ -295,6 +298,21 @@ function standalone(): Plugin {
 			const names = kept.flatMap((id) =>
 				typeof id === "string" && BARE_IMPORT.test(id) ? [packageName(id)] : [],
 			);
+			const patterns = kept.filter(
+				(id): id is Exclude<typeof id, string | undefined> => id != null && typeof id !== "string",
+			);
+			// Why the app's dependencies: the bundler never shows the plugin an import that a `RegExp` or
+			// a function keeps external, so the build must find their peers before it bundles.
+			const matched =
+				patterns.length === 0 || !existsSync(join(root, "package.json"))
+					? []
+					: dependencyNames(root, APP_DEPENDENCY_FIELDS).filter((name) =>
+							patterns.some((pattern) =>
+								typeof pattern === "function"
+									? pattern(name, undefined, false) === true
+									: name.search(pattern) !== -1,
+							),
+						);
 			// Why with no import: the app can read a file of a package at run time, such as through
 			// `require.resolve`.
 			for (const name of names) {
@@ -303,7 +321,7 @@ function standalone(): Plugin {
 					externals.set(name, directory);
 				}
 			}
-			const queue = names.map((name) => ({ name, from: root }));
+			const queue = [...names, ...matched].map((name) => ({ name, from: root }));
 			// Why each level: a peer can have peers, such as `react` for `react-router`.
 			for (const { name, from } of queue) {
 				const directory = shared.has(name) ? undefined : findPackage(name, from);

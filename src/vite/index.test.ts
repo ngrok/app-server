@@ -719,11 +719,15 @@ describe("appServer in a server build", () => {
 		{ ssr: { external: ["widget"] } },
 		{ ssr: { external: ["widget/server"] } },
 		{ build: { rolldownOptions: { external: ["widget/server"] } } },
+		{ build: { rolldownOptions: { external: [/^widget/u] } } },
+		{ build: { rolldownOptions: { external: (id: string) => id.startsWith("widget") } } },
 	])(
 		"gives the bundle and an external package one copy of each shared package: %j",
 		async (config) => {
 			const { values } = await buildAlone(
 				{
+					// Why `widget` here: the build tests a `RegExp` or a function external on the app's dependencies.
+					"package.json": JSON.stringify({ type: "module", dependencies: { widget: "1.0.0" } }),
 					"entry.js": [
 						'import { token } from "shared";',
 						'import { registry } from "widget";',
