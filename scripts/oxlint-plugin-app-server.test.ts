@@ -76,12 +76,17 @@ describe.each([
 			"function f(value: string) { if (!URL.canParse(value)) { return null; } return new URL(value).protocol; }",
 			"const f = (raw: string) => (URL.canParse(raw) ? new URL(raw).href : raw);",
 			"function f(url: string, base: string) { if (URL.canParse(url, base)) { return new URL(url, base); } }",
+			"function f(request: Request) { return URL.canParse(request.url) ? new URL(request.url) : null; }",
 		],
 		valid: [
 			"function f(value: string) { return URL.parse(value)?.protocol; }",
 			"function f(path: string) { return URL.canParse(path); }",
 			"function f(a: string, b: string) { return URL.canParse(a) ? new URL(b) : null; }",
 			"function f(a: string) { return URL.canParse(a); }\nfunction g(a: string) { return new URL(a); }",
+			"function f(value: string) { function parse(value: string) { return new URL(value); } return URL.canParse(value) ? parse(value) : null; }",
+			"declare const value: string;\nURL.canParse(value);\nexport const g = (value: string) => new URL(value);",
+			"function f(value: string, fallback: string) { if (!URL.canParse(value)) { value = fallback; } return new URL(value); }",
+			"function f(next: () => string) { return URL.canParse(next()) ? new URL(next()) : null; }",
 		],
 	},
 	{
