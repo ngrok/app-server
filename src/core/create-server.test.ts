@@ -329,6 +329,18 @@ describe("createServer", () => {
 		await server.shutdown();
 	});
 
+	it("keeps a `fetch()` result an `instanceof Response` in a route on the Node listener", async () => {
+		const server = await listening(async () => {
+			const fetched = await fetch("data:text/plain,upstream");
+			return new Response(String(fetched instanceof Response));
+		});
+
+		const response = await fetch(server.urls[0] ?? "");
+
+		await expect(response.text()).resolves.toBe("true");
+		await server.shutdown();
+	});
+
 	it("ends an open event stream at shutdown and drains before the deadline", async () => {
 		const onShutdown = vi.fn<() => Promise<void>>(async () => {});
 		const server = await listening(

@@ -47,35 +47,42 @@ export async function start(): Promise<void> {
 	const sink = jsonSink();
 	const apps = servedApps();
 
-	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
-		try {
-			const response = await apps.serve(
-				await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
-				async (entry) =>
-					entry.fetchDev(
-						request,
-						{
-							remoteAddress: incoming.socket.remoteAddress,
-							// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
-							...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
-								? { incoming, outgoing }
-								: {}),
-						},
-						devServer,
-					),
-			);
-			return await cancelIfClosed(response, outgoing);
-		} catch (error) {
-			if (error instanceof Error) {
-				viteServer.ssrFixStacktrace(error);
+	const listener = getRequestListener(
+		async (request, { incoming, outgoing }) => {
+			try {
+				const response = await apps.serve(
+					await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
+					async (entry) =>
+						entry.fetchDev(
+							request,
+							{
+								remoteAddress: incoming.socket.remoteAddress,
+								// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
+								...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
+									? { incoming, outgoing }
+									: {}),
+							},
+							devServer,
+						),
+				);
+				return await cancelIfClosed(response, outgoing);
+			} catch (error) {
+				if (error instanceof Error) {
+					viteServer.ssrFixStacktrace(error);
+				}
+				sink.log("error", "dev request failed", errorAttributes(error));
+				return new Response(
+					error instanceof Error ? (error.stack ?? error.message) : String(error),
+					{
+						status: 500,
+						headers: { "Content-Type": "text/plain; charset=utf-8" },
+					},
+				);
 			}
-			sink.log("error", "dev request failed", errorAttributes(error));
-			return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {
-				status: 500,
-				headers: { "Content-Type": "text/plain; charset=utf-8" },
-			});
-		}
-	});
+		},
+		// Why: production turns the override off too, so a route acts the same in both modes.
+		{ overrideGlobalObjects: false },
+	);
 	httpServer.on("request", (request, response) => {
 		void listener(request, response);
 	});

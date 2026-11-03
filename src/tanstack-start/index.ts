@@ -36,15 +36,6 @@ type StartServerEntry = {
 	) => Response | Promise<Response>;
 };
 
-/**
- * Whether a value is a `Response`. Why not only `instanceof`: on Node, the
- * listener replaces the global `Response`, but `fetch()` still returns the
- * original type.
- */
-function isResponse(value: unknown): value is Response {
-	return value instanceof Response || Object.prototype.toString.call(value) === "[object Response]";
-}
-
 /** Whether a module's default export is a TanStack Start server entry. */
 function startServerEntry(module: unknown): StartServerEntry | undefined {
 	if (typeof module !== "object" || module == null) {
@@ -61,7 +52,7 @@ function startServerEntry(module: unknown): StartServerEntry | undefined {
 	return {
 		fetch: async (request, options) => {
 			const response: unknown = await Reflect.apply(fetch, entry, [request, options]);
-			if (!isResponse(response)) {
+			if (!(response instanceof Response)) {
 				throw new TypeError("The TanStack Start server entry did not return a Response.");
 			}
 			return response;

@@ -34,6 +34,8 @@ export async function listen(
 			});
 			return cancelIfClosed(response, outgoing);
 		},
+		// Why: the override makes a `fetch()` result fail `instanceof Response`, and it is slower.
+		overrideGlobalObjects: false,
 		serverOptions: {
 			keepAliveTimeout: options.idleTimeoutMs,
 			// Why above the keep-alive timeout: Node closes a socket that is between requests when its
