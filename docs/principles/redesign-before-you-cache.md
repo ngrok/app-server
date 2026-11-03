@@ -17,7 +17,7 @@ Make the slow path fast before you add a cache. Add a cache only when a benchmar
 
 **In this repo:**
 
-- `keptFiles()` keeps each small file of the client build in memory after the first read: up to 256 KiB for each file, and up to 32 MiB in all. It is correct only because `snapshot()` promises that the client build does not change while the server runs. [PR #17](https://github.com/ngrok/app-server/pull/17) measured it.
+- `keptFiles()` keeps each small file of the client build in memory after the first read: up to 256 kibibytes for each file, and up to 32 mebibytes in all. It is correct only because `snapshot()` promises that the client build does not change while the server runs. [Pull request #17](https://github.com/ngrok/app-server/pull/17) measured it.
 - The ETag of a response comes from the file and from the `etagPart` of each plugin that the request passed, so a new build ID gives a new ETag. See [derive, don't sync](./derive-dont-sync.md).
 - `prefersMarkdown` tells each caller to send `Vary: Accept` on the HTML and on the markdown, so a shared cache does not give the markdown to a browser.
 

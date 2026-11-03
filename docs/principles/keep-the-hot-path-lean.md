@@ -15,7 +15,7 @@ Do each piece of work once, at the earliest point that has its input: module sco
 - One URL that the code parses two times, such as `URL.canParse(x)` then `new URL(x)`, or two plugins that each parse `context.req.url`. Use `URL.parse(x)`, which returns `null` for a URL that is not valid. Give `new URL` a string base, not a parsed `URL`. Parse a constant URL one time, at module scope.
 - An allocation for each request or each chunk that one allocation at setup can replace: a closure, an object, an array copy, a `TextEncoder`, or a regular expression from `new RegExp`.
 - A data layout that the hot loop does not need. A `Map` for a few fixed keys can be an array index or a `switch`. An array of booleans can be bit flags in one number. An array of objects can be parallel arrays when one loop reads one field of many items. Change a layout only when a benchmark shows the gain.
-- A regular expression literal that moves to module scope for speed. V8 keeps the compiled form of each literal, so the gain is small. A module-scope expression with the `g` or `y` flag keeps `lastIndex` between calls, so set `lastIndex` before each `exec`.
+- A regular expression literal that moves to module scope for speed. The JavaScript engine keeps the compiled form of each literal, so the gain is small. A module-scope expression with the `g` or `y` flag keeps `lastIndex` between calls, so set `lastIndex` before each `exec`.
 - A speedup with no benchmark. See [explain the number](./explain-the-number.md).
 
 **In this repo:**
