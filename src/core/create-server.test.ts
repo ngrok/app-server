@@ -148,6 +148,23 @@ describe("createServer", () => {
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("leaves a response object that the app sends again unchanged", async () => {
+		const shared = new Response(null, { status: 204 });
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			routes: (app) => {
+				app.get("/empty", () => shared);
+			},
+		});
+
+		const first = await request("/empty", { headers: { "X-Request-Id": "first" } });
+		const second = await request("/empty", { headers: { "X-Request-Id": "second" } });
+
+		expect(first.headers.get("X-Request-Id")).toBe("first");
+		expect(second.headers.get("X-Request-Id")).toBe("second");
+		expect([...shared.headers.keys()]).toStrictEqual([]);
+	});
+
 	it("marks a rendered document private by default, but not a prerendered page", async () => {
 		const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-private-"));
 		onTestFinished(() => {

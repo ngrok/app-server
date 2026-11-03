@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
+import { writableHeaders } from "../header-hook.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
@@ -231,8 +232,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				}
 				const vary = twin == null ? undefined : withVary(context.res.headers.get("Vary"), "Accept");
 				if (vary != null) {
-					// Why `context.header`: it also works on a framework response with immutable headers.
-					context.header("Vary", vary);
+					writableHeaders(context).set("Vary", vary);
 				}
 			};
 		},

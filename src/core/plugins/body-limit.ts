@@ -1,4 +1,5 @@
 import { HTTPException } from "hono/http-exception";
+import { replaceResponse } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 // Why: GET and HEAD have no body, and the Fetch `Request` constructor rejects the other three.
@@ -98,9 +99,7 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 			await next();
 			if (exceeded) {
 				await context.res.body?.cancel();
-				// Why clear it first: Hono copies the headers of the old response, such as its length, onto a new one.
-				context.res = undefined;
-				context.res = tooLarge();
+				replaceResponse(context, tooLarge());
 			}
 		},
 	};

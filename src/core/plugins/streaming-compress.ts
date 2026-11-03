@@ -1,4 +1,5 @@
 import { accepts } from "hono/accepts";
+import { replaceResponse, writableHeaders } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -44,8 +45,7 @@ export function streamingCompress(): Plugin {
 			}
 			const vary = withVary(context.res.headers.get("Vary"), "Accept-Encoding");
 			if (vary != null) {
-				// Why `context.header`: it copies a response whose headers are immutable, such as one from `fetch`.
-				context.header("Vary", vary);
+				writableHeaders(context).set("Vary", vary);
 			}
 			// Why after the copy: on Bun, the copy takes the body stream of the old response.
 			const response = context.res;
@@ -64,8 +64,7 @@ export function streamingCompress(): Plugin {
 			) {
 				return;
 			}
-			context.res = new Response(gzip(response.body), response);
-			// Why after the assignment: Hono copies the old response's headers onto the new one.
+			replaceResponse(context, new Response(gzip(response.body), response));
 			context.res.headers.set("Content-Encoding", "gzip");
 			context.res.headers.delete("Content-Length");
 			// Why: a range of the gzip bytes cannot be served, because each response compresses again.

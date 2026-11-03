@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { replaceResponse, writableHeaders } from "../header-hook.js";
 import { errorAttributes } from "../log.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
@@ -69,7 +70,7 @@ export function accessLog({
 				(context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false)
 			) {
 				const duration = (performance.now() - started).toFixed(1);
-				context.header("Server-Timing", `app;dur=${duration}`, { append: true });
+				writableHeaders(context).append("Server-Timing", `app;dur=${duration}`);
 			}
 			// Why a catch: a log line must never change the response or stop its stream.
 			const write = ({ bytes, aborted }: { bytes: number; aborted: boolean }) => {
@@ -128,7 +129,7 @@ export function accessLog({
 				// Why 0: a pass-through stream must not read ahead of the client.
 				{ highWaterMark: 0 },
 			);
-			context.res = new Response(counted, response);
+			replaceResponse(context, new Response(counted, response));
 		},
 	};
 

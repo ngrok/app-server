@@ -1,3 +1,4 @@
+import { writableHeaders } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 
 /** The data check before `setup` runs. */
@@ -34,8 +35,7 @@ export function privateDocuments(): Plugin {
 				((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
 					isDataRequest(context.req.path))
 			) {
-				// Why `context.header`: it also works on a framework response with immutable headers.
-				context.header("Cache-Control", "private, no-cache");
+				writableHeaders(context).set("Cache-Control", "private, no-cache");
 			}
 		},
 	};
