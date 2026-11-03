@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -34,6 +42,9 @@ function json(path: string): unknown {
 write(join(clientDirectory, "assets/app-abc.js"), "app();");
 write(join(clientDirectory, "assets/.app-abc.js.gz"), "gzip");
 write(join(clientDirectory, "blog-assets/logo.svg"), "<svg/>");
+write(join(clientDirectory, "assets/.private/key.json"), "secret");
+write(join(root, "shared/icon.svg"), "<svg/>");
+symlinkSync(join(root, "shared"), join(clientDirectory, "blog-assets/shared"));
 write(join(clientDirectory, "about/index.html"), "<h1>About</h1>");
 write(join(clientDirectory, "robots.txt"), "User-agent: *");
 write(join(clientDirectory, ".app-server.json"), "{}");
@@ -42,14 +53,14 @@ write(join(root, "build/server/chunk.js"), "export {};\n");
 write(join(output, "stale.txt"), "from an earlier build");
 
 describe("vercel", () => {
-	it("writes the CDN files, the function, and the routes of .vercel/output", async () => {
+	it("writes the CDN files, through links and with no dot path, the function, and the routes", () => {
 		const host = vercel({
 			cdnPaths: ["/blog-assets/"],
 			cdnHeaders: { "Access-Control-Allow-Origin": "*" },
 			regions: ["iad1"],
 		});
 
-		await host.output?.({ root, clientDirectory, entryFile });
+		host.output?.({ root, clientDirectory, entryFile });
 
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
@@ -62,6 +73,7 @@ describe("vercel", () => {
 			"functions/index.func/build/server/vercel-function.js",
 			"static/assets/app-abc.js",
 			"static/blog-assets/logo.svg",
+			"static/blog-assets/shared/icon.svg",
 		]);
 		expect(readFileSync(join(functionDirectory, "build/server/vercel-function.js"), "utf8")).toBe(
 			[
@@ -85,7 +97,7 @@ describe("vercel", () => {
 				{ src: "^/(.*)$", dest: "/index" },
 				{ handle: "hit" },
 				{
-					src: "^/assets/",
+					src: "^/assets/.*$",
 					headers: {
 						"Access-Control-Allow-Origin": "*",
 						"Cache-Control": "public, max-age=31536000, immutable",
@@ -93,7 +105,7 @@ describe("vercel", () => {
 					continue: true,
 				},
 				{
-					src: "^/blog-assets/",
+					src: "^/blog-assets/.*$",
 					headers: { "Access-Control-Allow-Origin": "*" },
 					continue: true,
 				},

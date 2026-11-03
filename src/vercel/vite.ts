@@ -5,9 +5,11 @@ import {
 	mkdirSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
 
 /** Options for {@link vercel}. */
@@ -53,14 +55,19 @@ function copyFile(from: string, to: string): void {
 	copyFileSync(from, to);
 }
 
-/** The path of each file under `directory`, relative to it. */
-function filesUnder(directory: string): string[] {
+/**
+ * The path of each file under `directory`, relative to it. Why follow links:
+ * the CDN and the function each get a copy of the linked file, not a link
+ * whose target can be in the other part.
+ */
+function filesUnder(directory: string, under = ""): string[] {
 	if (!existsSync(directory)) {
 		return [];
 	}
-	return readdirSync(directory, { recursive: true, withFileTypes: true })
-		.filter((entry) => !entry.isDirectory())
-		.map((entry) => relative(directory, join(entry.parentPath, entry.name)));
+	return readdirSync(join(directory, under)).flatMap((name) => {
+		const path = join(under, name);
+		return statSync(join(directory, path)).isDirectory() ? filesUnder(directory, path) : [path];
+	});
 }
 
 /**
@@ -74,7 +81,8 @@ function routes(prefixes: readonly string[], cdnHeaders: Readonly<Record<string,
 		{ src: "^/(.*)$", dest: "/index" },
 		{ handle: "hit" },
 		...prefixes.map((prefix) => ({
-			src: `^${escaped(prefix)}`,
+			// Why `.*$`: Vercel adds `$` to a pattern that has none.
+			src: `^${escaped(prefix)}.*$`,
 			headers: prefix === ASSETS ? { ...cdnHeaders, "Cache-Control": IMMUTABLE } : cdnHeaders,
 			continue: true,
 		})),
@@ -82,10 +90,10 @@ function routes(prefixes: readonly string[], cdnHeaders: Readonly<Record<string,
 }
 
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
-async function writeOutput(
+function writeOutput(
 	{ root, clientDirectory, entryFile }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, regions, memory, maxDuration }: VercelOptions,
-): Promise<void> {
+): void {
 	const prefixes = [ASSETS, ...cdnPaths.filter((path) => path !== ASSETS)];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
@@ -104,8 +112,9 @@ async function writeOutput(
 		const from = join(clientDirectory, file);
 		if (!isCdnFile(file)) {
 			copyFile(from, join(functionDirectory, fromRoot(from)));
-		} else if (!basename(file).startsWith(".")) {
-			// Why skip dotfiles, such as the compressed copies: the CDN sends each file that it has.
+		} else if (!hasDotSegment(`/${posix(file)}`)) {
+			// Why the static stages' check: the CDN sends each file that it has, and the static stages
+			// send no dotfile, such as a compressed copy, and no file in a dot directory.
 			copyFile(from, join(output, "static", file));
 		}
 	}
@@ -176,6 +185,8 @@ export function vercel(options: VercelOptions = {}): HostBuild {
 		name: "vercel",
 		runtimeModule: "@ngrok/app-server/vercel",
 		entryFileName: "app-server.js",
-		output: async (build) => writeOutput(build, options),
+		output: (build) => {
+			writeOutput(build, options);
+		},
 	};
 }

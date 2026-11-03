@@ -105,10 +105,13 @@ export type HostBuild = {
 	/** The file name of the server entry in the server build, such as `app-server.js`. */
 	entryFileName: string;
 	/**
-	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
-	 * runs once after the build, the prerender pass, and the gzip copies.
+	 * Writes the host's deploy output, such as Vercel's `.vercel/output`, after
+	 * the build, the prerender pass, and the compressed copies. When
+	 * `appServer` comes before the framework's plugin, the prerender pass runs
+	 * after the build, and `output` runs again after it. Why sync: Vite does
+	 * not wait for the end of that pass.
 	 */
-	output?: (build: HostOutput) => void | Promise<void>;
+	output?: (build: HostOutput) => void;
 };
 
 /** What a host's `output` gets: the absolute paths of the build. */
@@ -669,7 +672,7 @@ function writtenBuildId(clientDirectory: string): string | undefined {
  * the client build when the preview server closes, with the script hashes of
  * each HTML file.
  */
-function capture(server: PreviewServer): void {
+function capture(server: PreviewServer, afterPass: () => void): void {
 	const clientDirectory = outDir(server.config, "client");
 	const started = Date.now();
 	const paths = new Set<string>();
@@ -719,6 +722,7 @@ function capture(server: PreviewServer): void {
 		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
 		// modification time in steps of 1 or 2 s.
 		writeAllCopies(clientDirectory, { changedSince: started - 2000 });
+		afterPass();
 	});
 }
 
@@ -844,6 +848,8 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
+	/** The paths that the build gave `host.output`. */
+	let built: HostOutput | undefined;
 	const copies: Plugin = {
 		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
@@ -857,11 +863,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory);
-				await host.output?.({
+				built = {
 					root: builder.config.root,
 					clientDirectory,
 					entryFile: join(outDir(builder.config, SERVER_ENVIRONMENT), host.entryFileName),
-				});
+				};
+				host.output?.(built);
 			},
 		},
 	};
@@ -946,7 +953,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		},
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
-				capture(server);
+				capture(server, () => {
+					// Why: when `appServer` comes before the framework's plugin, the build wrote the output first.
+					if (built != null) {
+						host.output?.(built);
+					}
+				});
 			}
 		},
 	};
