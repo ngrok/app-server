@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
 import { requestContext } from "../core/request-context.js";
@@ -62,5 +65,36 @@ describe("handler", () => {
 		const response = await fetch(`${base}/about`);
 
 		await expect(response.text()).resolves.toBe("rendered");
+	});
+});
+
+describe("host", () => {
+	it("gives a file a new ETag for each build, also with the same size and time", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vercel-files-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		// Why one time: the deploy gives each file of the function one fixed time.
+		const deployed = new Date(1_540_000_000_000);
+		const etag = async (text: string, builtAt: string): Promise<string | null> => {
+			writeFileSync(join(directory, "robots.txt"), text);
+			utimesSync(join(directory, "robots.txt"), deployed, deployed);
+			vi.stubEnv("APP_SERVER_BUILT_AT", builtAt);
+			const entry = createEntry({
+				app: createServer(),
+				host,
+				clientDirectory: directory,
+				framework: () => stubFramework(),
+			});
+			const response = await entry.fetch(new Request("http://localhost/robots.txt"), {});
+			await response.text();
+			return response.headers.get("ETag");
+		};
+
+		const first = await etag("Disallow: /a", "1762000000000");
+		const second = await etag("Disallow: /b", "1762000100000");
+
+		expect(first).toMatch(/^W\//u);
+		expect(second).not.toBe(first);
 	});
 });

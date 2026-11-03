@@ -343,7 +343,7 @@ describe("appServer", () => {
 		const outDir = "late-pass";
 		mkdirSync(join(root, outDir), { recursive: true });
 		const seen: unknown[] = [];
-		const plugins = appServer({
+		const options: AppServerOptions = {
 			framework: reactRouterAdapter(),
 			host: {
 				...node(),
@@ -351,8 +351,8 @@ describe("appServer", () => {
 					seen.push(JSON.parse(readFileSync(join(clientDirectory, ".app-server.json"), "utf8")));
 				},
 			},
-		});
-		const hook = plugins[1]?.buildApp;
+		};
+		const hook = appServer(options)[1]?.buildApp;
 		await (typeof hook === "object" ? hook.handler : hook)?.call(
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
 			{} as never,
@@ -364,7 +364,8 @@ describe("appServer", () => {
 			configFile: false,
 			appType: "custom",
 			logLevel: "silent",
-			plugins: [plugins, responder()],
+			// Why a new instance: the framework starts the preview from the config file again.
+			plugins: [appServer(options), responder()],
 			build: { outDir },
 			preview: { port: 0, host: "127.0.0.1" },
 		});

@@ -1,7 +1,6 @@
 import {
 	copyFileSync,
 	cpSync,
-	existsSync,
 	mkdirSync,
 	readdirSync,
 	rmSync,
@@ -36,6 +35,9 @@ const ASSETS = "/assets/";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/** The variable that gives the function the time of the build, in milliseconds. */
+const BUILT_AT = "APP_SERVER_BUILT_AT";
+
 /** The function's file, next to the server entry. */
 const FUNCTION_FILE = "vercel-function.js";
 
@@ -58,16 +60,29 @@ function copyFile(from: string, to: string): void {
 /**
  * The path of each file under `directory`, relative to it. Why follow links:
  * the CDN and the function each get a copy of the linked file, not a link
- * whose target can be in the other part.
+ * whose target can be in the other part. Why the inodes of the parents: a
+ * link to a parent directory must not make the walk endless.
  */
-function filesUnder(directory: string, under = ""): string[] {
-	if (!existsSync(directory)) {
+function filesUnder(
+	directory: string,
+	under = "",
+	parents: ReadonlySet<string> = new Set(),
+): string[] {
+	const stats = statSync(join(directory, under), { throwIfNoEntry: false });
+	if (stats == null) {
 		return [];
 	}
-	return readdirSync(join(directory, under)).flatMap((name) => {
-		const path = join(under, name);
-		return statSync(join(directory, path)).isDirectory() ? filesUnder(directory, path) : [path];
-	});
+	if (!stats.isDirectory()) {
+		return [under];
+	}
+	const inode = `${stats.dev}:${stats.ino}`;
+	if (parents.has(inode)) {
+		return [];
+	}
+	const inside = new Set(parents).add(inode);
+	return readdirSync(join(directory, under)).flatMap((name) =>
+		filesUnder(directory, join(under, name), inside),
+	);
 }
 
 /**
@@ -140,6 +155,9 @@ function writeOutput(
 				handler: posix(fromRoot(functionFile)),
 				launcherType: "Nodejs",
 				supportsResponseStreaming: true,
+				// Why: the deploy gives each file of the function one fixed time, and the ETag of a file
+				// reads its time. See `host` in `@ngrok/app-server/vercel`.
+				environment: { [BUILT_AT]: String(Date.now()) },
 				...(regions == null ? {} : { regions }),
 				...(memory == null ? {} : { memory }),
 				...(maxDuration == null ? {} : { maxDuration }),

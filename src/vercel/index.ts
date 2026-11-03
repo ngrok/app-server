@@ -2,9 +2,29 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
-import type { HostRuntime } from "../core/types.js";
+import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
 import { host as nodeHost } from "../node/index.js";
 import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
+
+/**
+ * `files` that give each file and directory the modification time
+ * `mtimeMs`. Why: the deploy gives each file of the function one fixed time,
+ * so a file that changes and keeps its size would keep its ETag. `vercel()`
+ * sets `APP_SERVER_BUILT_AT` to the time of the build.
+ */
+function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
+	const { snapshot } = files;
+	return {
+		stat: async (path) => {
+			const info: FileInfo | undefined = await files.stat(path);
+			return info == null ? undefined : { ...info, mtimeMs };
+		},
+		open: files.open,
+		...(snapshot == null
+			? {}
+			: { snapshot: async () => withModifiedTime(await snapshot(), mtimeMs) }),
+	};
+}
 
 /**
  * The vercel host: one Vercel Function on Node.js. It reads the client build
@@ -21,7 +41,11 @@ import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
  */
 export const host: HostRuntime = {
 	name: "vercel",
-	files: nodeHost.files,
+	files: (clientDirectory) => {
+		const files = nodeHost.files(clientDirectory);
+		const builtAt = Number(process.env.APP_SERVER_BUILT_AT);
+		return Number.isFinite(builtAt) ? withModifiedTime(files, builtAt) : files;
+	},
 	...(nodeHost.storage == null ? {} : { storage: nodeHost.storage }),
 };
 

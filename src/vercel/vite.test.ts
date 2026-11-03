@@ -46,6 +46,8 @@ write(join(clientDirectory, "assets/.private/key.json"), "secret");
 write(join(root, "shared/icon.svg"), "<svg/>");
 symlinkSync(join(root, "shared"), join(clientDirectory, "blog-assets/shared"));
 write(join(clientDirectory, "about/index.html"), "<h1>About</h1>");
+// Why: a link to a parent directory must not make the walk endless.
+symlinkSync("..", join(clientDirectory, "about/up"));
 write(join(clientDirectory, "robots.txt"), "User-agent: *");
 write(join(clientDirectory, ".app-server.json"), "{}");
 write(entryFile, `import "./chunk.js";\nexport const appServer = {};\n`);
@@ -88,6 +90,7 @@ describe("vercel", () => {
 			handler: "build/server/vercel-function.js",
 			launcherType: "Nodejs",
 			supportsResponseStreaming: true,
+			environment: { APP_SERVER_BUILT_AT: expect.stringMatching(/^\d+$/u) },
 			regions: ["iad1"],
 		});
 		expect(json(join(output, "config.json"))).toStrictEqual({

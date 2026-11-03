@@ -105,10 +105,10 @@ export type HostBuild = {
 	/** The file name of the server entry in the server build, such as `app-server.js`. */
 	entryFileName: string;
 	/**
-	 * Writes the host's deploy output, such as Vercel's `.vercel/output`, after
-	 * the build, the prerender pass, and the compressed copies. When
-	 * `appServer` comes before the framework's plugin, the prerender pass runs
-	 * after the build, and `output` runs again after it. Why sync: Vite does
+	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
+	 * runs after each prerender pass and after the build, so it can run two
+	 * times. Why after the pass too: when `appServer` comes before the
+	 * framework's plugin, the pass runs after the build. Why sync: Vite does
 	 * not wait for the end of that pass.
 	 */
 	output?: (build: HostOutput) => void;
@@ -234,6 +234,15 @@ export function serverEntrySource({
 		"\tawait appServer.start();",
 		"}",
 	].join("\n");
+}
+
+/** The paths of the build that a host's `output` gets. */
+function hostOutput(config: ResolvedConfig, host: HostBuild): HostOutput {
+	return {
+		root: config.root,
+		clientDirectory: outDir(config, "client"),
+		entryFile: join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName),
+	};
 }
 
 /** The absolute path of an environment's build output. */
@@ -848,8 +857,6 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
-	/** The paths that the build gave `host.output`. */
-	let built: HostOutput | undefined;
 	const copies: Plugin = {
 		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
@@ -863,12 +870,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory);
-				built = {
-					root: builder.config.root,
-					clientDirectory,
-					entryFile: join(outDir(builder.config, SERVER_ENVIRONMENT), host.entryFileName),
-				};
-				host.output?.(built);
+				host.output?.(hostOutput(builder.config, host));
 			},
 		},
 	};
@@ -953,12 +955,8 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		},
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
-				capture(server, () => {
-					// Why: when `appServer` comes before the framework's plugin, the build wrote the output first.
-					if (built != null) {
-						host.output?.(built);
-					}
-				});
+				// Why the preview's config: the framework starts the preview with a new instance of this plugin.
+				capture(server, () => host.output?.(hostOutput(server.config, host)));
 			}
 		},
 	};

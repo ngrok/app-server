@@ -175,6 +175,7 @@ The function differs from a long-lived process:
 - Vercel starts and stops it. Each plugin's `setup` runs on the first request of each instance. If a `setup` throws, that request fails, and the next request runs each `setup` again. `onShutdown` never runs, and `shutdownSignal()` never aborts.
 - The request scheme comes from `X-Forwarded-Proto`, and the client address comes from `X-Real-IP`, because Vercel sets both headers. Do not set `trustForwardedProto` or `trustedProxyHops`. Behind another proxy, such as the ngrok edge, the client address is the proxy's.
 - The function does not gzip a response, because the CDN compresses each response. It still sends the build's `.<file>.br` and `.<file>.gz` copies.
+- The deploy gives each file of the function one fixed modification time. So the function uses the time of the build for each file, and the ETag of each file it sends changes with each build.
 - `app-server serve` cannot run the build. Use `app-server start` for development, as with the node host.
 
 ## The pipeline
