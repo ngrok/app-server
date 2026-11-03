@@ -209,8 +209,8 @@ describe("appServer", () => {
 		const hook = main?.writeBundle;
 		const writeBundle = async (code: string) =>
 			(typeof hook === "object" ? hook.handler : hook)?.call(
-				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name.
-				{ environment: { name: "client" } } as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+				{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
 				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
 				{ dir: client } as never,
 				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
@@ -241,6 +241,55 @@ describe("appServer", () => {
 		expect(same).toBe(first);
 		expect(changed).not.toBe(first);
 		expect(written()).toMatchObject({ buildId: changed, prerendered: ["/llms.txt"] });
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it("adds a file that the server build writes to the client's assets, such as React Router's route manifest, to the build ID", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-route-manifest-"));
+		const client = join(directory, "build/client");
+		const build = async (routeManifest: string | undefined) => {
+			rmSync(client, { recursive: true, force: true });
+			mkdirSync(join(client, "assets"), { recursive: true });
+			writeFileSync(join(client, "assets/public-logo.svg"), "<svg/>");
+			const [main, gzipCopies] = appServer({ framework: reactRouterAdapter(), host: node() });
+			const writeBundle = main?.writeBundle;
+			await (typeof writeBundle === "object" ? writeBundle.handler : writeBundle)?.call(
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+				{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+				{ dir: client } as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+				{
+					"assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code: "go()" },
+				} as never,
+			);
+			if (routeManifest != null) {
+				writeFileSync(join(client, "assets/manifest-1.js"), routeManifest);
+			}
+			const buildApp = gzipCopies?.buildApp;
+			await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+				{} as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+				{
+					config: { root: directory, build: { outDir: "build/client" }, environments: {} },
+				} as never,
+			);
+			const manifest = JSON.parse(readFileSync(join(client, ".app-server.json"), "utf8")) as {
+				buildId?: string;
+			};
+			return manifest.buildId;
+		};
+
+		const bundleOnly = await build(undefined);
+		const routes = await build('window.__reactRouterManifest={"routes":{"about":"/about"}}');
+		const sameRoutes = await build('window.__reactRouterManifest={"routes":{"about":"/about"}}');
+		const movedRoute = await build('window.__reactRouterManifest={"routes":{"about":"/info"}}');
+
+		expect(bundleOnly).toMatch(/^[0-9a-f]{16}$/u);
+		expect(routes).not.toBe(bundleOnly);
+		expect(sameRoutes).toBe(routes);
+		expect(movedRoute).not.toBe(routes);
 		rmSync(directory, { recursive: true, force: true });
 	});
 

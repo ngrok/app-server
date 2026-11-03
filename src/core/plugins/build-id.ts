@@ -16,9 +16,9 @@ export type BuildIdOptions = {
 	/** @default "X-Build-Id" */
 	header?: string;
 	/**
-	 * The deployed build, such as the image tag. With no value, the plugin
-	 * sends the ID that the `appServer` Vite plugin derives from the client
-	 * build. In development, it then sends no build.
+	 * The deployed build, such as the image tag. With no value or `""`, the
+	 * plugin sends the ID that the `appServer` Vite plugin derives from the
+	 * client build. In development, it then sends no build.
 	 * @default the `buildId` of `.app-server.json` in the client build
 	 */
 	value?: string | undefined;
@@ -109,9 +109,11 @@ function buildMetric(value: string | undefined): string | undefined {
  */
 export function buildId({
 	header = BUILD_ID_HEADER,
-	value: explicit,
+	value: given,
 	paths,
 }: BuildIdOptions = {}): Plugin {
+	// Why `""` too: a deploy can set the variable with no value, such as `IMAGE_TAG=`.
+	const explicit = given === "" ? undefined : given;
 	let value = explicit;
 	let timing = buildMetric(value);
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;

@@ -141,13 +141,13 @@ export type DefaultPluginsOptions = {
 };
 
 /** The option of `defaultPlugins` for each plugin that it places, by plugin name. */
-const NAMED_PLUGINS: Readonly<Record<string, string>> = {
-	health: "health",
-	noindex: "noindex",
-	"build-id": "buildId",
-	"content-security-policy": "contentSecurityPolicy",
-	"runtime-env": "env",
-};
+const NAMED_PLUGINS: ReadonlyMap<string, string> = new Map([
+	["health", "health"],
+	["noindex", "noindex"],
+	["build-id", "buildId"],
+	["content-security-policy", "contentSecurityPolicy"],
+	["runtime-env", "env"],
+]);
 
 /**
  * The default pipeline, in order: `health`, `requestId`, `accessLog`,
@@ -167,7 +167,7 @@ const NAMED_PLUGINS: Readonly<Record<string, string>> = {
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 	for (const plugin of options.beforeStatic ?? []) {
-		const option = NAMED_PLUGINS[plugin.name];
+		const option = NAMED_PLUGINS.get(plugin.name);
 		if (option != null) {
 			throw new Error(
 				`Set the "${option}" option of defaultPlugins(), not the ${plugin.name} plugin in beforeStatic.`,

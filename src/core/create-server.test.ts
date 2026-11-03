@@ -610,6 +610,15 @@ describe("defaultPlugins", () => {
 		expect((await request("/about")).headers.get("X-Build-Id")).toBe("v42");
 	});
 
+	it("sends the build's ID for an empty value, such as an empty variable", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ buildId: { value: "" } }),
+			clientDirectory,
+		});
+
+		expect((await request("/about")).headers.get("X-Build-Id")).toBe("build-from-vite");
+	});
+
 	it("sends no build ID with buildId: false", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({ buildId: false }),
@@ -624,5 +633,11 @@ describe("defaultPlugins", () => {
 			'Set the "buildId" option of defaultPlugins(), not the build-id plugin in beforeStatic.',
 		);
 		expect(() => defaultPlugins({ beforeStatic: [env] })).toThrow('Set the "env" option');
+	});
+
+	it("takes an app plugin whose name is a property of every object, such as constructor", () => {
+		expect(defaultPlugins({ beforeStatic: [{ name: "constructor" }] })).toContainEqual({
+			name: "constructor",
+		});
 	});
 });

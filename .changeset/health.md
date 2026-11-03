@@ -11,3 +11,23 @@ defaultPlugins({ health: { ready: async () => db.ping() } });
 ```
 
 Breaking change: with `defaultPlugins()`, the server now answers `/livez` and `/readyz`, and an app route at those paths no longer runs. Remove the app's route, or set `health: false` to keep it.
+
+Before:
+
+```ts
+const app = createServer({ plugins: defaultPlugins() });
+app.get("/livez", (c) => c.text("ok"));
+```
+
+After:
+
+```ts
+const app = createServer({ plugins: defaultPlugins() });
+```
+
+Or, to keep the app's route:
+
+```ts
+const app = createServer({ plugins: defaultPlugins({ health: false }) });
+app.get("/livez", (c) => c.text("ok"));
+```

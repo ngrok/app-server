@@ -318,8 +318,8 @@ export function getRouter() {
 
 The server needs no code: `defaultPlugins()` runs `buildId()` with the ID of the client build.
 
-- After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code that an open tab runs changes. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
-- To send another ID, such as the image tag, set `value`. With no value, such as an unset variable, the server sends the build's ID:
+- After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. After the server build, it adds each file that the server build wrote to the client's assets directory, such as the React Router route manifest. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code or the routes that an open tab runs change. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
+- To send another ID, such as the image tag, set `value`. With no value, such as an unset or empty variable, the server sends the build's ID:
 
   ```ts
   // server.ts
