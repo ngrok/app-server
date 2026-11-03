@@ -63,11 +63,11 @@ export type ServerInternals = {
 	prepare: (info: SetupInfo) => Promise<void>;
 	/**
 	 * Starts the app's listeners, else `defaultListeners`, the host's. Call
-	 * `prepare` first.
+	 * `prepare` first. Throws when neither has a listener.
 	 */
 	listen: (
 		framework: FrameworkRuntime,
-		defaultListeners: readonly Listener[],
+		defaultListeners: readonly Listener[] | undefined,
 	) => Promise<RunningServer>;
 	/** Runs each plugin's `onShutdown` once, and stops waiting for them at the shutdown deadline. */
 	stopPlugins: () => Promise<void>;
@@ -249,7 +249,7 @@ function checkCount(name: string, value: number, max = Number.MAX_SAFE_INTEGER):
 }
 
 /** The request with the scheme from `X-Forwarded-Proto`, when that header holds one. */
-function withForwardedProto(request: Request): Request {
+export function withForwardedProto(request: Request): Request {
 	const proto = request.headers.get("X-Forwarded-Proto");
 	// Why check the scheme first: a new `Request` costs a copy of the request on each call.
 	if ((proto !== "http" && proto !== "https") || request.url.startsWith(`${proto}:`)) {
@@ -257,7 +257,9 @@ function withForwardedProto(request: Request): Request {
 	}
 	const url = new URL(request.url);
 	url.protocol = `${proto}:`;
-	return new Request(url, request);
+	// Why copy it first: the Node listener gives a light request, which `new Request` copies only as
+	// its first argument. As the second, its getters throw "Illegal invocation".
+	return new Request(url, new Request(request));
 }
 
 /**
@@ -382,6 +384,12 @@ export function createServer({
 			if (running != null) {
 				throw new Error("This app server is already listening.");
 			}
+			const chosen = listeners ?? defaultListeners ?? [];
+			if (chosen.length === 0) {
+				throw new Error(
+					"This app server has no listener: the app sets none, and the host has none. A serverless host calls the entry's `fetch`.",
+				);
+			}
 			renewShutdownSignal();
 			let deadlinePassed = false;
 			const fetch: FetchHandler = async (request, bindings) => {
@@ -394,7 +402,7 @@ export function createServer({
 				return response;
 			};
 			const starts = await Promise.allSettled(
-				(listeners ?? defaultListeners).map(async (listener) => listener.start(fetch)),
+				chosen.map(async (listener) => listener.start(fetch)),
 			);
 			const started = starts.flatMap((start) =>
 				start.status === "fulfilled" ? [start.value] : [],

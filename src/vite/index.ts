@@ -104,6 +104,21 @@ export type HostBuild = {
 	runtimeModule: string;
 	/** The file name of the server entry in the server build, such as `app-server.js`. */
 	entryFileName: string;
+	/**
+	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
+	 * runs once after the build, the prerender pass, and the gzip copies.
+	 */
+	output?: (build: HostOutput) => void | Promise<void>;
+};
+
+/** What a host's `output` gets: the absolute paths of the build. */
+export type HostOutput = {
+	/** The Vite root. */
+	root: string;
+	/** The client build, such as `build/client`. */
+	clientDirectory: string;
+	/** The server entry, such as `build/server/app-server.js`. */
+	entryFile: string;
 };
 
 /** Options for {@link appServer}. */
@@ -840,6 +855,11 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory);
+				await host.output?.({
+					root: builder.config.root,
+					clientDirectory,
+					entryFile: join(outDir(builder.config, SERVER_ENVIRONMENT), host.entryFileName),
+				});
 			},
 		},
 	};

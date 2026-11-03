@@ -250,7 +250,7 @@ describe("createEntry", () => {
 		});
 		createEntry({
 			app: createServer({ logger: recordingLogger([]) }),
-			host: { name: host.name, files: host.files, listeners: host.listeners },
+			host: { name: host.name, files: host.files },
 			framework: () => stubFramework(),
 		});
 
@@ -261,6 +261,37 @@ describe("createEntry", () => {
 		);
 
 		expect(seen).toHaveBeenCalledWith("abc-123");
+	});
+
+	it("answers production requests through fetch with no listener, and sets up once", async () => {
+		const setup = vi.fn<() => void>();
+		const entry = createEntry({
+			app: createServer({ plugins: [buildId(), prerendered(), { name: "count", setup }] }),
+			host: { name: "serverless", files: nodeHost.files },
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		const [page, rendered] = await Promise.all([
+			entry.fetch(new Request("http://localhost/cpu"), {}),
+			entry.fetch(new Request("http://localhost/about"), {}),
+		]);
+
+		await expect(page.text()).resolves.toBe("<h1>CPU</h1>");
+		await expect(rendered.text()).resolves.toBe("rendered");
+		expect(rendered.headers.get("X-Build-Id")).toBe("b42");
+		expect(setup).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses to start when neither the app nor the host has a listener", async () => {
+		const entry = createEntry({
+			app: createServer({ plugins: [], logger: recordingLogger([]) }),
+			host: { name: "serverless", files: nodeHost.files },
+			clientDirectory,
+			framework: () => stubFramework(),
+		});
+
+		await expect(entry.start()).rejects.toThrow("has no listener");
 	});
 
 	it("names the adapter when no client directory is known", async () => {

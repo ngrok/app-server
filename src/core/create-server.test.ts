@@ -21,9 +21,14 @@ import { productionSetup, renderedFramework, stubFramework, testServer } from ".
 import type { FrameworkRuntime, Listener, LogSink, Plugin, StartedListener } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
-async function listening(render: FrameworkRuntime["fetch"], plugins: Plugin[] = defaultPlugins()) {
+async function listening(
+	render: FrameworkRuntime["fetch"],
+	plugins: Plugin[] = defaultPlugins(),
+	options: { trustForwardedProto?: boolean } = {},
+) {
 	const logger: LogSink = { log: () => {} };
 	const app = createServer({
+		...options,
 		plugins,
 		logger,
 		listeners: [tcp({ port: 0, host: "127.0.0.1" })],
@@ -374,6 +379,23 @@ describe("createServer", () => {
 		const response = await fetch(new URL("/items", server.urls[0]));
 
 		await expect(response.text()).resolves.toBe("DELETE /items");
+		await server.shutdown();
+	});
+
+	it("reads the scheme from X-Forwarded-Proto for a request with a body on the Node listener", async () => {
+		const server = await listening(
+			async (request) => new Response(`${new URL(request.url).protocol} ${await request.text()}`),
+			[],
+			{ trustForwardedProto: true },
+		);
+
+		const response = await fetch(server.urls[0] ?? "", {
+			method: "POST",
+			body: "form",
+			headers: { "X-Forwarded-Proto": "https" },
+		});
+
+		await expect(response.text()).resolves.toBe("https: form");
 		await server.shutdown();
 	});
 

@@ -451,6 +451,87 @@ async function checkReactRouter(runtime: string): Promise<void> {
 	}
 }
 
+/** The script that serves a Vercel Function's handler on `node:http`, as Vercel's Node.js launcher does. */
+const VERCEL_LAUNCHER = `
+const { createServer } = await import("node:http");
+const handler = (await import(process.argv[1])).default;
+const server = createServer(handler).listen(0, "127.0.0.1", () => {
+	console.log(JSON.stringify({ message: "listening", "app_server.urls": ["http://127.0.0.1:" + server.address().port] }));
+});
+process.once("SIGTERM", () => server.close());
+`;
+
+/**
+ * The React Router fixture app built with the vercel host. The function runs
+ * from a copy outside this package, so it can import only the files that the
+ * build traced.
+ */
+async function checkVercel(): Promise<void> {
+	execFileSync(`${binDirectory}/react-router`, ["build"], {
+		cwd: reactRouterDirectory,
+		env: { ...process.env, APP_SERVER_HOST: "vercel" },
+		stdio: ["ignore", "ignore", "inherit"],
+	});
+	const output = join(reactRouterDirectory, ".vercel/output");
+	const copy = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
+	cpSync(join(output, "functions/index.func"), copy, { recursive: true, verbatimSymlinks: true });
+	const config: unknown = JSON.parse(readFileSync(join(copy, ".vc-config.json"), "utf8"));
+	const handler =
+		typeof config === "object" && config != null && "handler" in config
+			? String(config.handler)
+			: "";
+	const { child, url } = startServer(
+		"node",
+		["--input-type=module", "-e", VERCEL_LAUNCHER, join(copy, handler)],
+		{
+			cwd: copy,
+		},
+	);
+	try {
+		const base = await url;
+		const page = await fetch(new URL("/", base));
+		const html = await page.text();
+		assert.match(html, /React Router home/u, "the function sends the prerendered page");
+		assert.match(
+			page.headers.get("etag") ?? "",
+			/^W\//u,
+			"the prerendered page comes from its file",
+		);
+		const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)].map(
+			(match) => match.groups?.path ?? "",
+		);
+		assert.ok(
+			scripts.length > 0 && scripts.every((path) => existsSync(join(output, "static", path))),
+			"the CDN has each script of the page",
+		);
+		const missing = await fetch(new URL(scripts[0] ?? "/assets/none.js", base));
+		assert.equal(missing.status, 404, "the function does not carry the CDN files");
+		assert.equal(missing.headers.get("cache-control"), "no-store");
+		await missing.text();
+
+		const hello = await fetch(new URL("/hello.txt", base));
+		assert.equal(await hello.text(), "hello");
+		assert.equal(hello.headers.get("cache-control"), "max-age=60", "the build's headers replay");
+		const whoami = await fetch(new URL("/whoami", base), {
+			headers: { "X-Request-Id": "abc-123" },
+		});
+		assert.deepEqual(
+			await whoami.json(),
+			{ fromContext: "abc-123", fromStorage: "abc-123" },
+			"the framework and requestContext() get the request ID",
+		);
+		assert.equal(
+			await (await fetch(new URL("/ping", base))).text(),
+			"pong",
+			"the app's routes run",
+		);
+		process.stdout.write("ok node vercel\n");
+	} finally {
+		child.kill("SIGKILL");
+		rmSync(copy, { recursive: true, force: true });
+	}
+}
+
 /** The TanStack Start fixture app: built with the Vite plugin, served by `app-server serve`. */
 async function checkTanstackStart(runtime: string): Promise<void> {
 	const { child, lines, url } = startServer(runtime, [cliPath, "serve"], {
@@ -605,4 +686,8 @@ for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 		await checkStandalone(runtime, app);
 	}
 	await checkTanstackStartDev(runtime);
+}
+// Why last: it builds the React Router app again, for the vercel host.
+if (selected.length === 0 || selected.includes("node")) {
+	await checkVercel();
 }

@@ -1,6 +1,6 @@
 # @ngrok/app-server
 
-A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) and [TanStack Start](https://tanstack.com/start) apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno.
+A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) and [TanStack Start](https://tanstack.com/start) apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno, or as a Vercel Function.
 
 What it fixes in `@react-router/serve`:
 
@@ -29,7 +29,7 @@ The server has three layers:
 
 - The core: the request pipeline, the plugins, and `createServer`. It imports Hono and nothing else.
 - A framework adapter: how the framework renders a request. `react-router` and `tanstack-start` come with the package.
-- A host adapter: where the server runs. `node` comes with the package. It runs one long-lived process on Node, Bun, or Deno, such as in a Docker image.
+- A host adapter: where the server runs. `node` and `vercel` come with the package. `node` runs one long-lived process on Node, Bun, or Deno, such as in a Docker image. `vercel` runs the pipeline in one Vercel Function. See [Deploy to Vercel](#deploy-to-vercel).
 
 Each adapter has a build side, which the Vite plugin uses, and a run side, which the server build imports.
 
@@ -141,6 +141,45 @@ CMD ["build/server/app-server.js"]
 ```
 
 For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
+
+## Deploy to Vercel
+
+The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files.
+
+Install the file tracer, then use `vercel()` as the host:
+
+```sh
+pnpm add -D -E @vercel/nft
+```
+
+```ts
+// vite.config.ts
+import { vercel } from "@ngrok/app-server/vercel/vite";
+
+appServer({ host: vercel() });
+```
+
+After the build, `vercel()` writes `.vercel/output` (the Build Output API, version 3) in the Vite root. Deploy it with `vercel deploy --prebuilt`. Do not add `vercelPreset()` from `@vercel/react-router`. To build one app for Docker and for Vercel, choose the host from an environment variable, such as `appServer(process.env.VERCEL === "1" ? { host: vercel() } : {})`.
+
+The output has two parts:
+
+- `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN serves them. Each file under `/assets/` gets `Cache-Control: public, max-age=31536000, immutable`. A request for a CDN path with no file goes to the function, which sends a 404 with `Cache-Control: no-store`.
+- `functions/index.func/`: the function for each other request. It has the server build, the rest of the client build, and each file that the server imports, which `@vercel/nft` traces from the workspace root. The Node.js version of the function is the version that ran the build.
+
+Prerendered pages come from the function, so they get the same pipeline as rendered pages: the security headers, the CSP, the redirects, and the markdown twins. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
+
+`vercel()` takes:
+
+- `cdnPaths`: more URL path prefixes for the CDN, such as `["/blog-assets/"]`. Each starts and ends with `/`. Their files skip the pipeline, and the function does not carry them. Vercel limits a function to 250 MB, so put a large directory of the client build here. Default none.
+- `cdnHeaders`: headers for each CDN file, such as CORS headers. Default none.
+- `regions`, `memory`, and `maxDuration`: the function's Vercel config. Default the project's.
+
+The function differs from a long-lived process:
+
+- Vercel starts and stops it. Each plugin's `setup` runs on the first request of each instance. `onShutdown` never runs, and `shutdownSignal()` never aborts.
+- The request scheme comes from `X-Forwarded-Proto`, and the client address comes from `X-Real-IP`, because Vercel sets both headers. Do not set `trustForwardedProto` or `trustedProxyHops`. Behind another proxy, such as the ngrok edge, the client address is the proxy's.
+- The function does not gzip a response, because the CDN compresses each response. It still sends the build's `.<file>.br` and `.<file>.gz` copies.
+- `app-server serve` cannot run the build. Use `app-server start` for development, as with the node host.
 
 ## The pipeline
 
@@ -697,8 +736,8 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
-- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
+- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output after the build, such as `.vercel/output`.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
 
 ## Options
 
@@ -718,5 +757,5 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `appServer` does not support React Router `serverBundles`.
 - The server build holds one copy of each external package. If the build finds two copies of one external package, such as two versions, the build fails.
 - One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
-- The package has one host adapter, `node`. A serverless host, such as Cloudflare Workers or Vercel, needs its own adapter. See `HostRuntime` and `HostBuild`.
+- The package has two host adapters, `node` and `vercel`. Another host, such as Cloudflare Workers, needs its own adapter. See `HostRuntime` and `HostBuild`. A serverless host calls the `fetch` of the build's `appServer` export for each request.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.

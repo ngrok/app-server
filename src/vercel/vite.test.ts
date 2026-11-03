@@ -1,0 +1,111 @@
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, sep } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { vercel } from "./vite.js";
+
+const root = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
+const clientDirectory = join(root, "build/client");
+const entryFile = join(root, "build/server/app-server.js");
+const output = join(root, ".vercel/output");
+const functionDirectory = join(output, "functions/index.func");
+
+afterAll(() => {
+	rmSync(root, { recursive: true, force: true });
+});
+
+function write(path: string, text: string): void {
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, text);
+}
+
+/** Each file under `directory`, relative to it, in code unit order. */
+function filesUnder(directory: string): string[] {
+	return readdirSync(directory, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) => relative(directory, join(entry.parentPath, entry.name)).split(sep).join("/"))
+		.toSorted();
+}
+
+function json(path: string): unknown {
+	return JSON.parse(readFileSync(path, "utf8"));
+}
+
+write(join(clientDirectory, "assets/app-abc.js"), "app();");
+write(join(clientDirectory, "assets/.app-abc.js.gz"), "gzip");
+write(join(clientDirectory, "blog-assets/logo.svg"), "<svg/>");
+write(join(clientDirectory, "about/index.html"), "<h1>About</h1>");
+write(join(clientDirectory, "robots.txt"), "User-agent: *");
+write(join(clientDirectory, ".app-server.json"), "{}");
+write(entryFile, `import "./chunk.js";\nexport const appServer = {};\n`);
+write(join(root, "build/server/chunk.js"), "export {};\n");
+write(join(output, "stale.txt"), "from an earlier build");
+
+describe("vercel", () => {
+	it("writes the CDN files, the function, and the routes of .vercel/output", async () => {
+		const host = vercel({
+			cdnPaths: ["/blog-assets/"],
+			cdnHeaders: { "Access-Control-Allow-Origin": "*" },
+			regions: ["iad1"],
+		});
+
+		await host.output?.({ root, clientDirectory, entryFile });
+
+		expect(filesUnder(output)).toStrictEqual([
+			"config.json",
+			"functions/index.func/.vc-config.json",
+			"functions/index.func/build/client/.app-server.json",
+			"functions/index.func/build/client/about/index.html",
+			"functions/index.func/build/client/robots.txt",
+			"functions/index.func/build/server/app-server.js",
+			"functions/index.func/build/server/chunk.js",
+			"functions/index.func/build/server/vercel-function.js",
+			"static/assets/app-abc.js",
+			"static/blog-assets/logo.svg",
+		]);
+		expect(readFileSync(join(functionDirectory, "build/server/vercel-function.js"), "utf8")).toBe(
+			[
+				`import { handler } from "@ngrok/app-server/vercel";`,
+				`import { appServer } from "./app-server.js";`,
+				`export default handler(appServer);`,
+				"",
+			].join("\n"),
+		);
+
+		expect(json(join(functionDirectory, ".vc-config.json"))).toStrictEqual({
+			runtime: `nodejs${process.versions.node.split(".")[0]}.x`,
+			handler: "build/server/vercel-function.js",
+			launcherType: "Nodejs",
+			supportsResponseStreaming: true,
+			regions: ["iad1"],
+		});
+		expect(json(join(output, "config.json"))).toStrictEqual({
+			version: 3,
+			routes: [
+				{ handle: "filesystem" },
+				{ src: "^/(.*)$", dest: "/index" },
+				{ handle: "hit" },
+				{
+					src: "^/assets/",
+					headers: {
+						"Access-Control-Allow-Origin": "*",
+						"Cache-Control": "public, max-age=31536000, immutable",
+					},
+					continue: true,
+				},
+				{
+					src: "^/blog-assets/",
+					headers: { "Access-Control-Allow-Origin": "*" },
+					continue: true,
+				},
+			],
+		});
+	});
+
+	it("fails the config for a CDN path that is not a URL path prefix", () => {
+		expect(() => vercel({ cdnPaths: ["blog-assets"] })).toThrow(
+			'Each cdnPaths entry is a URL path prefix that starts and ends with "/"',
+		);
+		expect(() => vercel({ cdnPaths: ["/"] })).toThrow("not");
+	});
+});
