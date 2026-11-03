@@ -299,6 +299,25 @@ describe("createServer", () => {
 		expect(lines.map(({ message }) => message)).toStrictEqual(["unhandled error", "request"]);
 	});
 
+	it("sends a small body from a string with its Content-Length through gzip on the Node listener", async () => {
+		const server = await listening(
+			async () => new Response("pong", { headers: { "Content-Type": "text/plain" } }),
+		);
+
+		const headers = await new Promise<Record<string, unknown>>((resolve, reject) => {
+			httpRequest(server.urls[0] ?? "", { headers: { "Accept-Encoding": "gzip" } }, (response) => {
+				response.resume();
+				resolve(response.headers);
+			})
+				.on("error", reject)
+				.end();
+		});
+
+		expect(headers["content-length"]).toBe("4");
+		expect(headers["transfer-encoding"]).toBeUndefined();
+		await server.shutdown();
+	});
+
 	it("stops the handler's stream when the client disconnects through gzip and the access log", async () => {
 		const cancel = vi.fn<(reason: unknown) => void>();
 		const server = await listening(

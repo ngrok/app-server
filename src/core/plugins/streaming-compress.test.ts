@@ -2,7 +2,7 @@ import { constants, gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
-import { streamingCompress } from "./streaming-compress.js";
+import { MAX_JOINED_BYTES, streamingCompress } from "./streaming-compress.js";
 
 describe("streamingCompress", () => {
 	it("sends the first gzip chunk of a streamed page before the stream ends", async () => {
@@ -22,6 +22,37 @@ describe("streamingCompress", () => {
 				finishFlush: constants.Z_SYNC_FLUSH,
 			}).toString(),
 		).toBe("<html>shell");
+	});
+
+	it("sends the chunks that the source has queued as one gzip chunk, and a later chunk after them", async () => {
+		const encoder = new TextEncoder();
+		let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				source = controller;
+				for (const part of ["<p>one</p>", "<p>two</p>", "<p>three</p>"]) {
+					controller.enqueue(encoder.encode(part));
+				}
+			},
+		});
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(body, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		source?.enqueue(encoder.encode("<p>late</p>"));
+		const second = (await reader?.read())?.value ?? new Uint8Array();
+		source?.close();
+		const text = (bytes: Uint8Array) =>
+			gunzipSync(bytes, { finishFlush: constants.Z_SYNC_FLUSH }).toString();
+
+		expect(text(first)).toBe("<p>one</p><p>two</p><p>three</p>");
+		expect(text(new Uint8Array([...first, ...second]))).toBe(
+			"<p>one</p><p>two</p><p>three</p><p>late</p>",
+		);
 	});
 
 	it("drops a Content-Length and an Accept-Ranges that the gzip body would break", async () => {
@@ -159,8 +190,65 @@ describe("streamingCompress", () => {
 		}
 	});
 
-	it("reads the source only as fast as the client reads", async () => {
-		const total = 1_000;
+	it("sends a chunk that does not fit in 16 KiB after the chunks before it, with no join", async () => {
+		const sizes = [1024, 1024, 32 * 1024];
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const size of sizes) {
+					controller.enqueue(new Uint8Array(size).fill(97));
+				}
+			},
+		});
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(body, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		const second = (await reader?.read())?.value ?? new Uint8Array();
+		const inflate = (bytes: Uint8Array) =>
+			gunzipSync(bytes, { finishFlush: constants.Z_SYNC_FLUSH }).byteLength;
+
+		expect(inflate(first)).toBe(2048);
+		expect(inflate(new Uint8Array([...first, ...second]))).toBe(2048 + 32 * 1024);
+	});
+
+	it("sends the shell before a run of empty chunks ends", async () => {
+		const encoder = new TextEncoder();
+		let pulls = 0;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode("<html>shell"));
+			},
+			pull(controller) {
+				pulls += 1;
+				controller.enqueue(new Uint8Array());
+				if (pulls === 10_000) {
+					controller.close();
+				}
+			},
+		});
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(body, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		await reader?.cancel();
+
+		expect(gunzipSync(first, { finishFlush: constants.Z_SYNC_FLUSH }).toString()).toBe(
+			"<html>shell",
+		);
+		expect(pulls).toBeLessThan(10);
+	});
+
+	it("reads the source at most 16 KiB ahead of the client", async () => {
+		const chunk = new TextEncoder().encode("<p>chunk</p>");
+		const total = 10_000;
 		let pulls = 0;
 		const { request } = await testServer({
 			plugins: [streamingCompress()],
@@ -169,7 +257,7 @@ describe("streamingCompress", () => {
 					new ReadableStream<Uint8Array>({
 						pull(controller) {
 							pulls += 1;
-							controller.enqueue(new TextEncoder().encode("<p>chunk</p>"));
+							controller.enqueue(chunk);
 							if (pulls === total) {
 								controller.close();
 							}
@@ -184,7 +272,7 @@ describe("streamingCompress", () => {
 		await reader?.read();
 		await reader?.cancel();
 
-		expect(pulls).toBeLessThan(10);
+		expect(pulls * chunk.byteLength).toBeLessThanOrEqual(MAX_JOINED_BYTES + 3 * chunk.byteLength);
 	});
 
 	it("keeps streaming past an empty chunk", async () => {

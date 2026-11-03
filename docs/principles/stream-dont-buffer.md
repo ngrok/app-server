@@ -15,7 +15,7 @@ Pass a body through as a stream. Read the next chunk only when the client pulls 
 
 **In this repo:**
 
-- `streamingCompress()` flushes after each chunk.
+- `streamingCompress()` flushes after each chunk. It joins only chunks that the body has queued already, up to 16 kibibytes (KiB), so the join adds no wait.
 - The gzip stream and the file stream of the node host read on pull and cancel their source.
 - `createServer` cancels the body of a HEAD response, and the node listener cancels a body after its socket closes.
 
