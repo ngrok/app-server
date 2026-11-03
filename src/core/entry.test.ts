@@ -283,6 +283,26 @@ describe("createEntry", () => {
 		expect(setup).toHaveBeenCalledTimes(1);
 	});
 
+	it("runs each setup again on the next request after a setup fails", async () => {
+		const setup = vi.fn<() => void>().mockImplementationOnce(() => {
+			throw new Error("config server down");
+		});
+		const entry = createEntry({
+			app: createServer({ plugins: [{ name: "remote-config", setup }] }),
+			host: { name: "serverless", files: nodeHost.files },
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await expect(entry.fetch(new Request("http://localhost/about"), {})).rejects.toThrow(
+			"config server down",
+		);
+		const response = await entry.fetch(new Request("http://localhost/about"), {});
+
+		await expect(response.text()).resolves.toBe("rendered");
+		expect(setup).toHaveBeenCalledTimes(2);
+	});
+
 	it("refuses to start when neither the app nor the host has a listener", async () => {
 		const entry = createEntry({
 			app: createServer({ plugins: [], logger: recordingLogger([]) }),

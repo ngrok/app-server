@@ -248,7 +248,13 @@ function checkCount(name: string, value: number, max = Number.MAX_SAFE_INTEGER):
 	}
 }
 
-/** The request with the scheme from `X-Forwarded-Proto`, when that header holds one. */
+/**
+ * The request with the scheme from `X-Forwarded-Proto`, when that header holds one.
+ *
+ * @example
+ * withForwardedProto(new Request("http://example.com/", { headers: { "X-Forwarded-Proto": "https" } })).url;
+ * // => "https://example.com/"
+ */
 export function withForwardedProto(request: Request): Request {
 	const proto = request.headers.get("X-Forwarded-Proto");
 	// Why check the scheme first: a new `Request` costs a copy of the request on each call.
@@ -377,7 +383,11 @@ export function createServer({
 					await plugin.setup?.(info);
 				}
 				app.all("*", async (context) => context.env.framework.fetch(context.req.raw, context));
-			})();
+			})().catch((error: unknown) => {
+				// Why: the next request on a serverless host runs each `setup` again.
+				prepared = undefined;
+				throw error;
+			});
 			return prepared;
 		},
 		listen: async (framework, defaultListeners) => {

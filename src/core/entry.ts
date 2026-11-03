@@ -123,13 +123,24 @@ export function createEntry({
 		await internals.prepare(info);
 		return runtime;
 	};
-	let production: Promise<FrameworkRuntime> | undefined;
+	let preparing: Promise<FrameworkRuntime> | undefined;
+	/**
+	 * The production run side, set up once. Why forget a failure: a serverless
+	 * instance stays up, so the next request runs each `setup` again.
+	 */
+	const production = async (): Promise<FrameworkRuntime> => {
+		preparing ??= prepareProduction().catch((error: unknown) => {
+			preparing = undefined;
+			throw error;
+		});
+		return preparing;
+	};
 	let development: FrameworkRuntime | undefined;
 	return {
 		protocol: ENTRY_PROTOCOL,
 		app,
 		start: async () => {
-			const runtime = await (production ??= prepareProduction());
+			const runtime = await production();
 			const server = await internals.listen(runtime, host.listeners?.());
 			host.lifecycle?.onStop(async () =>
 				server.shutdown().catch((error: unknown) => {
@@ -139,7 +150,7 @@ export function createEntry({
 			);
 		},
 		fetch: async (request, bindings) => {
-			const runtime = await (production ??= prepareProduction());
+			const runtime = await production();
 			return app.fetch(request, { ...bindings, framework: runtime });
 		},
 		fetchDev: async (request, bindings, devServer) => {

@@ -159,7 +159,7 @@ After the build, `vercel()` writes `.vercel/output` (the Build Output API, versi
 
 The output has two parts:
 
-- `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN serves them. Each file under `/assets/` gets `Cache-Control: public, max-age=31536000, immutable`. A request for a CDN path with no file goes to the function, which sends a 404 with `Cache-Control: no-store`.
+- `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN serves them. Each file under `/assets/` gets `Cache-Control: public, max-age=31536000, immutable`. A request under `/assets/` with no file goes to the function, which sends a 404 with `Cache-Control: no-store`. A request under another CDN path with no file goes through the pipeline, as on the node host.
 - `functions/index.func/`: the function for each other request. It has the whole server build, which runs with no install (see [Deploy](#deploy)), and the rest of the client build. The Node.js version of the function is the version that ran the build.
 
 Prerendered pages come from the function, so they get the same pipeline as rendered pages: the security headers, the CSP, the redirects, and the markdown twins. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
@@ -172,7 +172,7 @@ Prerendered pages come from the function, so they get the same pipeline as rende
 
 The function differs from a long-lived process:
 
-- Vercel starts and stops it. Each plugin's `setup` runs on the first request of each instance. `onShutdown` never runs, and `shutdownSignal()` never aborts.
+- Vercel starts and stops it. Each plugin's `setup` runs on the first request of each instance. If a `setup` throws, that request fails, and the next request runs each `setup` again. `onShutdown` never runs, and `shutdownSignal()` never aborts.
 - The request scheme comes from `X-Forwarded-Proto`, and the client address comes from `X-Real-IP`, because Vercel sets both headers. Do not set `trustForwardedProto` or `trustedProxyHops`. Behind another proxy, such as the ngrok edge, the client address is the proxy's.
 - The function does not gzip a response, because the CDN compresses each response. It still sends the build's `.<file>.br` and `.<file>.gz` copies.
 - `app-server serve` cannot run the build. Use `app-server start` for development, as with the node host.

@@ -273,7 +273,11 @@ export type Plugin = {
 	name: string;
 	/** The Hono middleware for this step. */
 	middleware?: MiddlewareHandler<AppServerEnv>;
-	/** Runs once before the server takes requests. A thrown error stops startup. */
+	/**
+	 * Runs once before the server takes requests. A thrown error stops startup.
+	 * On a serverless host, a thrown error fails the request, and the next
+	 * request runs each `setup` again.
+	 */
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
 	onShutdown?: () => Promise<void>;
