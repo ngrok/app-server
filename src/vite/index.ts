@@ -11,7 +11,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
-import type { Plugin, PreviewServer, ResolvedConfig } from "vite";
+import type { Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
@@ -196,6 +196,7 @@ function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] 
 
 /** Writes `.app-server.json` into the client build. */
 function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): void {
+	mkdirSync(clientDirectory, { recursive: true });
 	writeFileSync(
 		join(clientDirectory, BUILD_MANIFEST_FILE),
 		`${JSON.stringify(manifest, null, "\t")}\n`,
@@ -220,6 +221,41 @@ function recordScriptHashes(clientDirectory: string): void {
 		...(typeof recorded === "object" && recorded != null ? recorded : {}),
 		scriptHashes: scriptHashesOf(clientDirectory),
 	});
+}
+
+/**
+ * The ID of a client build: a hash of the name and the content of each file
+ * in its bundle. Why the bundle: it is the code that an open tab runs, so the
+ * ID changes when that code changes, and not for a change to the server, a
+ * `public/` file, or a prerendered page. Why the content, not the file
+ * names: a name has a content hash only when the output names ask for one.
+ */
+function bundleBuildId(bundle: Rolldown.OutputBundle): string {
+	const hash = createHash("sha256");
+	for (const file of Object.values(bundle).toSorted((first, second) =>
+		first.fileName.localeCompare(second.fileName),
+	)) {
+		hash.update(`${file.fileName}\0`);
+		hash.update(file.type === "chunk" ? file.code : file.source);
+		hash.update("\0");
+	}
+	// Why 16 hex digits: 64 bits keep two builds apart, and the ID goes in each document's headers.
+	return hash.digest("hex").slice(0, 16);
+}
+
+/** The `buildId` of the build manifest that the client build wrote, if any. */
+function writtenBuildId(clientDirectory: string): string | undefined {
+	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
+	if (!existsSync(path)) {
+		return undefined;
+	}
+	const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
+	return typeof manifest === "object" &&
+		manifest != null &&
+		"buildId" in manifest &&
+		typeof manifest.buildId === "string"
+		? manifest.buildId
+		: undefined;
 }
 
 /**
@@ -261,8 +297,10 @@ function capture(server: PreviewServer): void {
 		next();
 	});
 	server.httpServer.once("close", () => {
-		mkdirSync(clientDirectory, { recursive: true });
+		const buildId = writtenBuildId(clientDirectory);
 		writeBuildManifest(clientDirectory, {
+			// Why keep it: the prerender pass runs after the client build, which derived it.
+			...(buildId == null ? {} : { buildId }),
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
@@ -326,6 +364,9 @@ function writeGzipCopies(clientDirectory: string): void {
  *   (the default export of `app`) with the framework's server module, so the
  *   server gets the app's path aliases and its one copy of the framework.
  *   The framework's own entry does not change.
+ * - After the client build, it writes `.app-server.json` in the client
+ *   build with the build ID: a hash of the client bundle. The `buildId`
+ *   plugin sends it.
  * - During the framework's prerender pass, it records each prerendered path
  *   and the headers of each prerendered file that is not an HTML document into
  *   `.app-server.json` in the client build. The `prerendered` plugin replays
@@ -373,6 +414,16 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 			// preview reads that entry.
 			if (this.environment.name === SERVER_ENVIRONMENT && this.environment.mode === "build") {
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
+			}
+		},
+		writeBundle(options, bundle) {
+			if (this.environment.name === "client") {
+				writeBuildManifest(options.dir ?? outDir(this.environment.config, "client"), {
+					buildId: bundleBuildId(bundle),
+					prerendered: [],
+					headers: {},
+					scriptHashes: {},
+				});
 			}
 		},
 		renderStart(options) {

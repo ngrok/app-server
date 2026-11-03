@@ -201,6 +201,49 @@ describe("appServer", () => {
 		);
 	});
 
+	it("writes a build ID from the client bundle, which changes with its code and outlasts the prerender pass", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-build-id-"));
+		const client = join(directory, "build/client");
+		const [main] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const hook = main?.writeBundle;
+		const writeBundle = async (code: string) =>
+			(typeof hook === "object" ? hook.handler : hook)?.call(
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name.
+				{ environment: { name: "client" } } as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+				{ dir: client } as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+				{ "assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code } } as never,
+			);
+		const written = () =>
+			JSON.parse(readFileSync(join(client, ".app-server.json"), "utf8")) as { buildId?: string };
+
+		await writeBundle("render(1)");
+		const first = written().buildId;
+		await writeBundle("render(1)");
+		const same = written().buildId;
+		await writeBundle("render(2)");
+		const changed = written().buildId;
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer({ framework: reactRouterAdapter(), host: node() }), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+		await (await fetch(new URL("/llms.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(first).toMatch(/^[0-9a-f]{16}$/u);
+		expect(same).toBe(first);
+		expect(changed).not.toBe(first);
+		expect(written()).toMatchObject({ buildId: changed, prerendered: ["/llms.txt"] });
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("records nothing outside the framework's prerender pass", async () => {
 		const outside = mkdtempSync(join(tmpdir(), "app-server-vite-outside-"));
 		const server = await preview({

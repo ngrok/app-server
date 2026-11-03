@@ -15,8 +15,13 @@ export const BUILD_ID_METRIC = "build";
 export type BuildIdOptions = {
 	/** @default "X-Build-Id" */
 	header?: string;
-	/** The deployed build, such as the image tag. Read it from the runtime env, not the build. */
-	value: string;
+	/**
+	 * The deployed build, such as the image tag. With no value, the plugin
+	 * sends the ID that the `appServer` Vite plugin derives from the client
+	 * build. In development, it then sends no build.
+	 * @default the `buildId` of `.app-server.json` in the client build
+	 */
+	value?: string | undefined;
 	/**
 	 * More request paths whose responses carry the build in `Server-Timing`,
 	 * such as the app's proxy routes to its API. A tab then finds a new build
@@ -26,7 +31,7 @@ export type BuildIdOptions = {
 	 * reports an old build.
 	 *
 	 * @example
-	 * buildId({ value, paths: (path) => path.startsWith("/api/") });
+	 * buildId({ paths: (path) => path.startsWith("/api/") });
 	 */
 	paths?: (path: string) => boolean;
 };
@@ -78,6 +83,11 @@ function quoted(value: string): string {
 	return `"${value.replaceAll(/["\\]/gu, String.raw`\$&`)}"`;
 }
 
+/** The `build` metric of `value`, or `undefined` for no build. */
+function buildMetric(value: string | undefined): string | undefined {
+	return value == null ? undefined : `${BUILD_ID_METRIC};desc=${quoted(value)}`;
+}
+
 /**
  * Sets a build ID header on documents and on the framework's data responses,
  * such as React Router `.data` files, so a client can see that a deploy
@@ -90,16 +100,27 @@ function quoted(value: string): string {
  * from the document, and from a response that the browser fetches with no
  * script, such as a prefetch.
  *
+ * With no `value`, it sends the build ID that the `appServer` Vite plugin
+ * derives from the client build. Development and a build with no
+ * `.app-server.json` then get no build.
+ *
  * @example
- * buildId({ value: env.values.PUBLIC_APP_VERSION });
+ * buildId({ value: process.env.IMAGE_TAG });
  */
-export function buildId({ header = BUILD_ID_HEADER, value, paths }: BuildIdOptions): Plugin {
-	const timing = `${BUILD_ID_METRIC};desc=${quoted(value)}`;
+export function buildId({
+	header = BUILD_ID_HEADER,
+	value: explicit,
+	paths,
+}: BuildIdOptions = {}): Plugin {
+	let value = explicit;
+	let timing = buildMetric(value);
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;
 	return {
 		name: "build-id",
 		setup: (info) => {
 			({ isDataRequest } = info);
+			value = explicit ?? info.buildId;
+			timing = buildMetric(value);
 		},
 		// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
 		// answer 200 when the build ID changes.
@@ -112,13 +133,16 @@ export function buildId({ header = BUILD_ID_HEADER, value, paths }: BuildIdOptio
 				const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
 				// Why remove the build of an upstream API: the client must read only this app's build.
 				const before = response.get("Server-Timing");
-				const metrics = [...otherMetrics(before), ...(isStamped ? [timing] : [])].join(", ");
+				const metrics = [
+					...otherMetrics(before),
+					...(isStamped && timing != null ? [timing] : []),
+				].join(", ");
 				if (metrics === "") {
 					response.delete("Server-Timing");
 				} else if (metrics !== before) {
 					response.set("Server-Timing", metrics);
 				}
-				if (isRouter) {
+				if (isRouter && value != null) {
 					response.set(header, value);
 				} else {
 					response.delete(header);

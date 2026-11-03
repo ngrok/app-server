@@ -316,9 +316,13 @@ And keep `buildId()` in the server's pipeline:
 
 ```ts
 // server.ts
-defaultPlugins({ beforeStatic: [buildId({ value: env.values.PUBLIC_APP_VERSION })] });
+defaultPlugins({ beforeStatic: [buildId()] });
 ```
 
+- With no `value`, `buildId()` sends the ID of the client build. After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code that an open tab runs changes. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
+- To send another ID, such as the image tag, set `value`. With no value, such as an unset variable, the server sends the build's ID: `buildId({ value: process.env.IMAGE_TAG })`.
+- In development, the server sends no build ID unless `value` is set, because Vite's hot module replacement (HMR) updates an open tab after each edit.
+- A build with no `appServer` Vite plugin has no ID. Set `value` for it.
 - `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`.
 - The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
 - The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, a history step, and `blocker.proceed()` each act as the router acts.
@@ -340,10 +344,7 @@ A proxy route on this server forwards a request from the browser to the app's AP
 
 ```ts
 // server.ts
-const build = buildId({
-	value: env.values.PUBLIC_APP_VERSION,
-	paths: (path) => path.startsWith("/api/"),
-});
+const build = buildId({ paths: (path) => path.startsWith("/api/") });
 
 const app = createServer({ plugins: defaultPlugins({ beforeStatic: [env, build] }) });
 ```
@@ -534,7 +535,7 @@ A resource route, or a TanStack Start server route, gets the same `Request`. Cal
 
 During the framework's prerender pass, `appServer` records each prerendered path and the response headers of each prerendered file that is not an HTML document into `.app-server.json` in the client build. `prerendered()` replays the headers. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`. When the framework does not list its prerendered paths, as with TanStack Start, the server reads them from this file.
 
-A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. The file also records the hash of each inline script of each HTML file in the client build, so `contentSecurityPolicy()` can give a prerendered page a CSP. See [A CSP for each document](#a-csp-for-each-document).
+A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. The file also records the hash of each inline script of each HTML file in the client build, so `contentSecurityPolicy()` can give a prerendered page a CSP. See [A CSP for each document](#a-csp-for-each-document). It also holds the build ID. See [Deploys and open tabs](#deploys-and-open-tabs).
 
 ## Logs
 

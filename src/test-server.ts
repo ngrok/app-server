@@ -59,13 +59,14 @@ export async function productionSetup({
 	logger: LogSink;
 }): Promise<SetupInfo> {
 	const files = nodeFiles(clientDirectory);
-	const { prerendered, headers, scriptHashes } = await readBuildManifest(files);
+	const { prerendered, headers, scriptHashes, buildId } = await readBuildManifest(files);
 	return {
 		mode: "production",
 		files,
 		prerenderedPaths: framework.prerenderedPaths ?? prerendered,
 		capturedHeaders: new Map(Object.entries(headers)),
 		scriptHashes: new Map(Object.entries(scriptHashes)),
+		buildId,
 		isDataRequest: framework.isDataRequest ?? (() => false),
 		contentTypes: framework.contentTypes ?? {},
 		gzip: gzipStream,

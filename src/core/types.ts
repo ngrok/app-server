@@ -210,6 +210,11 @@ export type SetupInfo = {
 	 * build, by the file's URL path, that the Vite plugin recorded.
 	 */
 	scriptHashes: ReadonlyMap<string, readonly string[]>;
+	/**
+	 * The ID of the client build that the Vite plugin derived. It is
+	 * `undefined` in development and for a build with no build manifest.
+	 */
+	buildId: string | undefined;
 	/** Whether a URL path is a data request of the framework. */
 	isDataRequest: (path: string) => boolean;
 	/** Content types of the framework's files that `mime` does not know, by file extension. */

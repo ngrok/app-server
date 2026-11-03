@@ -1,13 +1,19 @@
 import type { StaticFiles } from "./types.js";
 
 /**
- * The file under the client build that the Vite plugin writes during the
- * prerender pass. It is a dotfile, so the static stages never serve it.
+ * The file under the client build that the Vite plugin writes after the
+ * client build and again after the prerender pass. It is a dotfile, so the
+ * static stages never serve it.
  */
 export const BUILD_MANIFEST_FILE = ".app-server.json";
 
-/** What the Vite plugin records during the prerender pass. */
+/** What the Vite plugin records about the client build. */
 export type BuildManifest = {
+	/**
+	 * The ID of the client build: a hash of the files that the client build
+	 * writes. The `buildId` plugin sends it by default.
+	 */
+	buildId?: string;
 	/** The URL paths that answered with a 2xx, sorted. */
 	prerendered: string[];
 	/** The headers of each prerendered file that is not an HTML document, by URL path. */
@@ -43,6 +49,17 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function isStringList(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/** The `buildId` of a parsed manifest, which can have none. A value that is not a string throws. */
+function buildIdOf(manifest: object): Pick<BuildManifest, "buildId"> {
+	if (!("buildId" in manifest)) {
+		return {};
+	}
+	if (typeof manifest.buildId !== "string") {
+		throw new TypeError(`${BUILD_MANIFEST_FILE}: the "buildId" must be a string.`);
+	}
+	return { buildId: manifest.buildId };
 }
 
 /**
@@ -85,5 +102,10 @@ export async function readBuildManifest(files: StaticFiles): Promise<BuildManife
 		}
 		scriptHashes[key] = value;
 	}
-	return { prerendered: parsed.prerendered, headers, scriptHashes };
+	return {
+		...buildIdOf(parsed),
+		prerendered: parsed.prerendered,
+		headers,
+		scriptHashes,
+	};
 }
