@@ -790,22 +790,47 @@ describe("appServer in a server build", () => {
 		expect(values).toStrictEqual(["outside"]);
 	});
 
-	it("copies a package in `ssr.external` that the app reads at run time with no import", async () => {
-		const { values } = await buildAlone(
+	it.each([{ ssr: { external: ["fonts"] } }, {}])(
+		"copies a package that the app reads at run time with no import: %j",
+		async (config) => {
+			const { values } = await buildAlone(
+				{
+					"entry.js": [
+						'import { readFileSync } from "node:fs";',
+						'import { createRequire } from "node:module";',
+						"const require = createRequire(import.meta.url);",
+						'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+					].join("\n"),
+					"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
+					"node_modules/fonts/mono.woff": "font",
+				},
+				config,
+			);
+
+			expect(values).toStrictEqual(["font"]);
+		},
+	);
+
+	it("keeps a package external that reads a file next to its own module", async () => {
+		const { values, server } = await buildAlone(
 			{
-				"entry.js": [
+				"entry.js": 'import { word } from "og";\nexport const values = [word];',
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					main: "index.js",
+				}),
+				"node_modules/og/index.js": [
 					'import { readFileSync } from "node:fs";',
-					'import { createRequire } from "node:module";',
-					"const require = createRequire(import.meta.url);",
-					'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+					'export const word = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
 				].join("\n"),
-				"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
-				"node_modules/fonts/mono.woff": "font",
+				"node_modules/og/word.txt": "own file",
 			},
-			{ ssr: { external: ["fonts"] } },
+			{},
 		);
 
-		expect(values).toStrictEqual(["font"]);
+		expect(values).toStrictEqual(["own file"]);
+		expect(existsSync(join(server, "node_modules/og/word.txt"))).toBe(true);
 	});
 
 	it("copies the native package that Vite resolves, such as for `resolve.dedupe`", async () => {

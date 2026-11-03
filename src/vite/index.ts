@@ -29,6 +29,7 @@ import {
 	isNativePackage,
 	packageDirectoryOf,
 	packageName,
+	readsOwnFiles,
 } from "./standalone.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
@@ -233,6 +234,13 @@ function isJavaScriptFile(id: string): boolean {
 	return isAbsolute(id) && !id.includes("?") && JAVASCRIPT_EXTENSIONS.has(extname(id));
 }
 
+/**
+ * A `require.resolve()` or an `import.meta.resolve()` of a string literal.
+ * The `source` group is the string.
+ */
+const RESOLVE_CALL =
+	/\b(?:require|import\.meta)\.resolve\(\s*(?<quote>["'`])(?<source>[^"'`$]+)\k<quote>/gu;
+
 /** The dependency fields of the app's `package.json` that can name a package the server imports. */
 const APP_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "devDependencies"];
 
@@ -264,6 +272,14 @@ function standalone(): Plugin {
 		natives.set(directory, native);
 		return native;
 	};
+	// Why: many modules import one package, and each check reads the file.
+	const ownFiles = new Map<string, boolean>();
+	/** Whether a bundled package must stay external: it is native, or `file` reads a file next to it. */
+	const staysExternal = (file: string, directory: string | undefined): boolean => {
+		const reads = ownFiles.get(file) ?? readsOwnFiles(file);
+		ownFiles.set(file, reads);
+		return reads || (directory != null && isNative(directory));
+	};
 	return {
 		name: "@ngrok/app-server:standalone",
 		// Why `pre`: Vite's resolver runs before a plugin with no `enforce`, so that plugin cannot keep
@@ -290,6 +306,7 @@ function standalone(): Plugin {
 			shared.clear();
 			natives.clear();
 			scans.clear();
+			ownFiles.clear();
 			const { resolve: resolveOptions, build, root } = this.environment.config;
 			const kept = [
 				...(resolveOptions.external === true ? [] : resolveOptions.external),
@@ -355,7 +372,7 @@ function standalone(): Plugin {
 							? dirname(importer)
 							: this.environment.config.root,
 					);
-				if (bundled && !shared.has(name) && (directory == null || !isNative(directory))) {
+				if (bundled && !shared.has(name) && !staysExternal(resolved.id, directory)) {
 					return resolved;
 				}
 				const known = externals.get(name);
@@ -366,6 +383,31 @@ function standalone(): Plugin {
 				}
 				externals.set(name, known ?? directory);
 				return bundled ? { id: source, external: true } : resolved;
+			},
+		},
+		transform: {
+			// Why only the app's code: a package that resolves a file of another package at run time,
+			// such as an optional binary, would copy a large package that the server never reads.
+			filter: {
+				id: { exclude: /[\\/]node_modules[\\/]/u },
+				code: /\b(?:require|import\.meta)\.resolve\(/u,
+			},
+			handler(code, id) {
+				if (!isServerBuild(this.environment)) {
+					return null;
+				}
+				// Why: the server reads a file of the package at run time, so the build must hold the package.
+				for (const { groups } of code.matchAll(RESOLVE_CALL)) {
+					const source = groups?.source ?? "";
+					const name = packageName(source);
+					if (BARE_IMPORT.test(source) && !isBuiltin(source) && !externals.has(name)) {
+						externals.set(
+							name,
+							findPackage(name, isAbsolute(id) ? dirname(id) : this.environment.config.root),
+						);
+					}
+				}
+				return null;
 			},
 		},
 		writeBundle() {

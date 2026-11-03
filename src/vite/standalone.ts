@@ -39,6 +39,27 @@ export function packageName(specifier: string): string {
 }
 
 /**
+ * Code that finds a file next to its own module: a relative `new URL()` on
+ * `import.meta.url`, `fileURLToPath(import.meta.url)`, or
+ * `import.meta.dirname`.
+ */
+const OWN_FILE =
+	/new\s+URL\(\s*(?<quote>["'`])\.{1,2}\/[^"'`]*\k<quote>\s*,\s*import\.meta\.url\s*\)|fileURLToPath\(\s*import\.meta\.url\s*\)|import\.meta\.(?:dirname|filename)\b/u;
+
+/**
+ * Whether the module `file` finds a file next to itself, such as
+ * `@vercel/og`, which reads `resvg.wasm` through
+ * `new URL("./resvg.wasm", import.meta.url)`. Why: in the bundle,
+ * `import.meta.url` is the URL of the bundle, so the file is not there.
+ *
+ * @example
+ * readsOwnFiles("/app/node_modules/@vercel/og/dist/index.node.js"); // => true
+ */
+export function readsOwnFiles(file: string): boolean {
+	return OWN_FILE.test(readFileSync(file, "utf8"));
+}
+
+/**
  * The real path of the directory of package `name`, as Node finds it from the
  * directory `from`: in each `node_modules` directory above `from`. Else
  * `undefined`. The real path follows the symbolic links of pnpm's layout.
