@@ -691,25 +691,51 @@ describe("appServer in a server build", () => {
 		expect(existsSync(join(server, "node_modules/pure"))).toBe(false);
 	});
 
-	it("gives the bundle and an external package one copy of each peer dependency", async () => {
+	it.each([
+		{ ssr: { external: ["widget"] } },
+		{ ssr: { external: ["widget/server"] } },
+		{ build: { rolldownOptions: { external: ["widget/server"] } } },
+	])(
+		"gives the bundle and an external package one copy of each peer dependency: %j",
+		async (config) => {
+			const { values } = await buildAlone(
+				{
+					"entry.js": [
+						'import { token } from "shared";',
+						'import { sameToken } from "widget/server";',
+						"export const values = [sameToken(token)];",
+					].join("\n"),
+					...commonJsPackage("shared", "exports.token = {};"),
+					...commonJsPackage("widget", "", {
+						exports: { "./server": "./server.js" },
+						peerDependencies: { shared: "1.0.0" },
+					}),
+					"node_modules/widget/server.js":
+						'exports.sameToken = (token) => token === require("shared").token;',
+				},
+				config,
+			);
+
+			expect(values).toStrictEqual([true]);
+		},
+	);
+
+	it("bundles a JSON file or an asset of a native package", async () => {
 		const { values } = await buildAlone(
 			{
 				"entry.js": [
-					'import { token } from "shared";',
-					'import { sameToken } from "widget";',
-					"export const values = [sameToken(token)];",
+					'import manifest from "native/package.json";',
+					'import notes from "native/notes.txt?raw";',
+					"export const values = [manifest.name, notes];",
 				].join("\n"),
-				...commonJsPackage("shared", "exports.token = {};"),
-				...commonJsPackage(
-					"widget",
-					'exports.sameToken = (token) => token === require("shared").token;',
-					{ peerDependencies: { shared: "1.0.0" } },
-				),
+				...commonJsPackage("native", ""),
+				"node_modules/native/addon.node": "",
+				"node_modules/native/notes.txt": "notes",
 			},
-			{ ssr: { external: ["widget"] } },
+			{},
 		);
 
-		expect(values).toStrictEqual([true]);
+		expect(values).toStrictEqual(["native", "notes"]);
 	});
 
 	it("copies a package that the bundler's own `external` option keeps external", async () => {

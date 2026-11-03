@@ -9,7 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isBuiltin } from "node:module";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
@@ -38,6 +38,9 @@ const SERVER_ENVIRONMENT = "ssr";
 
 /** A bare import, such as `react` or `@scope/name/path`: not a path, a `\0` ID, or a `node:` or `virtual:` ID. */
 const BARE_IMPORT = /^[\w@][^:]*$/u;
+
+/** The file extensions of a module that Node imports as it is, with no transform by Vite. */
+const JAVASCRIPT_EXTENSIONS = new Set(["", ".js", ".mjs", ".cjs"]);
 
 /** The header that turns on Node's header store for a response, so `finish` can read every header. */
 const CAPTURE_MARKER = "x-app-server-capture";
@@ -218,6 +221,15 @@ function outDir(config: ResolvedConfig, environment: string): string {
 	);
 }
 
+/**
+ * Whether `id` is a JavaScript file, which Node imports from `node_modules`
+ * as it is. Why: a plugin can resolve a bare import to a virtual module, and
+ * Vite transforms a JSON file or an asset, such as `?raw`.
+ */
+function isJavaScriptFile(id: string): boolean {
+	return isAbsolute(id) && JAVASCRIPT_EXTENSIONS.has(extname(id));
+}
+
 /** Whether `environment` builds the server. */
 function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean {
 	return environment.name === SERVER_ENVIRONMENT && environment.mode === "build";
@@ -227,7 +239,7 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
  * Makes the server build run with no install. The build bundles each
  * dependency, except the packages that the app keeps external (`ssr.external`
  * or the bundler's `external`), each native package (see `isNativePackage`),
- * and each peer dependency of a package in `ssr.external`. Those stay
+ * and each peer dependency of a package that the app keeps external. Those stay
  * external, so the plugin copies each one, whole, with its dependencies, into
  * `node_modules` in the server build. It also writes a `package.json` there, so
  * Node, Bun, and Deno load the build as ES modules and find that `node_modules`.
@@ -268,9 +280,16 @@ function standalone(): Plugin {
 			externals.clear();
 			peers.clear();
 			natives.clear();
-			const { external } = this.environment.config.resolve;
-			for (const name of external === true ? [] : external) {
-				const directory = findPackage(name, this.environment.config.root);
+			const { resolve: resolveOptions, build, root } = this.environment.config;
+			const kept = [
+				...(resolveOptions.external === true ? [] : resolveOptions.external),
+				...[build.rolldownOptions.external].flat(),
+			];
+			for (const id of kept) {
+				const directory =
+					typeof id === "string" && BARE_IMPORT.test(id)
+						? findPackage(packageName(id), root)
+						: undefined;
 				for (const peer of directory == null
 					? []
 					: dependencyNames(directory, ["peerDependencies"])) {
@@ -286,8 +305,7 @@ function standalone(): Plugin {
 				}
 				const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
 				const bundled = resolved?.external === false;
-				// Why only a file: a plugin can resolve a bare import to a virtual module.
-				if (resolved == null || (bundled && !isAbsolute(resolved.id))) {
+				if (resolved == null || (bundled && !isJavaScriptFile(resolved.id))) {
 					return resolved;
 				}
 				const name = packageName(source);
