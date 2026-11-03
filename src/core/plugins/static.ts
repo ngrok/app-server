@@ -1,8 +1,9 @@
 import type { Context, MiddlewareHandler } from "hono";
+import { getPath } from "hono/utils/url";
 import { manifestKey } from "../build-manifest.js";
 import { writableHeaders } from "../header-hook.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
-import { contentType, findStaticFile, staticResponse } from "../static-files.js";
+import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
 import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
@@ -86,7 +87,7 @@ export type PrerenderedOptions = {
 	 *   for the twin's own URL gets none.
 	 * - In development, the client build has no twins. A request that prefers
 	 *   markdown gets the framework's answer for the twin's URL, so an edit
-	 *   shows at once. A 404 there gives the HTML.
+	 *   shows at once. An answer that is not markdown gives the HTML.
 	 *
 	 * `true` uses the default `twinOf`: the path with no trailing slash plus
 	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
@@ -159,8 +160,8 @@ function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
 /**
  * The development stage of `markdownTwins`. The client build has no twins
  * then, so a request that prefers markdown gets the framework's answer for
- * the twin's URL: the route that prerenders the twin. A 404 sends the
- * request on for the HTML.
+ * the twin's URL: the route that prerenders the twin. An answer that is not
+ * markdown sends the request on for the HTML.
  */
 function developmentTwins(
 	twinOf: (path: string) => string | undefined,
@@ -174,16 +175,22 @@ function developmentTwins(
 			prefersMarkdown(context.req.raw)
 				? twinOf(path)
 				: undefined;
-		if (twinPath == null) {
+		// Why `isFilePath`: production finds no twin at such a path.
+		if (twinPath == null || !isFilePath(twinPath)) {
 			return next();
 		}
 		const url = new URL(context.req.url);
 		url.pathname = twinPath;
+		// Why: the URL can change the path, for example it removes a tab. Then the framework answers a path that `twinOf` did not name.
+		if (getPath(new Request(url)) !== twinPath) {
+			return next();
+		}
 		const { headers, signal } = context.req.raw;
 		// Why no `Request` as the init: the Node.js listener's request is not one that `Request` can copy.
 		const twin = new Request(url, { method, headers, signal });
 		const response = await context.env.framework.fetch(twin, context);
-		if (response.status === 404) {
+		// Why only markdown: production serves a twin from a `.md` file, so an HTML page or an error is no twin.
+		if (response.headers.get("Content-Type")?.startsWith("text/markdown") !== true) {
 			await response.body?.cancel();
 			return next();
 		}

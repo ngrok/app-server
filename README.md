@@ -462,7 +462,7 @@ createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: true } })
 - Each answer for a page with a twin gets `Vary: Accept`: the twin, the prerendered HTML, and the framework's answer for a rendered page. The server adds `Accept` to the `Vary` values that are already there.
 - Each answer for a page with a twin, except the twin, gets `Link: </components/button.md>; rel="alternate"; type="text/markdown"`, so a client can find the twin.
 - A page with no twin, and the twin's own URL, get no `Vary: Accept` and no `Link`.
-- In development, the client build has no twins. A request that `prefersMarkdown` accepts gets the framework's answer for the twin's URL, so an edit to the twin's route shows at the next request. If that answer is a 404, the request gets the HTML. A browser's answer gets no `Vary: Accept` and no `Link`, because the server does not ask the framework for a twin that it does not send.
+- In development, the client build has no twins. A request that `prefersMarkdown` accepts gets the framework's answer for the twin's URL, so an edit to the twin's route shows at the next request. If that answer is not markdown, such as a 404 or an HTML page, the request gets the HTML. A browser's answer gets no `Vary: Accept` and no `Link`, because the server does not ask the framework for a twin that it does not send.
 
 The default twin is the path with no trailing slash plus `.md`, and `/index.md` for `/`. A different mapping goes in `twinOf`. Its path follows the same rules as a request path:
 

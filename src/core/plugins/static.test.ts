@@ -647,7 +647,10 @@ describe("prerendered markdownTwins in development", () => {
 	const markdown = { headers: { Accept: "text/markdown" } };
 	const browser = { headers: { Accept: "text/html,*/*;q=0.8" } };
 
-	/** A development server whose framework renders each `.md` URL as markdown, except `/docs/missing.md`. */
+	/**
+	 * A development server whose framework renders each `.md` URL as markdown,
+	 * except `/docs/missing.md` (a 404) and `/tags/react.md` (an HTML page).
+	 */
 	async function devServer(options: PrerenderedOptions) {
 		const seen: string[] = [];
 		const framework = stubFramework(async (request) => {
@@ -656,7 +659,7 @@ describe("prerendered markdownTwins in development", () => {
 			if (pathname === "/docs/missing.md") {
 				return new Response("Not Found", { status: 404 });
 			}
-			return pathname.endsWith(".md")
+			return pathname.endsWith(".md") && pathname !== "/tags/react.md"
 				? new Response(`# ${pathname}`, { headers: { "Content-Type": "text/markdown" } })
 				: new Response("rendered", { headers: { "Content-Type": "text/html" } });
 		});
@@ -697,25 +700,43 @@ describe("prerendered markdownTwins in development", () => {
 		expect(seen).toStrictEqual(["HEAD /index.md"]);
 	});
 
-	it("gives the HTML when the twin is a 404, to a browser, and for a skipped path", async () => {
+	it("gives the HTML when the twin is not markdown, to a browser, and for a skipped path", async () => {
 		const { request, seen } = await devServer({
 			markdownTwins: true,
 			skip: (path) => path === "/app",
 		});
 
 		const missing = await request("/docs/missing", markdown);
+		const html = await request("/tags/react", markdown);
 		const page = await request("/docs/button", browser);
 		const skipped = await request("/app", markdown);
 
 		await expect(missing.text()).resolves.toBe("rendered");
+		await expect(html.text()).resolves.toBe("rendered");
 		await expect(page.text()).resolves.toBe("rendered");
 		await expect(skipped.text()).resolves.toBe("rendered");
 		expect(seen).toStrictEqual([
 			"GET /docs/missing.md",
 			"GET /docs/missing",
+			"GET /tags/react.md",
+			"GET /tags/react",
 			"GET /docs/button",
 			"GET /app",
 		]);
+	});
+
+	it("asks the framework for no twin whose URL changes its path", async () => {
+		const { request, seen } = await devServer({
+			markdownTwins: true,
+			skip: (path) => path.startsWith("/private"),
+		});
+
+		const backslash = await request("/docs%5C..%5Cprivate", markdown);
+		const tab = await request("/pri%09vate", markdown);
+
+		await expect(backslash.text()).resolves.toBe("rendered");
+		await expect(tab.text()).resolves.toBe("rendered");
+		expect(seen).toStrictEqual(["GET /docs%5C..%5Cprivate", "GET /pri%09vate"]);
 	});
 
 	it("uses twinOf, and is off by default", async () => {
