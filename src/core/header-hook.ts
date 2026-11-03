@@ -16,6 +16,9 @@ const owned = new WeakMap<Context<AppServerEnv>, Response>();
  *
  * Why clear first: Hono's setter copies the new response and sets each
  * header of the old one, such as its length, on it again.
+ *
+ * @example
+ * replaceResponse(context, new Response(gzip(context.res.body), context.res));
  */
 export function replaceResponse(context: Context<AppServerEnv>, response: Response): void {
 	context.res = undefined;
@@ -30,6 +33,10 @@ export function replaceResponse(context: Context<AppServerEnv>, response: Respon
  * Why a copy: the response can have immutable headers, such as one from
  * `fetch()`, or be an object that the app sends again. Why one copy:
  * `context.header` copies the whole response on each call.
+ *
+ * @example
+ * await next();
+ * writableHeaders(context).set("Vary", "Accept-Encoding");
  */
 export function writableHeaders(context: Context<AppServerEnv>): Headers {
 	if (owned.get(context) !== context.res) {

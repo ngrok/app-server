@@ -97,10 +97,10 @@ function oneChunk(chunk: Uint8Array): ReadableStream<Uint8Array> {
 /** Why: these codes mean that nothing is at the path. Any other error, such as `EACCES`, throws. */
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 
-/** The stats of `path`, or `undefined` when nothing is there. */
-async function statOrMissing(path: string): Promise<Stats | undefined> {
+/** The value of `promise`, or `undefined` when it fails because nothing is at its path. */
+async function orMissing<T>(promise: Promise<T>): Promise<T | undefined> {
 	try {
-		return await stat(path);
+		return await promise;
 	} catch (error) {
 		if (error instanceof Error && "code" in error && MISSING_CODES.has(String(error.code))) {
 			return;
@@ -144,7 +144,7 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		return candidate;
 	};
 	const files: StaticFiles = {
-		stat: async (path) => fileInfo(await statOrMissing(filePath(path))),
+		stat: async (path) => fileInfo(await orMissing(stat(filePath(path)))),
 		open: async (path, range) => {
 			const candidate = filePath(path);
 			if (range != null && range.end - range.start < CHUNK_BYTES) {
@@ -175,18 +175,19 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				}
 				const inside = new Set(parents).add(inode);
 				const prefix = path === "/" ? "" : path;
-				const names = await readdir(filePath(path));
+				// Why: a deploy can remove a directory between its `stat` and this read.
+				const names = (await orMissing(readdir(filePath(path)))) ?? [];
 				await Promise.all(
 					names.map(async (name) => {
 						const childPath = `${prefix}/${name}`;
-						const childStats = await statOrMissing(filePath(childPath));
+						const childStats = await orMissing(stat(filePath(childPath)));
 						if (childStats != null) {
 							await walk(childPath, childStats, inside);
 						}
 					}),
 				);
 			};
-			const rootStats = await statOrMissing(root);
+			const rootStats = await orMissing(stat(root));
 			if (rootStats != null) {
 				await walk("/", rootStats, new Set());
 			}
