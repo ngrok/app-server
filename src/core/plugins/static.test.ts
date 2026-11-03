@@ -2,8 +2,10 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { afterAll, describe, expect, it } from "vitest";
-import { testServer } from "../../test-server.js";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { createServer, serverInternals } from "../create-server.js";
+import { tcp } from "../../node/tcp.js";
+import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
 import type { Plugin } from "../types.js";
@@ -15,6 +17,7 @@ const files: Record<string, string> = {
 	"components/button.md": "# Button",
 	"index.md": "# Home",
 	"docs/rendered.md": "# Rendered",
+	"docs/café.md": "# Café",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
 	"digits.bin": "0123456789",
@@ -496,6 +499,11 @@ describe("gzip copies from the build", () => {
 	});
 });
 
+/** The headers of a response that tell a client and a cache about the twin. */
+function negotiation(response: Response): { vary: string | null; link: string | null } {
+	return { vary: response.headers.get("Vary"), link: response.headers.get("Link") };
+}
+
 describe("prerendered markdownTwins", () => {
 	const markdown = { headers: { Accept: "text/markdown" } };
 	const browser = { headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" } };
@@ -509,17 +517,30 @@ describe("prerendered markdownTwins", () => {
 		expect(response.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
 		expect(response.headers.get("Cache-Control")).toBe("max-age=60");
 		expect(response.headers.get("Content-Security-Policy")).toBeNull();
-		expect(response.headers.get("Vary")).toBe("Accept");
+		expect(negotiation(response)).toStrictEqual({ vary: "Accept", link: null });
 	});
 
-	it("serves the HTML with Vary: Accept to a browser", async () => {
+	it("serves the HTML with Vary: Accept and a Link to the twin to a browser", async () => {
 		const { request } = await staticServer({ markdownTwins: true });
 
 		const response = await request("/components/button", browser);
 
 		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
 		expect(response.headers.get("Content-Security-Policy")).toBe("default-src 'self'");
-		expect(response.headers.get("Vary")).toBe("Accept");
+		expect(negotiation(response)).toStrictEqual({
+			vary: "Accept",
+			link: '</components/button.md>; rel="alternate"; type="text/markdown"',
+		});
+	});
+
+	it("percent-encodes the Link to a twin", async () => {
+		const { request } = await staticServer({ markdownTwins: true });
+
+		const response = await request("/docs/caf%C3%A9", browser);
+
+		expect(response.headers.get("Link")).toBe(
+			'</docs/caf%C3%A9.md>; rel="alternate"; type="text/markdown"',
+		);
 	});
 
 	it("answers HEAD as GET, and keeps Vary: Accept on a 304", async () => {
@@ -549,10 +570,13 @@ describe("prerendered markdownTwins", () => {
 		await expect(slash.text()).resolves.toBe("# Button");
 		await expect(renderedTwin.text()).resolves.toBe("# Rendered");
 		await expect(rendered.text()).resolves.toBe("rendered");
-		expect(rendered.headers.get("Vary")).toBe("Accept");
+		expect(negotiation(rendered)).toStrictEqual({
+			vary: "Accept",
+			link: '</docs/rendered.md>; rel="alternate"; type="text/markdown"',
+		});
 	});
 
-	it("adds no Vary: Accept for a path with no twin or for the twin's own URL", async () => {
+	it("adds no Vary: Accept and no Link for a path with no twin or for the twin's own URL", async () => {
 		const { request } = await staticServer({ markdownTwins: true });
 
 		const noTwin = await request("/llms.txt", markdown);
@@ -560,10 +584,10 @@ describe("prerendered markdownTwins", () => {
 		const missing = await request("/docs/missing", markdown);
 
 		await expect(noTwin.text()).resolves.toBe("llms");
-		expect(noTwin.headers.get("Vary")).toBeNull();
+		expect(negotiation(noTwin)).toStrictEqual({ vary: null, link: null });
 		await expect(twinUrl.text()).resolves.toBe("# Button");
-		expect(twinUrl.headers.get("Vary")).toBeNull();
-		expect(missing.headers.get("Vary")).toBeNull();
+		expect(negotiation(twinUrl)).toStrictEqual({ vary: null, link: null });
+		expect(negotiation(missing)).toStrictEqual({ vary: null, link: null });
 	});
 
 	it("adds Accept to the Vary values that the headers option sets", async () => {
@@ -616,5 +640,91 @@ describe("prerendered markdownTwins", () => {
 
 		await expect(response.text()).resolves.toBe("<h1>Button</h1>");
 		expect(response.headers.get("Vary")).toBeNull();
+	});
+});
+
+describe("prerendered markdownTwins in development", () => {
+	const markdown = { headers: { Accept: "text/markdown" } };
+	const browser = { headers: { Accept: "text/html,*/*;q=0.8" } };
+
+	/** A development server whose framework renders each `.md` URL as markdown, except `/docs/missing.md`. */
+	async function devServer(options: PrerenderedOptions) {
+		const seen: string[] = [];
+		const framework = stubFramework(async (request) => {
+			const { pathname } = new URL(request.url);
+			seen.push(`${request.method} ${pathname}`);
+			if (pathname === "/docs/missing.md") {
+				return new Response("Not Found", { status: 404 });
+			}
+			return pathname.endsWith(".md")
+				? new Response(`# ${pathname}`, { headers: { "Content-Type": "text/markdown" } })
+				: new Response("rendered", { headers: { "Content-Type": "text/html" } });
+		});
+		const logger = { log: () => {} };
+		const app = createServer({
+			plugins: [assets(), prerendered(options)],
+			logger,
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ clientDirectory, logger })),
+			mode: "development",
+			devServer: async (_, next) => next(),
+		});
+		// Why a listener: the Node.js listener's request differs from the `Request` of `app.request`.
+		const server = await internals?.listen(framework, []);
+		onTestFinished(async () => server?.shutdown());
+		const request = async (path: string, init?: RequestInit) =>
+			fetch(new URL(path, server?.urls[0]), init);
+		return { request, seen };
+	}
+
+	it("answers a request that prefers markdown with the framework's answer for the twin", async () => {
+		const { request } = await devServer({ markdownTwins: true });
+
+		const response = await request("/docs/button", markdown);
+
+		await expect(response.text()).resolves.toBe("# /docs/button.md");
+		expect(negotiation(response)).toStrictEqual({ vary: "Accept", link: null });
+	});
+
+	it("answers HEAD with the twin, and the root with /index.md", async () => {
+		const { request, seen } = await devServer({ markdownTwins: true });
+
+		await request("/", { ...markdown, method: "HEAD" });
+
+		expect(seen).toStrictEqual(["HEAD /index.md"]);
+	});
+
+	it("gives the HTML when the twin is a 404, to a browser, and for a skipped path", async () => {
+		const { request, seen } = await devServer({
+			markdownTwins: true,
+			skip: (path) => path === "/app",
+		});
+
+		const missing = await request("/docs/missing", markdown);
+		const page = await request("/docs/button", browser);
+		const skipped = await request("/app", markdown);
+
+		await expect(missing.text()).resolves.toBe("rendered");
+		await expect(page.text()).resolves.toBe("rendered");
+		await expect(skipped.text()).resolves.toBe("rendered");
+		expect(seen).toStrictEqual([
+			"GET /docs/missing.md",
+			"GET /docs/missing",
+			"GET /docs/button",
+			"GET /app",
+		]);
+	});
+
+	it("uses twinOf, and is off by default", async () => {
+		const mapped = await devServer({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
+		const off = await devServer({});
+
+		await expect((await mapped.request("/docs/button", markdown)).text()).resolves.toBe(
+			"# /markdown/docs/button.md",
+		);
+		await expect((await off.request("/docs/button", markdown)).text()).resolves.toBe("rendered");
 	});
 });
