@@ -15,8 +15,8 @@ type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult
 
 /**
  * The most bytes that one pull of {@link replay} joins. Why 16 KiB: a source
- * that makes a chunk on each read looks queued, so the join reads ahead of the
- * client by up to this size. A Node.js stream reads ahead by the same default.
+ * that makes a chunk on each read looks queued, so the join can read ahead of
+ * the client by this size, the default read-ahead of a Node.js stream.
  */
 export const MAX_JOINED_BYTES = 16 * 1024;
 
