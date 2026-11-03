@@ -104,6 +104,24 @@ export type HostBuild = {
 	runtimeModule: string;
 	/** The file name of the server entry in the server build, such as `app-server.js`. */
 	entryFileName: string;
+	/**
+	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
+	 * runs after each prerender pass and after the build, so it can run two
+	 * times. Why after the pass too: when `appServer` comes before the
+	 * framework's plugin, the pass runs after the build. Why sync: Vite does
+	 * not wait for the end of that pass.
+	 */
+	output?: (build: HostOutput) => void;
+};
+
+/** What a host's `output` gets: the absolute paths of the build. */
+export type HostOutput = {
+	/** The Vite root. */
+	root: string;
+	/** The client build, such as `build/client`. */
+	clientDirectory: string;
+	/** The server entry, such as `build/server/app-server.js`. */
+	entryFile: string;
 };
 
 /** Options for {@link appServer}. */
@@ -196,7 +214,7 @@ export function serverEntrySource({
 		"\t\tprocess.setSourceMapsEnabled(true);",
 		"\t}",
 		"}",
-		`const [serverModule, { createEntry, createServer }, { runtime }, { host }${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
+		`const [serverModule, { createEntry, createServer }, { runtime }, hostModule${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
 		...modules.map((module) => `\timport(${JSON.stringify(module)}),`),
 		"]);",
 		...(appModule == null
@@ -206,14 +224,25 @@ export function serverEntrySource({
 			: []),
 		`export const appServer = createEntry({`,
 		`\tapp,`,
-		`\thost,`,
+		`\thost: hostModule.host,`,
 		`\tclientDirectory: ${clientDirectory},`,
 		`\tframework: (mode) => runtime(serverModule, { ${framework.runtimeOptions == null ? "" : `...${framework.runtimeOptions}, `}mode }),`,
 		`});`,
+		// Why: a serverless host's function file calls the run side through the bundle's copy.
+		"export { hostModule };",
 		"if (import.meta.main) {",
 		"\tawait appServer.start();",
 		"}",
 	].join("\n");
+}
+
+/** The paths of the build that a host's `output` gets. */
+function hostOutput(config: ResolvedConfig, host: HostBuild): HostOutput {
+	return {
+		root: config.root,
+		clientDirectory: outDir(config, "client"),
+		entryFile: join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName),
+	};
 }
 
 /** The absolute path of an environment's build output. */
@@ -652,7 +681,7 @@ function writtenBuildId(clientDirectory: string): string | undefined {
  * the client build when the preview server closes, with the script hashes of
  * each HTML file.
  */
-function capture(server: PreviewServer): void {
+function capture(server: PreviewServer, afterPass: () => void): void {
 	const clientDirectory = outDir(server.config, "client");
 	const started = Date.now();
 	const paths = new Set<string>();
@@ -702,6 +731,7 @@ function capture(server: PreviewServer): void {
 		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
 		// modification time in steps of 1 or 2 s.
 		writeAllCopies(clientDirectory, { changedSince: started - 2000 });
+		afterPass();
 	});
 }
 
@@ -840,6 +870,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory);
+				host.output?.(hostOutput(builder.config, host));
 			},
 		},
 	};
@@ -924,7 +955,8 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		},
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
-				capture(server);
+				// Why the preview's config: the framework starts the preview with a new instance of this plugin.
+				capture(server, () => host.output?.(hostOutput(server.config, host)));
 			}
 		},
 	};

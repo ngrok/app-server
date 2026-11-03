@@ -7,6 +7,7 @@ import { abortShutdownSignal } from "./shutdown.js";
 import { keptFiles } from "./static-files.js";
 import type {
 	AppServerEnv,
+	FetchHandler,
 	FrameworkRuntime,
 	HostRuntime,
 	ListenerBindings,
@@ -32,6 +33,11 @@ export type AppServerEntry = {
 	 * lifecycle stops, such as on `SIGTERM`, it shuts down.
 	 */
 	start: () => Promise<void>;
+	/**
+	 * Production, for a serverless host: answers one request, and does not
+	 * listen. The first call runs each plugin's `setup`.
+	 */
+	fetch: FetchHandler;
 	/** Development: answers one request with the dev server inside the pipeline. */
 	fetchDev: (
 		request: Request,
@@ -97,34 +103,59 @@ export function createEntry({
 			logger: internals.logger,
 		};
 	};
+	/** Runs each plugin's `setup` for production, and gives the framework's run side. */
+	const prepareProduction = async (): Promise<FrameworkRuntime> => {
+		const runtime = framework("production");
+		const shared = await setupInfo(runtime);
+		const snapshot = await shared.files.snapshot?.();
+		// Why only with a snapshot: it promises that the client build does not change while the server runs.
+		const files = snapshot == null ? shared.files : keptFiles(snapshot);
+		const manifest = await readBuildManifest(files);
+		const info: SetupInfo = {
+			...shared,
+			files,
+			mode: "production",
+			prerenderedPaths: runtime.prerenderedPaths ?? manifest.prerendered,
+			capturedHeaders: new Map(Object.entries(manifest.headers)),
+			scriptHashes: new Map(Object.entries(manifest.scriptHashes)),
+			buildId: manifest.buildId,
+		};
+		await internals.prepare(info);
+		return runtime;
+	};
+	let preparing: Promise<FrameworkRuntime> | undefined;
+	/**
+	 * The production run side, set up once. Why forget a failure: a serverless
+	 * instance stays up, so the next request runs each `setup` again.
+	 */
+	const production = async (): Promise<FrameworkRuntime> => {
+		preparing ??= prepareProduction().catch((error: unknown) => {
+			preparing = undefined;
+			throw error;
+		});
+		return preparing;
+	};
 	let development: FrameworkRuntime | undefined;
 	return {
 		protocol: ENTRY_PROTOCOL,
 		app,
 		start: async () => {
-			const runtime = framework("production");
-			const shared = await setupInfo(runtime);
-			const snapshot = await shared.files.snapshot?.();
-			// Why only with a snapshot: it promises that the client build does not change while the server runs.
-			const files = snapshot == null ? shared.files : keptFiles(snapshot);
-			const manifest = await readBuildManifest(files);
-			const info: SetupInfo = {
-				...shared,
-				files,
-				mode: "production",
-				prerenderedPaths: runtime.prerenderedPaths ?? manifest.prerendered,
-				capturedHeaders: new Map(Object.entries(manifest.headers)),
-				scriptHashes: new Map(Object.entries(manifest.scriptHashes)),
-				buildId: manifest.buildId,
-			};
-			await internals.prepare(info);
-			const server = await internals.listen(runtime, host.listeners());
+			const runtime = await production();
+			const server = await internals.listen(runtime, host.listeners?.());
 			host.lifecycle?.onStop(async () =>
 				server.shutdown().catch((error: unknown) => {
 					internals.logger.log("error", "shutdown failed", errorAttributes(error));
 					throw error;
 				}),
 			);
+		},
+		fetch: async (request, bindings) => {
+			// Why log it: the host sends a 500 with no log, and no app handler runs before setup ends.
+			const runtime = await production().catch((error: unknown) => {
+				internals.logger.log("error", "setup failed", errorAttributes(error));
+				throw error;
+			});
+			return app.fetch(request, { ...bindings, framework: runtime });
 		},
 		fetchDev: async (request, bindings, devServer) => {
 			development ??= framework("development");

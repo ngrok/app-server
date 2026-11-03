@@ -338,6 +338,44 @@ describe("appServer", () => {
 		}
 	});
 
+	it("writes the host's output again after a prerender pass that runs after the build", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const outDir = "late-pass";
+		mkdirSync(join(root, outDir), { recursive: true });
+		const seen: unknown[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: ({ clientDirectory }) => {
+					seen.push(JSON.parse(readFileSync(join(clientDirectory, ".app-server.json"), "utf8")));
+				},
+			},
+		};
+		const hook = appServer(options)[1]?.buildApp;
+		await (typeof hook === "object" ? hook.handler : hook)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{ config: { root, build: { outDir }, environments: {} } } as unknown as ViteBuilder,
+		);
+		const server = await preview({
+			root,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			// Why a new instance: the framework starts the preview from the config file again.
+			plugins: [appServer(options), responder()],
+			build: { outDir },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(seen).toMatchObject([{ prerendered: [] }, { prerendered: ["/agents.txt"] }]);
+	});
+
 	it("writes a build ID from the client bundle, which changes with its code and outlasts the prerender pass", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-build-id-"));
@@ -465,7 +503,7 @@ describe("appServer", () => {
 				"\t\tprocess.setSourceMapsEnabled(true);",
 				"\t}",
 				"}",
-				"const [serverModule, { createEntry, createServer }, { runtime }, { host }, { default: app }] = await Promise.all([",
+				"const [serverModule, { createEntry, createServer }, { runtime }, hostModule, { default: app }] = await Promise.all([",
 				'\timport("virtual:react-router/server-build"),',
 				'\timport("@ngrok/app-server"),',
 				'\timport("@ngrok/app-server/react-router"),',
@@ -474,10 +512,11 @@ describe("appServer", () => {
 				"]);",
 				"export const appServer = createEntry({",
 				"\tapp,",
-				"\thost,",
+				"\thost: hostModule.host,",
 				"\tclientDirectory: CLIENT,",
 				"\tframework: (mode) => runtime(serverModule, { mode }),",
 				"});",
+				"export { hostModule };",
 				"if (import.meta.main) {",
 				"\tawait appServer.start();",
 				"}",

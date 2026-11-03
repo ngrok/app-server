@@ -1,7 +1,7 @@
 {
   "name": "@ngrok/app-server",
   "version": "0.2.0",
-  "description": "A composable Hono app server for React Router and TanStack Start: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, and Deno.",
+  "description": "A composable Hono app server for React Router and TanStack Start: prerendered pages, streamed compression, structured logs, and clean shutdown on Node, Bun, Deno, and Vercel.",
   "homepage": "https://github.com/ngrok/app-server#readme",
   "bugs": {
     "url": "https://github.com/ngrok/app-server/issues"
@@ -52,6 +52,14 @@
     "./tanstack-start/vite": {
       "types": "./dist/tanstack-start-vite.d.ts",
       "import": "./dist/tanstack-start-vite.js"
+    },
+    "./vercel": {
+      "types": "./dist/vercel.d.ts",
+      "import": "./dist/vercel.js"
+    },
+    "./vercel/vite": {
+      "types": "./dist/vercel-vite.d.ts",
+      "import": "./dist/vercel-vite.js"
     },
     "./vite": {
       "types": "./dist/vite.d.ts",

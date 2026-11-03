@@ -22,8 +22,12 @@ const CORE_CONTENT_TYPES: Readonly<Record<string, string>> = {
 /**
  * Whether a URL path names a dotfile or goes through a dot directory.
  * `/.well-known/` stays reachable.
+ *
+ * @example
+ * hasDotSegment("/assets/.private/key.json"); // => true
+ * hasDotSegment("/.well-known/security.txt"); // => false
  */
-function hasDotSegment(path: string): boolean {
+export function hasDotSegment(path: string): boolean {
 	return path
 		.split("/")
 		.some(

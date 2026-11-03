@@ -121,8 +121,11 @@ export type HostRuntime = {
 	name: string;
 	/** The files of the client build at `clientDirectory`, a file path or a `file:` URL. */
 	files: (clientDirectory: string) => StaticFiles;
-	/** The listeners when the app sets none. */
-	listeners: () => readonly Listener[];
+	/**
+	 * The listeners when the app sets none. A serverless host has none: it
+	 * calls the entry's `fetch` for each request.
+	 */
+	listeners?: () => readonly Listener[];
 	/** The storage for {@link requestContext}. Without it, `requestContext()` gives `undefined`. */
 	storage?: RequestStore;
 	/**
@@ -270,7 +273,11 @@ export type Plugin = {
 	name: string;
 	/** The Hono middleware for this step. */
 	middleware?: MiddlewareHandler<AppServerEnv>;
-	/** Runs once before the server takes requests. A thrown error stops startup. */
+	/**
+	 * Runs once before the server takes requests. A thrown error stops startup.
+	 * On a serverless host, a thrown error fails the request, and the next
+	 * request runs each `setup` again.
+	 */
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
 	onShutdown?: () => Promise<void>;
