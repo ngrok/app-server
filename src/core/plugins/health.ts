@@ -1,4 +1,5 @@
 import { errorAttributes } from "../log.js";
+import { optionPlugin } from "../plugin-options.js";
 import { isStopping } from "../shutdown.js";
 import type { Plugin, RequestLogger } from "../types.js";
 
@@ -74,7 +75,7 @@ export function health({
 		// Why check again: a stop signal can come while the app check runs.
 		return appReady && !isStopping();
 	};
-	return {
+	return optionPlugin("health", {
 		name: "health",
 		middleware: async (context, next) => {
 			const { method, path } = context.req;
@@ -89,5 +90,5 @@ export function health({
 			}
 			return next();
 		},
-	};
+	});
 }

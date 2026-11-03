@@ -166,7 +166,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin of a named option in `beforeStatic`, such as `buildId()`, stops startup, so a plugin never runs twice. Use the option. A plugin is Hono middleware plus optional hooks:
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is Hono middleware plus optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";

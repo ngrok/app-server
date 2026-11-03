@@ -24,6 +24,7 @@ import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
+import { checkOptionPlugins } from "./plugin-options.js";
 import { withRequestContext } from "./request-context.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
@@ -140,15 +141,6 @@ export type DefaultPluginsOptions = {
 	beforeStatic?: readonly Plugin[];
 };
 
-/** The option of `defaultPlugins` for each plugin that it places, by plugin name. */
-const NAMED_PLUGINS: ReadonlyMap<string, string> = new Map([
-	["health", "health"],
-	["noindex", "noindex"],
-	["build-id", "buildId"],
-	["content-security-policy", "contentSecurityPolicy"],
-	["runtime-env", "env"],
-]);
-
 /**
  * The default pipeline, in order: `health`, `requestId`, `accessLog`,
  * `streamingCompress`, `securityHeaders`, `bodyLimit`, `noindex` (when
@@ -157,23 +149,12 @@ const NAMED_PLUGINS: ReadonlyMap<string, string> = new Map([
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
  * array, so an app can filter it or splice into it.
  *
- * A plugin from a named option, such as `buildId()`, in `beforeStatic`
- * throws, so a plugin never runs twice.
- *
  * @example
  * createServer({
  * 	plugins: defaultPlugins({ env, noindex: process.env.PREVIEW === "1", health: { ready: async () => db.ping() } }),
  * });
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
-	for (const plugin of options.beforeStatic ?? []) {
-		const option = NAMED_PLUGINS.get(plugin.name);
-		if (option != null) {
-			throw new Error(
-				`Set the "${option}" option of defaultPlugins(), not the ${plugin.name} plugin in beforeStatic.`,
-			);
-		}
-	}
 	const maxBytes = options.bodyLimit ?? DEFAULT_BODY_LIMIT;
 	return [
 		// Why first: a probe skips the access log, and a load balancer gets its answer with no other work.
@@ -311,6 +292,9 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  * the app's own routes, then the framework. It does not listen; the
  * `app-server` CLI starts it.
  *
+ * Two plugins of one option of `defaultPlugins()`, such as two `buildId()`,
+ * stop startup.
+ *
  * @example
  * // server.ts
  * const app = createServer({ logger: slogSink, plugins: defaultPlugins({ env }) });
@@ -326,6 +310,7 @@ export function createServer({
 	shutdownDelayMs = 0,
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
+	checkOptionPlugins(plugins);
 	checkCount("trustedProxyHops", trustedProxyHops);
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);

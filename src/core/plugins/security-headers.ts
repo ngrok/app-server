@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { withHeaderHook, writableHeaders } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
@@ -125,7 +126,7 @@ function randomNonce(): string {
  */
 export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions): Plugin {
 	let scriptHashes: ReadonlyMap<string, readonly string[]> = new Map();
-	return {
+	return optionPlugin("contentSecurityPolicy", {
 		name: "content-security-policy",
 		setup: (info) => {
 			({ scriptHashes } = info);
@@ -152,5 +153,5 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 						);
 			writableHeaders(context).set("Content-Security-Policy", oneLine(policy(scriptSrc, context)));
 		},
-	};
+	});
 }

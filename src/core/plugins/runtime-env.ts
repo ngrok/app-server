@@ -1,4 +1,5 @@
 import { replaceResponse, writableHeaders } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
 // The Standard Schema interface (https://standardschema.dev), copied as its spec asks, so that
@@ -180,7 +181,7 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 		return parsed;
 	};
 
-	return {
+	return optionPlugin("env", {
 		name: "runtime-env",
 		get values() {
 			return parse().values;
@@ -222,5 +223,5 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 			headers.delete("Content-Length");
 			headers.delete("ETag");
 		},
-	};
+	});
 }
