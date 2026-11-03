@@ -1,10 +1,11 @@
 import type { FrameworkBuild } from "../vite/index.js";
 
 /**
- * The build side of the React Router adapter.
+ * The build side of the React Router adapter. `appServer` uses it when the
+ * Vite config has the React Router plugin, so pass it only to override that.
  *
  * @example
- * appServer({ framework: reactRouterAdapter(), host: node(), app: "./server.ts" });
+ * appServer({ framework: reactRouterAdapter() });
  */
 export function reactRouterAdapter(): FrameworkBuild {
 	return {

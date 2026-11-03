@@ -1,14 +1,24 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { preview } from "vite";
+import { preview, resolveConfig } from "vite";
 import type { Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
+import { tanstackStartAdapter } from "../tanstack-start/vite.js";
 import { SERVER_ENTRY_ID, appServer, serverEntrySource } from "./index.js";
+import type { AppServerOptions } from "./index.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vite-"));
 mkdirSync(join(root, "build/client"), { recursive: true });
@@ -48,6 +58,109 @@ function responder(): Plugin {
 		},
 	};
 }
+
+/** A plugin with the name of a framework's plugin, so `appServer` finds that framework. */
+function frameworkPlugin(name: string): Plugin {
+	return { name };
+}
+
+/** The server entry that `appServer` generates in development for a project. */
+async function serverEntry(
+	options: AppServerOptions | undefined,
+	{ plugins = [], projectRoot = root }: { plugins?: Plugin[]; projectRoot?: string } = {},
+): Promise<string> {
+	const [plugin] = appServer(options);
+	await resolveConfig(
+		{ root: projectRoot, configFile: false, logLevel: "silent", plugins: [...plugins, plugin] },
+		"serve",
+	);
+	const load = plugin?.load;
+	return String(
+		Reflect.apply(
+			(typeof load === "function" ? load : load?.handler) ?? (() => {}),
+			{
+				environment: { mode: "dev" },
+			},
+			[`\0${SERVER_ENTRY_ID}`],
+		),
+	);
+}
+
+describe("appServer with no options", () => {
+	it("uses the React Router adapter and the node host when the config has the React Router plugin", async () => {
+		const entry = await serverEntry(undefined, {
+			plugins: [frameworkPlugin("react-router:virtual-modules")],
+		});
+
+		expect(entry).toContain('import * as serverModule from "virtual:react-router/server-build";');
+		expect(entry).toContain('import { runtime } from "@ngrok/app-server/react-router";');
+		expect(entry).toContain('import { host } from "@ngrok/app-server/node";');
+	});
+
+	it("uses the TanStack Start adapter when the config has the TanStack Start plugin", async () => {
+		const entry = await serverEntry(undefined, {
+			plugins: [frameworkPlugin("tanstack-react-start:config")],
+		});
+
+		expect(entry).toContain('import * as serverModule from "virtual:tanstack-start-server-entry";');
+		expect(entry).toContain('import { runtime } from "@ngrok/app-server/tanstack-start";');
+	});
+
+	it("fails for a config with no framework plugin, and says to pass `framework`", async () => {
+		await expect(serverEntry(undefined)).rejects.toThrow(
+			"found no React Router or TanStack Start plugin in the Vite config. Add the framework's plugin, or pass `framework` to `appServer`.",
+		);
+	});
+
+	it("fails for a config with both framework plugins, and says to pass `framework`", async () => {
+		await expect(
+			serverEntry(undefined, {
+				plugins: [
+					frameworkPlugin("react-router:virtual-modules"),
+					frameworkPlugin("tanstack-react-start:config"),
+				],
+			}),
+		).rejects.toThrow("Pass `framework` to `appServer`.");
+	});
+
+	it("uses server.ts in the Vite root, else server.js, else the default app", async () => {
+		// Why the real path: Vite resolves the root through symbolic links, such as `/tmp` on macOS.
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-app-")));
+		const plugins = [frameworkPlugin("react-router:virtual-modules")];
+
+		await expect(serverEntry(undefined, { plugins, projectRoot: project })).resolves.toContain(
+			"const app = createServer(",
+		);
+		writeFileSync(join(project, "server.js"), "");
+		await expect(serverEntry(undefined, { plugins, projectRoot: project })).resolves.toContain(
+			`import app from ${JSON.stringify(join(project, "server.js"))};`,
+		);
+		writeFileSync(join(project, "server.ts"), "");
+		await expect(serverEntry(undefined, { plugins, projectRoot: project })).resolves.toContain(
+			`import app from ${JSON.stringify(join(project, "server.ts"))};`,
+		);
+		rmSync(project, { recursive: true, force: true });
+	});
+
+	it("uses each option that the config gives over the detected value", async () => {
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-explicit-")));
+		writeFileSync(join(project, "server.ts"), "");
+
+		const entry = await serverEntry(
+			{
+				framework: tanstackStartAdapter(),
+				host: { name: "edge", runtimeModule: "edge-host", entryFileName: "edge.js" },
+				app: "./src/app.ts",
+			},
+			{ plugins: [frameworkPlugin("react-router:virtual-modules")], projectRoot: project },
+		);
+
+		expect(entry).toContain('import { runtime } from "@ngrok/app-server/tanstack-start";');
+		expect(entry).toContain('import { host } from "edge-host";');
+		expect(entry).toContain(`import app from ${JSON.stringify(join(project, "src/app.ts"))};`);
+		rmSync(project, { recursive: true, force: true });
+	});
+});
 
 describe("appServer", () => {
 	it("records each 2xx path, and the headers of each that is not a document, with no cookie or length", async () => {

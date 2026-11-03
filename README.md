@@ -31,23 +31,18 @@ The server has three layers:
 - A framework adapter: how the framework renders a request. `react-router` and `tanstack-start` come with the package.
 - A host adapter: where the server runs. `node` comes with the package. It runs one long-lived process on Node, Bun, or Deno, such as in a Docker image.
 
-Each adapter has a build side, which the Vite config imports, and a run side, which the server build imports.
+Each adapter has a build side, which the Vite plugin uses, and a run side, which the server build imports.
 
 Add the Vite plugin next to the framework's plugin. For React Router:
 
 ```ts
 // vite.config.ts
 import { appServer } from "@ngrok/app-server/vite";
-import { node } from "@ngrok/app-server/node/vite";
-import { reactRouterAdapter } from "@ngrok/app-server/react-router/vite";
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-	plugins: [
-		reactRouter(),
-		appServer({ framework: reactRouterAdapter(), host: node(), app: "./server.ts" }),
-	],
+	plugins: [reactRouter(), appServer()],
 });
 ```
 
@@ -56,19 +51,25 @@ For TanStack Start:
 ```ts
 // vite.config.ts
 import { appServer } from "@ngrok/app-server/vite";
-import { node } from "@ngrok/app-server/node/vite";
-import { tanstackStartAdapter } from "@ngrok/app-server/tanstack-start/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-	plugins: [
-		tanstackStart(),
-		viteReact(),
-		appServer({ framework: tanstackStartAdapter(), host: node(), app: "./server.ts" }),
-	],
+	plugins: [tanstackStart(), viteReact(), appServer()],
 });
+```
+
+`appServer` has three options. Each one has a default:
+
+- `framework`: the framework adapter. Default: the adapter of the framework plugin in the Vite config. The plugin of React Router is `reactRouter()`, and the plugin of TanStack Start is `tanstackStart()`. If the config has neither plugin or both, Vite stops with an error. Then pass `reactRouterAdapter()` from `@ngrok/app-server/react-router/vite` or `tanstackStartAdapter()` from `@ngrok/app-server/tanstack-start/vite`.
+- `host`: the host adapter. Default: `node()` from `@ngrok/app-server/node/vite`.
+- `app`: the module whose default export is the app, relative to the Vite root. Default: `server.ts`, else `server.js`, in the Vite root. If neither file exists, the server uses the default plugins.
+
+An option that you set replaces its default. Set it for a third-party adapter or for an app in another file:
+
+```ts
+appServer({ framework: reactRouterAdapter(), host: node(), app: "./src/app.ts" });
 ```
 
 Write the server. Its default export is the app:
@@ -93,7 +94,7 @@ Run it:
 }
 ```
 
-`appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. With no `app`, the server uses the default plugins.
+`appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework.
 
 After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) next to each text file of 1 kibibyte (KiB) or more in the client build, except HTML. `app-server serve` sends the copy to a client that accepts gzip, so it does not gzip the file for each request. The copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copy. The build does not change a `.gz` file of the app. The copies include the prerendered files, in any plugin order. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
