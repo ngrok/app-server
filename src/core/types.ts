@@ -196,6 +196,8 @@ export type ResponseHeaders = {
  * A change to the headers of a response, from a stage that runs before the
  * response. The stage runs it after the later stages, and a dev server
  * middleware that sends its own response runs it before it sends the head.
+ * The static stages also run it on a copy of the headers, so it can run more
+ * than once for one request.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;

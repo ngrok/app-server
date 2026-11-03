@@ -38,7 +38,13 @@ export function copyName(name: string, encoding: Encoding): string {
 	return `.${name}.${COPY_EXTENSIONS[encoding]}`;
 }
 
-/** Whether the server compresses a body of the content type `type`. */
+/**
+ * Whether the server compresses a body of the content type `type`.
+ *
+ * @example
+ * isCompressible("text/html; charset=utf-8"); // => true
+ * isCompressible("image/png"); // => false
+ */
 export function isCompressible(type: string): boolean {
 	return COMPRESSIBLE.test(type);
 }
@@ -78,7 +84,13 @@ export function preferredEncoding(
 	return identity != null && identity > bestQuality ? undefined : best;
 }
 
-/** Whether a `Cache-Control` value forbids a change to the body, such as gzip. */
+/**
+ * Whether a `Cache-Control` value forbids a change to the body, such as gzip.
+ *
+ * @example
+ * forbidsTransform("public, no-transform"); // => true
+ * forbidsTransform("public, max-age=3600"); // => false
+ */
 export function forbidsTransform(cacheControl: string | null): boolean {
 	return /\bno-transform\b/u.test(cacheControl ?? "");
 }

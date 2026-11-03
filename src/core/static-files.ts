@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
 import { COPY_ENCODINGS, copyName, forbidsTransform, preferredEncoding } from "./compression.js";
 import type { Encoding } from "./compression.js";
+import { hookedHeaders } from "./header-hook.js";
 import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
@@ -273,7 +274,7 @@ async function preferredCopy(
 	if (vary != null) {
 		headers.set("Vary", vary);
 	}
-	if (forbidsTransform(headers.get("Cache-Control"))) {
+	if (forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"))) {
 		return undefined;
 	}
 	const encoding = preferredEncoding(
@@ -318,8 +319,9 @@ export type StaticResponseOptions = {
  * `.<file>.gz`), the response gets `Vary: Accept-Encoding`. A request gets
  * the copy that its `Accept-Encoding` prefers, brotli before gzip, with its
  * `Content-Encoding`, an ETag for that encoding, and no range. A response
- * marked `no-transform`, and a response that `headers` encode, never get a
- * copy. An HTML file gets no copy when an earlier stage sets `rewritesHtml`.
+ * marked `no-transform`, also by the header hook of an earlier stage, and a
+ * response that `headers` encode, never get a copy. An HTML file gets no
+ * copy when an earlier stage sets `rewritesHtml`.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");

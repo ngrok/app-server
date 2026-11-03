@@ -5,6 +5,7 @@ import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { createServer, serverInternals } from "../create-server.js";
+import { withHeaderHook } from "../header-hook.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { runtimeEnv } from "./runtime-env.js";
@@ -572,6 +573,27 @@ describe("compressed copies from the build", () => {
 
 		expect(response.headers.get("Content-Encoding")).toBeNull();
 		await expect(response.text()).resolves.toBe(text);
+	});
+
+	it("never sends a copy for a response that an earlier stage's header hook marks no-transform", async () => {
+		const noTransform: Plugin = {
+			name: "no-transform",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.set("Cache-Control", "public, no-transform");
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [noTransform, prerendered()],
+			clientDirectory,
+		});
+
+		for (const path of ["/copy.txt", "/plain"]) {
+			const response = await request(path, withBrotli);
+
+			expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+			expect(response.headers.get("Content-Encoding")).toBeNull();
+		}
 	});
 
 	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {
