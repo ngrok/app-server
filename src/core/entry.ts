@@ -130,7 +130,7 @@ export function createEntry({
 				...(await setupInfo(development)),
 				mode: "development",
 				devServer,
-				prerenderedPaths: development.prerenderedPaths ?? [],
+				prerenderedPaths: development.prerenderedPaths,
 				capturedHeaders: new Map(),
 			});
 			return app.fetch(request, { ...bindings, framework: development });

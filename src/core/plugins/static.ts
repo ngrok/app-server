@@ -1,8 +1,9 @@
 import type { Context, MiddlewareHandler } from "hono";
+import { getPath } from "hono/utils/url";
 import { manifestKey } from "../build-manifest.js";
 import { writableHeaders } from "../header-hook.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
-import { contentType, findStaticFile, staticResponse } from "../static-files.js";
+import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
 import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
@@ -79,8 +80,18 @@ export type PrerenderedOptions = {
 	 * - Each answer for a path with a twin gets `Vary: Accept`: the twin, the
 	 *   prerendered HTML, and the framework's answer. The server adds
 	 *   `Accept` to the `Vary` header and keeps the values in it.
-	 * - A path with no twin gets no `Vary: Accept`, so a request for the
-	 *   twin's own URL gets none.
+	 * - Each answer for a path with a twin, except the twin, gets
+	 *   `Link: <twin>; rel="alternate"; type="text/markdown"`, so a client can
+	 *   find the twin.
+	 * - A path with no twin gets no `Vary: Accept` and no `Link`, so a request
+	 *   for the twin's own URL gets none.
+	 * - In development, the client build has no twins. A request that prefers
+	 *   markdown gets the framework's answer for the twin's URL, so an edit
+	 *   shows at once. When the framework knows the paths that the build will
+	 *   prerender, as React Router does, only those twins count. An error, or
+	 *   an answer that is not markdown, gives the HTML.
+	 * - A plugin after `prerendered` does not see a twin, as it does not see
+	 *   a prerendered file.
 	 *
 	 * `true` uses the default `twinOf`: the path with no trailing slash plus
 	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
@@ -135,6 +146,85 @@ async function findTwin(
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
 
+/** Adds `Vary: Accept` to the answer for a path with a twin, so a shared cache keeps both answers. */
+function varyOnAccept(context: Context<AppServerEnv>): void {
+	const vary = withVary(context.res.headers.get("Vary"), "Accept");
+	if (vary != null) {
+		writableHeaders(context).set("Vary", vary);
+	}
+}
+
+/**
+ * The percent-encoded URL path for a decoded path, so it holds no space,
+ * `>`, or non-ASCII character. Why the replace: a URL removes a tab or a
+ * newline, which a file name can hold.
+ */
+function urlPath(path: string): string {
+	return new URL(
+		path.replaceAll(/[\t\n\r]/gu, (character) => encodeURIComponent(character)),
+		"http://localhost",
+	).pathname;
+}
+
+/** Adds a `Link` to the twin at `twinPath`, so a client that does not ask for markdown can find it. */
+function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
+	writableHeaders(context).append(
+		"Link",
+		`<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`,
+	);
+}
+
+/**
+ * The development stage of `markdownTwins`. The client build has no twins
+ * then, so a request that prefers markdown gets the framework's answer for
+ * the twin's URL: the route that prerenders the twin. A twin path that is not
+ * in `prerenderedPaths`, an error, or an answer that is not markdown sends the
+ * request on for the HTML.
+ */
+function developmentTwins(
+	twinOf: (path: string) => string | undefined,
+	skip: PrerenderedOptions["skip"],
+	prerenderedPaths: ReadonlySet<string> | undefined,
+): MiddlewareHandler<AppServerEnv> {
+	return async (context, next) => {
+		const { method, path } = context.req;
+		const twinPath =
+			(method === "GET" || method === "HEAD") &&
+			skip?.(path) !== true &&
+			prefersMarkdown(context.req.raw)
+				? twinOf(path)
+				: undefined;
+		// Why both checks: production has no twin that the build does not prerender, or at a path that fails `isFilePath`.
+		if (
+			twinPath == null ||
+			(prerenderedPaths != null && !prerenderedPaths.has(twinPath)) ||
+			!isFilePath(twinPath)
+		) {
+			return next();
+		}
+		const url = new URL(context.req.url);
+		url.pathname = urlPath(twinPath);
+		// Why: the URL can change the path, for example `%2e%2e` to `..`. Then the framework answers a path that `twinOf` did not name.
+		if (getPath(new Request(url)) !== twinPath) {
+			return next();
+		}
+		const { headers, signal } = context.req.raw;
+		// Why no `Request` as the init: the Node.js listener's request is not one that `Request` can copy.
+		const twin = new Request(url, { method, headers, signal });
+		const response = await context.env.framework.fetch(twin, context);
+		// Why only markdown: production serves a twin from a `.md` file, so an HTML page or an error is no twin.
+		// A 304 has no body to check, and it answers a validator from the twin.
+		const markdown =
+			response.headers.get("Content-Type")?.toLowerCase().startsWith("text/markdown") === true;
+		if (response.status !== 304 && !(response.ok && markdown)) {
+			await response.body?.cancel();
+			return next();
+		}
+		context.res = response;
+		varyOnAccept(context);
+	};
+}
+
 /** The `twinOf` function that the `markdownTwins` option selects, or `undefined` when it is off. */
 function twinOfOption(
 	markdownTwins: PrerenderedOptions["markdownTwins"],
@@ -155,7 +245,8 @@ function twinOfOption(
  * the headers its loader sent at build time (the `appServer` Vite plugin
  * captures them), a `Cache-Control` (see `cacheControl`), an ETag, and a 304
  * for a matching `If-None-Match`. A GET with one byte range gets a 206. A path
- * with no file goes on to the framework. Off in development.
+ * with no file goes on to the framework. In development, only
+ * `markdownTwins` runs.
  *
  * At startup, it warns about each prerendered path that has no file.
  *
@@ -169,7 +260,13 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 	return {
 		name: "prerendered",
 		setup: async (info) => {
+			const twinOf = twinOfOption(options.markdownTwins);
 			if (info.mode === "development") {
+				const paths = info.prerenderedPaths;
+				stage =
+					twinOf == null
+						? undefined
+						: developmentTwins(twinOf, options.skip, paths == null ? undefined : new Set(paths));
 				return;
 			}
 			const { files, contentTypes, capturedHeaders } = info;
@@ -185,7 +282,6 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					"app_server.missing_paths": missing,
 				});
 			}
-			const twinOf = twinOfOption(options.markdownTwins);
 			const cacheControl =
 				options.cacheControl ??
 				((path: string) => {
@@ -230,9 +326,11 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				} else {
 					context.res = await serve(context, path, file);
 				}
-				const vary = twin == null ? undefined : withVary(context.res.headers.get("Vary"), "Accept");
-				if (vary != null) {
-					writableHeaders(context).set("Vary", vary);
+				if (twin != null) {
+					varyOnAccept(context);
+				}
+				if (twin != null && preferred == null) {
+					linkToTwin(context, twin.path);
 				}
 			};
 		},

@@ -125,7 +125,8 @@ function qualityOf(ranges: readonly MediaRange[], type: string): number | undefi
  */
 export function prefersMarkdown(request: Request): boolean {
 	const accept = request.headers.get("Accept");
-	if (accept == null) {
+	// Why the substring check: a browser never names markdown, and it skips the parse of its long `Accept`.
+	if (accept == null || !/markdown/iu.test(accept)) {
 		return false;
 	}
 	const ranges = mediaRanges(accept);

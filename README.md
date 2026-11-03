@@ -448,6 +448,7 @@ When a URL has both answers, follow these rules:
 - Send `Vary: Accept` on both answers. Else a shared cache can give the markdown to a browser.
 - Send no `Vary: Accept` for a URL with only one answer, such as the `.md` URL itself.
 - Send the markdown with `Content-Type: text/markdown; charset=utf-8`.
+- If the markdown also has its own URL, send `Link: <url>; rel="alternate"; type="text/markdown"` with the HTML, so a client that does not ask for markdown can find it.
 
 ### A prerendered markdown twin
 
@@ -459,13 +460,42 @@ createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: true } })
 
 - A request that `prefersMarkdown` accepts gets the twin, with the twin's captured headers.
 - Each answer for a page with a twin gets `Vary: Accept`: the twin, the prerendered HTML, and the framework's answer for a rendered page. The server adds `Accept` to the `Vary` values that are already there.
-- A page with no twin, and the twin's own URL, get no `Vary: Accept`.
+- Each answer for a page with a twin, except the twin, gets `Link: </components/button.md>; rel="alternate"; type="text/markdown"`, so a client can find the twin.
+- A page with no twin, and the twin's own URL, get no `Vary: Accept` and no `Link`.
+- In development, the client build has no twins. A request that `prefersMarkdown` accepts gets the framework's answer for the twin's URL, so an edit to the twin's route shows at the next request. If that answer is an error, such as a 404, or is not markdown, the request gets the HTML. A 304 stays a 304. A browser's answer gets no `Vary: Accept` and no `Link`, because the server does not ask the framework for a twin that it does not send.
+- In development, React Router gives only the twins in its `prerender` config, as the build does. TanStack Start finds its prerendered pages only during the build, so in development each twin route that answers markdown counts.
+- A plugin after `prerendered` does not see a twin, in development or in production, because a twin is a prerendered file. Put an auth check for a twin in `beforeStatic` or in the twin's route.
 
 The default twin is the path with no trailing slash plus `.md`, and `/index.md` for `/`. A different mapping goes in `twinOf`. Its path follows the same rules as a request path:
 
 ```ts
 prerendered({ markdownTwins: { twinOf: (path) => (path === "/" ? "/llms.md" : `${path}.md`) } });
 ```
+
+The framework makes the twins. In React Router, one splat resource route can answer every twin. Prerender each twin URL, and point `twinOf` at the route. `markdownFor` stands for the app's own lookup:
+
+```ts
+// app/routes.ts
+route("markdown/*", "routes/markdown.ts");
+
+// app/routes/markdown.ts
+export async function loader({ params }: Route.LoaderArgs) {
+	const markdown = await markdownFor(params["*"]); // "docs/button.md"
+	if (markdown == null) {
+		throw new Response("Not Found", { status: 404 });
+	}
+	return new Response(markdown, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
+}
+
+// react-router.config.ts
+export default { prerender: ["/docs/button", "/markdown/docs/button.md"] };
+
+// server.ts
+const twinOf = (path: string) => `/markdown${path === "/" ? "/index" : path}.md`;
+createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: { twinOf } } }) });
+```
+
+The same route answers the twins in development.
 
 For other negotiation, `rewrite` maps a request path to the file to serve. It does not run for a request that gets the twin. When its answer depends on a request header, add a `Vary` for that header in a plugin.
 

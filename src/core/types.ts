@@ -47,8 +47,9 @@ export type FrameworkRuntime = {
 	 */
 	clientDirectory?: string;
 	/**
-	 * The URL paths that the build prerendered, when the framework knows them.
-	 * Else the server reads the paths that the Vite plugin captured.
+	 * The URL paths that the build prerenders, when the framework knows them.
+	 * Else production reads the paths that the Vite plugin captured, and
+	 * development has none to read.
 	 */
 	prerenderedPaths?: readonly string[];
 	/** Whether a URL path is a data request, such as a React Router `.data` file. */
@@ -197,8 +198,6 @@ export type FetchHandler = (
 export type SetupInfo = {
 	/** The files of the client build. */
 	files: StaticFiles;
-	/** The URL paths that the build prerendered. */
-	prerenderedPaths: readonly string[];
 	/** The headers of each prerendered file, by URL path, that the Vite plugin captured. */
 	capturedHeaders: ReadonlyMap<string, Readonly<Record<string, string>>>;
 	/** Whether a URL path is a data request of the framework. */
@@ -209,11 +208,20 @@ export type SetupInfo = {
 	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
 	logger: LogSink;
 } & (
-	| { mode: "production" }
+	| {
+			mode: "production";
+			/** The URL paths that the build prerendered. */
+			prerenderedPaths: readonly string[];
+	  }
 	| {
 			mode: "development";
 			/** The dev server as a pipeline stage. It serves source modules, HMR, and CSS. */
 			devServer: MiddlewareHandler<AppServerEnv>;
+			/**
+			 * The URL paths that the build will prerender, or `undefined` when the
+			 * framework finds them only during the build, as TanStack Start does.
+			 */
+			prerenderedPaths: readonly string[] | undefined;
 	  }
 );
 

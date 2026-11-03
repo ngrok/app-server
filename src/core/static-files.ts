@@ -30,10 +30,27 @@ function hasDotSegment(path: string): boolean {
 }
 
 /**
+ * Whether a decoded URL path, such as Hono's `context.req.path`, can name a
+ * file of the client build. Dotfiles, paths that leave the client build, and
+ * a second URL for a file, such as `/a//b` or `/a/index.html`, cannot.
+ */
+export function isFilePath(path: string): boolean {
+	return (
+		path.startsWith("/") &&
+		!path.includes("\0") &&
+		!path.includes("\\") &&
+		!path.split("/").includes("..") &&
+		!path.includes("//") &&
+		!path.endsWith("/index.html") &&
+		!hasDotSegment(path)
+	);
+}
+
+/**
  * Finds the file in `files` that answers a decoded URL path, such as Hono's
  * `context.req.path`. A directory answers with its `index.html` and no
- * redirect, so a prerendered page keeps its URL. Dotfiles and paths that
- * leave the client build find nothing.
+ * redirect, so a prerendered page keeps its URL. A path that fails
+ * `isFilePath` finds nothing.
  *
  * Each file has one URL, because the headers for a file are keyed by that
  * URL. So `/a//b`, `/a/index.html`, and `/a%2Fb` find nothing. Hono decodes
@@ -48,15 +65,7 @@ export async function findStaticFile(
 	files: StaticFiles,
 	path: string,
 ): Promise<StaticFile | undefined> {
-	if (
-		!path.startsWith("/") ||
-		path.includes("\0") ||
-		path.includes("\\") ||
-		path.split("/").includes("..") ||
-		path.includes("//") ||
-		path.endsWith("/index.html") ||
-		hasDotSegment(path)
-	) {
+	if (!isFilePath(path)) {
 		return undefined;
 	}
 	const info = await files.stat(path);

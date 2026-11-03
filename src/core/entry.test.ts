@@ -71,6 +71,27 @@ describe("createEntry", () => {
 		await expect(response.text()).resolves.toBe("rendered");
 	});
 
+	it("in development, gives a twin when the framework does not know the prerendered paths", async () => {
+		const framework = stubFramework(async (request) =>
+			request.url.endsWith(".md")
+				? new Response("# Twin", { headers: { "Content-Type": "text/markdown" } })
+				: new Response("rendered"),
+		);
+		const entry = createEntry({
+			app: createServer({ plugins: [prerendered({ markdownTwins: true })] }),
+			host: nodeHost,
+			framework: () => framework,
+		});
+
+		const response = await entry.fetchDev(
+			new Request("http://localhost/docs", { headers: { Accept: "text/markdown" } }),
+			{},
+			async (_, next) => next(),
+		);
+
+		await expect(response.text()).resolves.toBe("# Twin");
+	});
+
 	it("listens on the host's listeners when the app sets none", async () => {
 		const { host, fetch } = testHost();
 		const entry = createEntry({
