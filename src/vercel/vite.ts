@@ -1,17 +1,13 @@
 import {
 	copyFileSync,
+	cpSync,
 	existsSync,
-	lstatSync,
 	mkdirSync,
 	readdirSync,
-	readlinkSync,
 	rmSync,
-	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { nodeFileTrace } from "@vercel/nft";
-import { searchForWorkspaceRoot } from "vite";
 import type { HostBuild, HostOutput } from "../vite/index.js";
 
 /** Options for {@link vercel}. */
@@ -51,16 +47,10 @@ function escaped(text: string): string {
 	return text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
 }
 
-/** Copies the file or the symbolic link at `from` to `to`. */
-function copyEntry(from: string, to: string): void {
+/** Copies the file at `from` to `to`, and makes the directories of `to`. */
+function copyFile(from: string, to: string): void {
 	mkdirSync(dirname(to), { recursive: true });
-	if (lstatSync(from).isSymbolicLink()) {
-		// Why keep links: pnpm links each package into `node_modules`, and Node resolves through them.
-		rmSync(to, { force: true });
-		symlinkSync(readlinkSync(from), to);
-	} else {
-		copyFileSync(from, to);
-	}
+	copyFileSync(from, to);
 }
 
 /** The path of each file under `directory`, relative to it. */
@@ -99,12 +89,10 @@ async function writeOutput(
 	const prefixes = [ASSETS, ...cdnPaths.filter((path) => path !== ASSETS)];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
-	// Why the workspace root: in a monorepo, the app's packages are in the root's `node_modules`.
-	const base = searchForWorkspaceRoot(root);
-	const fromBase = (path: string): string => {
-		const inside = relative(base, path);
+	const fromRoot = (path: string): string => {
+		const inside = relative(root, path);
 		if (inside.startsWith("..") || isAbsolute(inside)) {
-			throw new Error(`@ngrok/app-server/vercel needs ${path} inside the workspace root ${base}.`);
+			throw new Error(`@ngrok/app-server/vercel needs ${path} inside the Vite root ${root}.`);
 		}
 		return inside;
 	};
@@ -115,38 +103,32 @@ async function writeOutput(
 	for (const file of filesUnder(clientDirectory)) {
 		const from = join(clientDirectory, file);
 		if (!isCdnFile(file)) {
-			copyEntry(from, join(functionDirectory, fromBase(from)));
+			copyFile(from, join(functionDirectory, fromRoot(from)));
 		} else if (!basename(file).startsWith(".")) {
-			// Why skip dotfiles, such as the gzip copies: the CDN sends each file that it has.
-			copyEntry(from, join(output, "static", file));
+			// Why skip dotfiles, such as the compressed copies: the CDN sends each file that it has.
+			copyFile(from, join(output, "static", file));
 		}
 	}
 
-	const functionFile = join(dirname(entryFile), FUNCTION_FILE);
+	// Why the whole server build: it runs with no install, and it keeps the client build's path.
+	const serverDirectory = dirname(entryFile);
+	const functionFile = join(serverDirectory, FUNCTION_FILE);
+	cpSync(serverDirectory, join(functionDirectory, fromRoot(serverDirectory)), { recursive: true });
 	writeFileSync(
-		functionFile,
+		join(functionDirectory, fromRoot(functionFile)),
 		[
-			`import { handler } from "@ngrok/app-server/vercel";`,
-			`import { appServer } from ${JSON.stringify(`./${basename(entryFile)}`)};`,
-			`export default handler(appServer);`,
+			`import { appServer, hostModule } from ${JSON.stringify(`./${basename(entryFile)}`)};`,
+			`export default hostModule.handler(appServer);`,
 			"",
 		].join("\n"),
 	);
-	const { fileList } = await nodeFileTrace([functionFile], { base });
-	const clientFromBase = `${fromBase(clientDirectory)}${sep}`;
-	for (const file of fileList) {
-		// Why skip the client build: the loop above copied what the function needs of it.
-		if (!file.startsWith(clientFromBase)) {
-			copyEntry(join(base, file), join(functionDirectory, file));
-		}
-	}
 	writeFileSync(
 		join(functionDirectory, ".vc-config.json"),
 		`${JSON.stringify(
 			{
 				// Why the build's Node.js: the server build targets the Node.js that built it.
 				runtime: `nodejs${process.versions.node.split(".")[0]}.x`,
-				handler: posix(fromBase(functionFile)),
+				handler: posix(fromRoot(functionFile)),
 				launcherType: "Nodejs",
 				supportsResponseStreaming: true,
 				...(regions == null ? {} : { regions }),
@@ -182,8 +164,8 @@ function checkCdnPaths(paths: readonly string[]): void {
  *   serves them, and each file under `/assets/` gets a one-year immutable
  *   cache.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
- *   each other request, with the server build, the rest of the client build,
- *   and the packages that the server imports.
+ *   each other request, with the whole server build and the rest of the
+ *   client build.
  *
  * @example
  * appServer({ host: vercel() });

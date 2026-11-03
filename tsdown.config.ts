@@ -7,7 +7,6 @@ export default defineConfig({
 		neverBundle: [
 			//,
 			"@hono/node-server",
-			"@vercel/nft",
 			"hono",
 			"react-router",
 			"vite",

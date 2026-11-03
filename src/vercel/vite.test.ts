@@ -65,9 +65,8 @@ describe("vercel", () => {
 		]);
 		expect(readFileSync(join(functionDirectory, "build/server/vercel-function.js"), "utf8")).toBe(
 			[
-				`import { handler } from "@ngrok/app-server/vercel";`,
-				`import { appServer } from "./app-server.js";`,
-				`export default handler(appServer);`,
+				`import { appServer, hostModule } from "./app-server.js";`,
+				`export default hostModule.handler(appServer);`,
 				"",
 			].join("\n"),
 		);

@@ -463,8 +463,8 @@ process.once("SIGTERM", () => server.close());
 
 /**
  * The React Router fixture app built with the vercel host. The function runs
- * from a copy outside this package, so it can import only the files that the
- * build traced.
+ * from a copy outside this package, so it can import only the files of the
+ * function.
  */
 async function checkVercel(): Promise<void> {
 	execFileSync(`${binDirectory}/react-router`, ["build"], {

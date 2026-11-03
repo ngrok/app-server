@@ -36,7 +36,7 @@ export const host: HostRuntime = {
  *   producer stops.
  *
  * @example
- * export default handler(appServer);
+ * export default hostModule.handler(appServer);
  */
 export function handler(
 	entry: AppServerEntry,

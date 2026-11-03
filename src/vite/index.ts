@@ -211,7 +211,7 @@ export function serverEntrySource({
 		"\t\tprocess.setSourceMapsEnabled(true);",
 		"\t}",
 		"}",
-		`const [serverModule, { createEntry, createServer }, { runtime }, { host }${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
+		`const [serverModule, { createEntry, createServer }, { runtime }, hostModule${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
 		...modules.map((module) => `\timport(${JSON.stringify(module)}),`),
 		"]);",
 		...(appModule == null
@@ -221,10 +221,12 @@ export function serverEntrySource({
 			: []),
 		`export const appServer = createEntry({`,
 		`\tapp,`,
-		`\thost,`,
+		`\thost: hostModule.host,`,
 		`\tclientDirectory: ${clientDirectory},`,
 		`\tframework: (mode) => runtime(serverModule, { ${framework.runtimeOptions == null ? "" : `...${framework.runtimeOptions}, `}mode }),`,
 		`});`,
+		// Why: a serverless host's function file calls the run side through the bundle's copy.
+		"export { hostModule };",
 		"if (import.meta.main) {",
 		"\tawait appServer.start();",
 		"}",

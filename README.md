@@ -146,11 +146,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files.
 
-Install the file tracer, then use `vercel()` as the host:
-
-```sh
-pnpm add -D -E @vercel/nft
-```
+Use `vercel()` as the host:
 
 ```ts
 // vite.config.ts
@@ -164,7 +160,7 @@ After the build, `vercel()` writes `.vercel/output` (the Build Output API, versi
 The output has two parts:
 
 - `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN serves them. Each file under `/assets/` gets `Cache-Control: public, max-age=31536000, immutable`. A request for a CDN path with no file goes to the function, which sends a 404 with `Cache-Control: no-store`.
-- `functions/index.func/`: the function for each other request. It has the server build, the rest of the client build, and each file that the server imports, which `@vercel/nft` traces from the workspace root. The Node.js version of the function is the version that ran the build.
+- `functions/index.func/`: the function for each other request. It has the whole server build, which runs with no install (see [Deploy](#deploy)), and the rest of the client build. The Node.js version of the function is the version that ran the build.
 
 Prerendered pages come from the function, so they get the same pipeline as rendered pages: the security headers, the CSP, the redirects, and the markdown twins. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
 
@@ -757,5 +753,5 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `appServer` does not support React Router `serverBundles`.
 - The server build holds one copy of each external package. If the build finds two copies of one external package, such as two versions, the build fails.
 - One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
-- The package has two host adapters, `node` and `vercel`. Another host, such as Cloudflare Workers, needs its own adapter. See `HostRuntime` and `HostBuild`. A serverless host calls the `fetch` of the build's `appServer` export for each request.
+- The package has two host adapters, `node` and `vercel`. Another host, such as Cloudflare Workers, needs its own adapter. See `HostRuntime` and `HostBuild`. A serverless host calls the `fetch` of the build's `appServer` export for each request. The build also exports `hostModule`, the host's run-side module, so a function file can call it through the bundle's copy.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.
