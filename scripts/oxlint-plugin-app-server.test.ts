@@ -87,6 +87,7 @@ describe.each([
 			"declare const value: string;\nURL.canParse(value);\nexport const g = (value: string) => new URL(value);",
 			"function f(value: string, fallback: string) { if (!URL.canParse(value)) { value = fallback; } return new URL(value); }",
 			"function f(next: () => string) { return URL.canParse(next()) ? new URL(next()) : null; }",
+			"function f(URL: { canParse(value: string): boolean; new (value: string): object }, value: string) { return URL.canParse(value) ? new URL(value) : null; }",
 		],
 	},
 	{

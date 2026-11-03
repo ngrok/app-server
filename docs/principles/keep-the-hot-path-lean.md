@@ -10,7 +10,7 @@ Do each piece of work once, at the earliest point that has its input: module sco
 
 - A middleware that computes a value from the options or the build only, such as a header value, a parsed option, or a set of paths. Move it to the plugin factory or to `setup`.
 - Independent awaits in sequence. Start them together with `Promise.all`. Await in sequence only when a call needs an earlier result, or when the order is part of the contract, such as a check before a body read.
-- `Promise.allSettled` when the first match wins. A slow, unrelated read then hides a match. Start the reads together, and await them in order.
+- `Promise.allSettled` when the first match wins. A slow, unrelated read then hides a match. Start the reads together, and await them in order. Give each read a rejection handler when it starts, because a read that fails after the first match otherwise rejects with no handler.
 - A `Promise.all` whose branch can fail when a retry can start the same work. Let each branch settle before you throw, or the work in flight races the retry.
 - One URL that the code parses two times, such as `URL.canParse(x)` then `new URL(x)`, or two plugins that each parse `context.req.url`. Use `URL.parse(x)`, which returns `null` for a URL that is not valid. Give `new URL` a string base, not a parsed `URL`. Parse a constant URL one time, at module scope.
 - An allocation for each request or each chunk that one allocation at setup can replace: a closure, an object, an array copy, a `TextEncoder`, or a regular expression from `new RegExp`.
@@ -20,7 +20,7 @@ Do each piece of work once, at the earliest point that has its input: module sco
 
 **In this repo:**
 
-- Each built-in plugin reads the build in `setup` and keeps the result, such as the build ID in `buildId()` and the script hashes in `contentSecurityPolicy()`.
+- Each built-in plugin that needs the build reads it in `setup` and keeps the result, such as the build ID in `buildId()` and the script hashes in `contentSecurityPolicy()`.
 - `withForwardedProto` checks the scheme before it copies the request, because each copy of a `Request` costs time.
 - The build writes the gzip and brotli copies of each text file, so the static stages send bytes and do not compress them for each request.
 - `writableHeaders()` copies a response one time, and later header writes change that copy.

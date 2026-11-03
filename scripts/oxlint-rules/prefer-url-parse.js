@@ -24,14 +24,26 @@ const FUNCTION_TYPES = new Set([
 	"ArrowFunctionExpression",
 ]);
 
-function isUrlCanParse(node) {
+/** Whether `node` names the global `URL`: no scope around it declares a binding with that name. */
+function isGlobalUrl(node, sourceCode) {
+	if (node.type !== "Identifier" || node.name !== "URL") {
+		return false;
+	}
+	for (let scope = sourceCode.getScope(node); scope != null; scope = scope.upper) {
+		if ((scope.set.get("URL")?.defs.length ?? 0) > 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isUrlCanParse(node, sourceCode) {
 	const { callee } = node;
 	return (
 		callee.type === "MemberExpression" &&
 		!callee.computed &&
-		callee.object.type === "Identifier" &&
-		callee.object.name === "URL" &&
-		callee.property.name === "canParse"
+		callee.property.name === "canParse" &&
+		isGlobalUrl(callee.object, sourceCode)
 	);
 }
 
@@ -98,13 +110,12 @@ function identifierNames(node) {
 }
 
 /** Whether `root` holds a `new URL(…)` whose argument text is `argumentText`. */
-function hasMatchingConstructor(root, argumentText, getText) {
+function hasMatchingConstructor(root, argumentText, sourceCode) {
 	for (const node of nodesUnder(root, { skipFunctions: true })) {
 		if (
 			node.type === "NewExpression" &&
-			node.callee.type === "Identifier" &&
-			node.callee.name === "URL" &&
-			node.arguments.map(getText).join(",") === argumentText
+			isGlobalUrl(node.callee, sourceCode) &&
+			node.arguments.map((argument) => sourceCode.getText(argument)).join(",") === argumentText
 		) {
 			return true;
 		}
@@ -142,7 +153,7 @@ const preferUrlParse = {
 		return {
 			CallExpression(node) {
 				if (
-					!isUrlCanParse(node) ||
+					!isUrlCanParse(node, sourceCode) ||
 					node.arguments.length === 0 ||
 					!node.arguments.every(isStable)
 				) {
@@ -151,7 +162,7 @@ const preferUrlParse = {
 				const scope = enclosingScope(node);
 				const argumentText = node.arguments.map(getText).join(",");
 				const names = new Set(node.arguments.flatMap((argument) => [...identifierNames(argument)]));
-				if (!hasMatchingConstructor(scope, argumentText, getText) || writesTo(scope, names)) {
+				if (!hasMatchingConstructor(scope, argumentText, sourceCode) || writesTo(scope, names)) {
 					return;
 				}
 				context.report({
