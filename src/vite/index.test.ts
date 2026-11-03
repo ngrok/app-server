@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -15,6 +16,10 @@ mkdirSync(join(root, "build/client"), { recursive: true });
 afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
+
+function sha256(text: string): string {
+	return createHash("sha256").update(text).digest("base64");
+}
 
 /** Answers like a framework's preview handler: one `writeHead` with every header. */
 function responder(): Plugin {
@@ -47,6 +52,8 @@ function responder(): Plugin {
 describe("appServer", () => {
 	it("records each 2xx path, and the headers of each that is not a document, with no cookie or length", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		mkdirSync(join(root, "build/client/page"), { recursive: true });
+		writeFileSync(join(root, "build/client/page/index.html"), "<p>no scripts</p>");
 		const server = await preview({
 			root,
 			configFile: false,
@@ -83,6 +90,92 @@ describe("appServer", () => {
 					"content-type": "text/plain; charset=utf-8",
 				},
 			},
+			scriptHashes: { "/page/index.html": [] },
+		});
+	});
+
+	it("records the hash of each inline script of each HTML file, once each, as the browser parses it", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const theme = "document.documentElement.dataset.theme = 'dark';";
+		const entry = 'import("/assets/entry.js");';
+		const data = '{"a":1}';
+		const boot = "boot();";
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-hashes-"));
+		mkdirSync(join(directory, "build/client/docs"), { recursive: true });
+		writeFileSync(
+			join(directory, "build/client/docs/index.html"),
+			[
+				`<head><script nonce="baked">${theme}</script>`,
+				'<script type="module" src="/assets/entry.js"></script>',
+				`<SCRIPT type="module">${entry}</SCRIPT >`,
+				`<script id="env" type="application/json">${data}</script></head>`,
+				`<body><script nonce="baked">${theme}</script>`,
+				// Why: the browser starts no element in a comment, and a `>` or `src=` in a value ends no tag.
+				`<!-- <script> --><script data-note="a > b" data-x=" src=y">${boot}</script>`,
+				// Why: the browser hashes each CRLF and CR as LF.
+				"<script>\r\nfirst();\rsecond();\r\n</script></body>",
+			].join(""),
+		);
+		writeFileSync(join(directory, "build/client/help.htm"), `<script>${boot}</script>`);
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer({ framework: reactRouterAdapter(), host: node() }), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/docs", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(
+			JSON.parse(readFileSync(join(directory, "build/client/.app-server.json"), "utf8")),
+		).toMatchObject({
+			scriptHashes: {
+				"/docs/index.html": [theme, entry, data, boot, "\nfirst();\nsecond();\n"].map((text) =>
+					sha256(text),
+				),
+				"/help.htm": [sha256(boot)],
+			},
+		});
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it("records the script hashes after a build with no prerender pass, and keeps the recorded paths", async () => {
+		const client = join(root, "hash-build");
+		mkdirSync(client, { recursive: true });
+		writeFileSync(join(client, "offline.html"), "<script>retry();</script>");
+		const builder = { config: { root, build: { outDir: "hash-build" }, environments: {} } };
+		const [, gzipCopies] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const hook = gzipCopies?.buildApp;
+		const buildApp = async () =>
+			(typeof hook === "object" ? hook.handler : hook)?.call(
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+				{} as never,
+				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+				builder as unknown as ViteBuilder,
+			);
+		const manifest = (): unknown =>
+			JSON.parse(readFileSync(join(client, ".app-server.json"), "utf8"));
+
+		await buildApp();
+		expect(manifest()).toStrictEqual({
+			prerendered: [],
+			headers: {},
+			scriptHashes: { "/offline.html": [sha256("retry();")] },
+		});
+
+		writeFileSync(
+			join(client, ".app-server.json"),
+			JSON.stringify({ prerendered: ["/"], headers: { "/x": {} }, scriptHashes: {} }),
+		);
+		await buildApp();
+		expect(manifest()).toStrictEqual({
+			prerendered: ["/"],
+			headers: { "/x": {} },
+			scriptHashes: { "/offline.html": [sha256("retry();")] },
 		});
 	});
 

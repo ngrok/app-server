@@ -15,7 +15,7 @@ import type { FetchHandler, HostRuntime, Listener, LogSink } from "./types.js";
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
 	join(clientDirectory, ".app-server.json"),
-	JSON.stringify({ prerendered: ["/cpu", "/gone"], headers: {} }),
+	JSON.stringify({ prerendered: ["/cpu", "/gone"], headers: {}, scriptHashes: {} }),
 );
 mkdirSync(join(clientDirectory, "cpu"));
 writeFileSync(join(clientDirectory, "cpu/index.html"), "<h1>CPU</h1>");

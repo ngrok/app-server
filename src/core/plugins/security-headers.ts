@@ -1,5 +1,6 @@
+import type { Context } from "hono";
 import { withHeaderHook, writableHeaders } from "../header-hook.js";
-import type { Plugin } from "../types.js";
+import type { AppServerEnv, Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
 export type SecurityHeaderValues = {
@@ -83,10 +84,14 @@ function oneLine(value: string): string {
 	return value.replaceAll(/\s+/gu, " ").trim();
 }
 
-/** Options for {@link cspNonce}. */
-export type CspNonceOptions = {
-	/** The `Content-Security-Policy` for a document, with the nonce of its request. */
-	policy: (nonce: string) => string;
+/** Options for {@link contentSecurityPolicy}. */
+export type ContentSecurityPolicyOptions = {
+	/**
+	 * The `Content-Security-Policy` of an HTML document. `scriptSrc` is the
+	 * source list that trusts the document's scripts. Put it in `script-src`.
+	 * `context` is the request, so the policy can change by path.
+	 */
+	policy: (scriptSrc: string, context: Context<AppServerEnv>) => string;
 };
 
 /** A new random nonce: 16 bytes in base64. */
@@ -95,37 +100,55 @@ function randomNonce(): string {
 }
 
 /**
- * Makes a random nonce for each request that reaches it, and sets the
- * `Content-Security-Policy` from `policy` on each HTML document. The app
- * reads the nonce from `requestContext()` and gives it to the framework's
- * render, so each inline script gets it.
+ * Sets the `Content-Security-Policy` from `policy` on each HTML document. The
+ * policy trusts the document's scripts, and only them:
  *
- * Put it after the static stages. A prerendered page has one nonce in its
- * file for every visitor, so it must use script hashes, not a nonce.
- * A response that has a `Content-Security-Policy` keeps it.
+ * - A rendered document gets `'nonce-…' 'strict-dynamic'` with a new nonce
+ *   for each request. The app reads the nonce from `requestContext()` and
+ *   gives it to the framework's render, so each inline script gets it.
+ * - A prerendered document gets `'self'` and the hash of each of its inline
+ *   scripts, which the Vite plugin records. Its file has one nonce for every
+ *   visitor, so a nonce protects nothing. Why no `'strict-dynamic'`: a hash,
+ *   unlike a nonce, does not carry to the imports of an inline module script.
+ *
+ * Put it before the static stages, so it sees the prerendered documents. A
+ * response that has a `Content-Security-Policy` keeps it.
  *
  * @example
- * createServer({
- * 	plugins: [
- * 		...defaultPlugins(),
- * 		cspNonce({ policy: (nonce) => `script-src 'nonce-${nonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'` }),
+ * defaultPlugins({
+ * 	beforeStatic: [
+ * 		contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'` }),
  * 	],
  * });
  */
-export function cspNonce({ policy }: CspNonceOptions): Plugin {
+export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions): Plugin {
+	let scriptHashes: ReadonlyMap<string, readonly string[]> = new Map();
 	return {
-		name: "csp-nonce",
+		name: "content-security-policy",
+		setup: (info) => {
+			({ scriptHashes } = info);
+		},
 		middleware: async (context, next) => {
 			const nonce = randomNonce();
 			context.set("cspNonce", nonce);
 			await next();
 			const { headers } = context.res;
+			// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
+			const file = context.get("staticDocument");
 			if (
-				!headers.has("Content-Security-Policy") &&
-				(headers.get("Content-Type")?.startsWith("text/html") ?? false)
+				headers.has("Content-Security-Policy") ||
+				(file == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
 			) {
-				writableHeaders(context).set("Content-Security-Policy", oneLine(policy(nonce)));
+				return;
 			}
+			// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
+			const scriptSrc =
+				file == null
+					? `'nonce-${nonce}' 'strict-dynamic'`
+					: ["'self'", ...(scriptHashes.get(file) ?? []).map((hash) => `'sha256-${hash}'`)].join(
+							" ",
+						);
+			writableHeaders(context).set("Content-Security-Policy", oneLine(policy(scriptSrc, context)));
 		},
 	};
 }

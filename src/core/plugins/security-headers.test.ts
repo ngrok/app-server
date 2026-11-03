@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { defaultPlugins } from "../create-server.js";
 import { withHeaderHook } from "../header-hook.js";
 import type { Plugin } from "../types.js";
-import { cspNonce, securityHeaders } from "./security-headers.js";
+import { contentSecurityPolicy, securityHeaders } from "./security-headers.js";
+import { prerendered } from "./static.js";
 
 describe("securityHeaders", () => {
 	it("sets the defaults, and sets HSTS on an HTTPS request only", async () => {
@@ -117,10 +122,34 @@ describe("securityHeaders", () => {
 	});
 });
 
-describe("cspNonce", () => {
-	it("gives each request a new nonce, and the CSP has the nonce that the render used", async () => {
+const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-csp-"));
+const THEME_SCRIPT = "document.documentElement.dataset.theme = 'dark';";
+function sha256(text: string): string {
+	return createHash("sha256").update(text).digest("base64");
+}
+for (const [path, content] of Object.entries({
+	"about/index.html": `<script>${THEME_SCRIPT}</script>`,
+	"new.html": `<script>${THEME_SCRIPT}</script>`,
+	".app-server.json": JSON.stringify({
+		prerendered: ["/about"],
+		headers: {},
+		scriptHashes: { "/about/index.html": [sha256(THEME_SCRIPT)] },
+	}),
+})) {
+	mkdirSync(dirname(join(clientDirectory, path)), { recursive: true });
+	writeFileSync(join(clientDirectory, path), content);
+}
+
+afterAll(() => {
+	rmSync(clientDirectory, { recursive: true, force: true });
+});
+
+describe("contentSecurityPolicy", () => {
+	const csp = contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` });
+
+	it("trusts a rendered document's scripts by a new nonce for each request, the nonce that the render used", async () => {
 		const { request } = await testServer({
-			plugins: [cspNonce({ policy: (nonce) => `script-src 'nonce-${nonce}'` })],
+			plugins: [csp],
 			render: async (_request, context) =>
 				new Response(`<script nonce="${context.get("cspNonce") ?? ""}"></script>`, {
 					headers: { "Content-Type": "text/html" },
@@ -134,12 +163,72 @@ describe("cspNonce", () => {
 
 		expect(firstNonce).toMatch(/^[\w+/]{22}==$/u);
 		expect(secondNonce).not.toBe(firstNonce);
-		expect(first.headers.get("Content-Security-Policy")).toBe(`script-src 'nonce-${firstNonce}'`);
+		expect(first.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'nonce-${firstNonce}' 'strict-dynamic'`,
+		);
+	});
+
+	it("trusts a prerendered document's inline scripts by their hashes, and its modules by 'self'", async () => {
+		const { request } = await testServer({ plugins: [csp, prerendered()], clientDirectory });
+
+		const response = await request("/about");
+
+		await expect(response.text()).resolves.toContain(THEME_SCRIPT);
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'self' 'sha256-${sha256(THEME_SCRIPT)}'`,
+		);
+	});
+
+	it("sets the policy on a 304 for a prerendered document, so a revalidated copy keeps the policy", async () => {
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({ headers: { "Content-Security-Policy": "frame-ancestors 'none'" } }),
+				csp,
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const etag = (await request("/about")).headers.get("ETag") ?? "";
+
+		const response = await request("/about", { headers: { "If-None-Match": etag } });
+
+		expect(response.status).toBe(304);
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'self' 'sha256-${sha256(THEME_SCRIPT)}', frame-ancestors 'none'`,
+		);
+	});
+
+	it("trusts no inline script of an HTML file that the build recorded no hashes for", async () => {
+		const { request } = await testServer({ plugins: [csp, prerendered()], clientDirectory });
+
+		expect((await request("/new.html")).headers.get("Content-Security-Policy")).toBe(
+			"script-src 'self'",
+		);
+	});
+
+	it("gives the policy the request, so the policy can change by path", async () => {
+		const { request } = await testServer({
+			plugins: [
+				contentSecurityPolicy({
+					policy: (scriptSrc, context) =>
+						`script-src ${scriptSrc}; frame-ancestors ${context.req.path.startsWith("/preview/") ? "'self'" : "'none'"}`,
+				}),
+				prerendered(),
+			],
+			clientDirectory,
+		});
+
+		expect((await request("/about")).headers.get("Content-Security-Policy")).toMatch(
+			/frame-ancestors 'none'$/u,
+		);
+		expect((await request("/preview/x")).headers.get("Content-Security-Policy")).toMatch(
+			/^script-src 'nonce-[\w+/]{22}==' 'strict-dynamic'; frame-ancestors 'self'$/u,
+		);
 	});
 
 	it("sets no CSP on a response that is not HTML", async () => {
 		const { request } = await testServer({
-			plugins: [cspNonce({ policy: (nonce) => `script-src 'nonce-${nonce}'` })],
+			plugins: [csp],
 			render: async () => Response.json({}),
 		});
 

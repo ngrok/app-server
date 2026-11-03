@@ -302,6 +302,9 @@ export async function staticResponse(
 	// Why no ranges and no gzip copy for HTML: `runtimeEnv` adds a script to a page, so the bytes of
 	// the file are not the bytes of the page.
 	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
+	if (html) {
+		context.set("staticDocument", file.path);
+	}
 	// Why before the 304: a 304 sends the `Vary` of its 200. Why not for an encoded file: the copy
 	// would encode it again, under one `Content-Encoding`.
 	const copy =

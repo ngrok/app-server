@@ -39,6 +39,7 @@ const files: Record<string, string> = {
 			"/components/button": { "content-security-policy": "default-src 'self'" },
 			"/components/button.md": { "cache-control": "max-age=60" },
 		},
+		scriptHashes: {},
 	}),
 };
 for (const [path, content] of Object.entries(files)) {
