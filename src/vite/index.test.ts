@@ -696,27 +696,34 @@ describe("appServer in a server build", () => {
 		{ ssr: { external: ["widget/server"] } },
 		{ build: { rolldownOptions: { external: ["widget/server"] } } },
 	])(
-		"gives the bundle and an external package one copy of each peer dependency: %j",
+		"gives the bundle and an external package one copy of each shared package: %j",
 		async (config) => {
 			const { values } = await buildAlone(
 				{
 					"entry.js": [
 						'import { token } from "shared";',
-						'import { sameToken } from "widget/server";',
-						"export const values = [sameToken(token)];",
+						'import { registry } from "widget";',
+						'import { sameToken, sameRegistry } from "widget/server";',
+						"export const values = [sameToken(token), sameRegistry(registry)];",
 					].join("\n"),
 					...commonJsPackage("shared", "exports.token = {};"),
-					...commonJsPackage("widget", "", {
-						exports: { "./server": "./server.js" },
+					// Why a peer two levels down: `widget` gets `shared` through the peer of its peer.
+					...commonJsPackage("middle", 'exports.token = require("shared").token;', {
 						peerDependencies: { shared: "1.0.0" },
 					}),
-					"node_modules/widget/server.js":
-						'exports.sameToken = (token) => token === require("shared").token;',
+					...commonJsPackage("widget", "exports.registry = {};", {
+						exports: { ".": "./index.js", "./server": "./server.js" },
+						peerDependencies: { middle: "1.0.0" },
+					}),
+					"node_modules/widget/server.js": [
+						'exports.sameToken = (token) => token === require("middle").token;',
+						'exports.sameRegistry = (registry) => registry === require("./index.js").registry;',
+					].join("\n"),
 				},
 				config,
 			);
 
-			expect(values).toStrictEqual([true]);
+			expect(values).toStrictEqual([true, true]);
 		},
 	);
 
@@ -726,23 +733,28 @@ describe("appServer in a server build", () => {
 				"entry.js": [
 					'import manifest from "native/package.json";',
 					'import notes from "native/notes.txt?raw";',
-					"export const values = [manifest.name, notes];",
+					'import license from "native/LICENSE?raw";',
+					"export const values = [manifest.name, notes, license];",
 				].join("\n"),
 				...commonJsPackage("native", ""),
 				"node_modules/native/addon.node": "",
 				"node_modules/native/notes.txt": "notes",
+				"node_modules/native/LICENSE": "License text",
 			},
 			{},
 		);
 
-		expect(values).toStrictEqual(["native", "notes"]);
+		expect(values).toStrictEqual(["native", "notes", "License text"]);
 	});
 
 	it("copies a package that the bundler's own `external` option keeps external", async () => {
 		const { values } = await buildAlone(
 			{
-				"entry.js": 'import { word } from "outside";\nexport const values = [word];',
-				...commonJsPackage("outside", 'exports.word = "outside";'),
+				"entry.js": 'import { word } from "wrapper";\nexport const values = [word];',
+				"node_modules/wrapper/package.json": JSON.stringify({ name: "wrapper", type: "module" }),
+				"node_modules/wrapper/index.js": 'export { word } from "outside";',
+				// Why only in `wrapper`: with pnpm, a dependency of a dependency is not at the top.
+				...commonJsPackage("wrapper/node_modules/outside", 'exports.word = "outside";'),
 			},
 			{ build: { rolldownOptions: { external: ["outside"] } } },
 		);

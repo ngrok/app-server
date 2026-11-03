@@ -224,10 +224,11 @@ function outDir(config: ResolvedConfig, environment: string): string {
 /**
  * Whether `id` is a JavaScript file, which Node imports from `node_modules`
  * as it is. Why: a plugin can resolve a bare import to a virtual module, and
- * Vite transforms a JSON file or an asset, such as `?raw`.
+ * Vite transforms a JSON file or an asset, such as `?raw` on a file with no
+ * extension.
  */
 function isJavaScriptFile(id: string): boolean {
-	return isAbsolute(id) && JAVASCRIPT_EXTENSIONS.has(extname(id));
+	return isAbsolute(id) && !id.includes("?") && JAVASCRIPT_EXTENSIONS.has(extname(id));
 }
 
 /** Whether `environment` builds the server. */
@@ -239,16 +240,17 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
  * Makes the server build run with no install. The build bundles each
  * dependency, except the packages that the app keeps external (`ssr.external`
  * or the bundler's `external`), each native package (see `isNativePackage`),
- * and each peer dependency of a package that the app keeps external. Those stay
- * external, so the plugin copies each one, whole, with its dependencies, into
- * `node_modules` in the server build. It also writes a `package.json` there, so
+ * and each package that the bundle shares with a package that the app keeps
+ * external: the whole package of an external subpath, and each peer, at each
+ * level. Those stay external, so the plugin copies each one, whole, with its
+ * dependencies, into `node_modules` in the server build. It also writes a `package.json` there, so
  * Node, Bun, and Deno load the build as ES modules and find that `node_modules`.
  */
 function standalone(): Plugin {
 	// Why a value for each name: two copies of one external package cannot share one `node_modules`.
 	const externals = new Map<string, string | undefined>();
-	// Why: the bundle and an external package must share one copy of each peer, such as `react`.
-	const peers = new Set<string>();
+	// Why: the bundle and an external package must share one copy of a package, such as `react`.
+	const shared = new Set<string>();
 	const natives = new Map<string, boolean>();
 	const isNative = (directory: string): boolean => {
 		const native = natives.get(directory) ?? isNativePackage(directory);
@@ -278,22 +280,26 @@ function standalone(): Plugin {
 				return;
 			}
 			externals.clear();
-			peers.clear();
+			shared.clear();
 			natives.clear();
 			const { resolve: resolveOptions, build, root } = this.environment.config;
 			const kept = [
 				...(resolveOptions.external === true ? [] : resolveOptions.external),
 				...[build.rolldownOptions.external].flat(),
 			];
-			for (const id of kept) {
-				const directory =
-					typeof id === "string" && BARE_IMPORT.test(id)
-						? findPackage(packageName(id), root)
-						: undefined;
-				for (const peer of directory == null
-					? []
-					: dependencyNames(directory, ["peerDependencies"])) {
-					peers.add(peer);
+			const queue = kept.flatMap((id) =>
+				typeof id === "string" && BARE_IMPORT.test(id)
+					? [{ name: packageName(id), from: root }]
+					: [],
+			);
+			// Why each level: a peer can have peers, such as `react` for `react-router`.
+			for (const { name, from } of queue) {
+				const directory = shared.has(name) ? undefined : findPackage(name, from);
+				shared.add(name);
+				if (directory != null) {
+					for (const peer of dependencyNames(directory, ["peerDependencies"])) {
+						queue.push({ name: peer, from: directory });
+					}
 				}
 			}
 		},
@@ -319,7 +325,7 @@ function standalone(): Plugin {
 							? dirname(importer)
 							: this.environment.config.root,
 					);
-				if (bundled && !peers.has(name) && (directory == null || !isNative(directory))) {
+				if (bundled && !shared.has(name) && (directory == null || !isNative(directory))) {
 					return resolved;
 				}
 				const known = externals.get(name);
@@ -332,19 +338,24 @@ function standalone(): Plugin {
 				return bundled ? { id: source, external: true } : resolved;
 			},
 		},
-		writeBundle(_options, bundle) {
+		writeBundle() {
 			if (!isServerBuild(this.environment)) {
 				return;
 			}
-			const { root } = this.environment.config;
-			// Why: the bundler does not call `resolveId` for a package in its own `external` option.
-			for (const output of Object.values(bundle)) {
-				for (const id of output.type === "chunk"
-					? [...output.imports, ...output.dynamicImports]
-					: []) {
+			// Why: the bundler does not call `resolveId` for a package in its own `external` option. Why
+			// from the importer: with pnpm, only the importer's `node_modules` holds its dependencies.
+			for (const importer of this.getModuleIds()) {
+				const info = this.getModuleInfo(importer);
+				for (const id of [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]) {
 					const name = packageName(id);
-					if (BARE_IMPORT.test(id) && !isBuiltin(id) && !(id in bundle) && !externals.has(name)) {
-						externals.set(name, findPackage(name, root));
+					if (BARE_IMPORT.test(id) && !isBuiltin(id) && !externals.has(name)) {
+						externals.set(
+							name,
+							findPackage(
+								name,
+								isAbsolute(importer) ? dirname(importer) : this.environment.config.root,
+							),
+						);
 					}
 				}
 			}
