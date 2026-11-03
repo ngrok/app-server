@@ -4,7 +4,7 @@ import { errorAttributes, jsonSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
 import { listenerUrl } from "../node/runtimes/listen-options.js";
-import { cancelIfClosed } from "../node/runtimes/node.js";
+import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
 import { parsePort } from "../node/tcp.js";
 import { SERVER_ENTRY_ID } from "../vite/index.js";
 import { loadEntry } from "./load-entry.js";
@@ -47,8 +47,8 @@ export async function start(): Promise<void> {
 	const sink = jsonSink();
 	const apps = servedApps();
 
-	const listener = getRequestListener(
-		async (request, { incoming, outgoing }) => {
+	const listener = keepGlobalResponse(() =>
+		getRequestListener(async (request, { incoming, outgoing }) => {
 			try {
 				const response = await apps.serve(
 					await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
@@ -79,9 +79,7 @@ export async function start(): Promise<void> {
 					},
 				);
 			}
-		},
-		// Why: production turns the override off too, so a route acts the same in both modes.
-		{ overrideGlobalObjects: false },
+		}),
 	);
 	httpServer.on("request", (request, response) => {
 		void listener(request, response);

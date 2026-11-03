@@ -461,6 +461,18 @@ describe("gzip copies from the build", () => {
 		expect(notModified.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("never sends the copy for a file that its headers already encode", async () => {
+		const { request } = await staticServer({
+			headers: (path) => (path === "/copy.txt" ? { "Content-Encoding": "gzip" } : undefined),
+		});
+
+		const response = await request("/copy.txt", gzip);
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(response.headers.get("Content-Length")).toBe(String(text.length));
+		await expect(response.text()).resolves.toBe(text);
+	});
+
 	it("gives the copy no URL of its own, so a skip rule for its file also blocks it", async () => {
 		const { request } = await staticServer({ skip: (path) => path === "/copy.txt" });
 

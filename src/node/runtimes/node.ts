@@ -19,30 +19,54 @@ export async function cancelIfClosed(
 	return response;
 }
 
+/**
+ * Runs `create`, which makes a listener of `@hono/node-server`, and keeps the
+ * global `Response`. The listener makes its own `Request` class global.
+ *
+ * Why its `Request`: the listener gives each route a light request, and only
+ * that class can copy it, such as `new Request(c.req.raw, init)` in Hono's
+ * `methodOverride`. Why not its `Response`: a `fetch()` result must stay an
+ * `instanceof Response`, as on Bun and Deno.
+ *
+ * @example
+ * const listener = keepGlobalResponse(() => getRequestListener(app.fetch));
+ */
+export function keepGlobalResponse<T>(create: () => T): T {
+	// Why the descriptor: on Deno, the listener leaves a `Response` that no one can assign.
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Response");
+	try {
+		return create();
+	} finally {
+		if (descriptor != null) {
+			Object.defineProperty(globalThis, "Response", descriptor);
+		}
+	}
+}
+
 /** Listens with `node:http` through `@hono/node-server`. */
 export async function listen(
 	fetch: FetchHandler,
 	options: ListenOptions,
 ): Promise<StartedListener> {
-	const server = createAdaptorServer({
-		fetch: async (request, { incoming, outgoing }) => {
-			const response = await fetch(request, {
-				remoteAddress: incoming.socket.remoteAddress,
-				...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
-					? { incoming, outgoing }
-					: {}),
-			});
-			return cancelIfClosed(response, outgoing);
-		},
-		// Why: the override makes a `fetch()` result fail `instanceof Response`, and it is slower.
-		overrideGlobalObjects: false,
-		serverOptions: {
-			keepAliveTimeout: options.idleTimeoutMs,
-			// Why above the keep-alive timeout: Node closes a socket that is between requests when its
-			// headers timer runs out first.
-			headersTimeout: options.idleTimeoutMs + 1_000,
-		},
-	});
+	const server = keepGlobalResponse(() =>
+		createAdaptorServer({
+			fetch: async (request, { incoming, outgoing }) => {
+				const response = await fetch(request, {
+					remoteAddress: incoming.socket.remoteAddress,
+					...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
+						? { incoming, outgoing }
+						: {}),
+				});
+				return cancelIfClosed(response, outgoing);
+			},
+			serverOptions: {
+				keepAliveTimeout: options.idleTimeoutMs,
+				// Why above the keep-alive timeout: Node closes a socket that is between requests when its
+				// headers timer runs out first.
+				headersTimeout: options.idleTimeoutMs + 1_000,
+			},
+		}),
+	);
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(options.port, options.hostname, () => {

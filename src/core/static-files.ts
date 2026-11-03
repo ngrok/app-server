@@ -269,8 +269,8 @@ export type StaticResponseOptions = {
  *
  * When the build wrote a gzip copy of the file (`.<file>.gz`), the response
  * gets `Vary: Accept-Encoding`. A request that accepts gzip gets the copy with
- * `Content-Encoding: gzip`, and no range. An HTML file and a response marked
- * `no-transform` never get the copy.
+ * `Content-Encoding: gzip`, and no range. An HTML file, a response marked
+ * `no-transform`, and a response that `headers` encode never get the copy.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
@@ -293,10 +293,12 @@ export async function staticResponse(
 	// Why no ranges and no gzip copy for HTML: `runtimeEnv` adds a script to a page, so the bytes of
 	// the file are not the bytes of the page.
 	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
-	// Why before the 304: a 304 sends the `Vary` of its 200.
-	const copy = html
-		? undefined
-		: await gzipCopy(context, { files, path: file.path, headers: responseHeaders });
+	// Why before the 304: a 304 sends the `Vary` of its 200. Why not for an encoded file: the copy
+	// would encode it again, under one `Content-Encoding`.
+	const copy =
+		html || responseHeaders.has("Content-Encoding")
+			? undefined
+			: await gzipCopy(context, { files, path: file.path, headers: responseHeaders });
 	// Why the final header: `headers` can replace the ETag.
 	if (matchesEtag(context.req.header("If-None-Match"), responseHeaders.get("ETag") ?? etag)) {
 		responseHeaders.delete("Content-Type");

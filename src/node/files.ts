@@ -58,15 +58,25 @@ function fileStream(path: string, range: ByteRange | undefined): ReadableStream<
 	);
 }
 
-/** The bytes of `range` in the file at `path`, from one read. */
+/** The bytes of `range` in the file at `path`, usually from one read. */
 async function readRange(path: string, range: ByteRange): Promise<Uint8Array> {
+	const buffer = new Uint8Array(range.end - range.start + 1);
 	const handle = await open(path);
 	try {
-		const { bytesRead, buffer } = await handle.read({
-			buffer: new Uint8Array(range.end - range.start + 1),
-			position: range.start,
-		});
-		return buffer.subarray(0, bytesRead);
+		let filled = 0;
+		// Why a loop: a read can give fewer bytes than it asks for before the end of the file.
+		while (filled < buffer.byteLength) {
+			const { bytesRead } = await handle.read({
+				buffer,
+				offset: filled,
+				position: range.start + filled,
+			});
+			if (bytesRead === 0) {
+				break;
+			}
+			filled += bytesRead;
+		}
+		return buffer.subarray(0, filled);
 	} finally {
 		await handle.close();
 	}
@@ -181,8 +191,13 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				await walk("/", rootStats, new Set());
 			}
 			return {
-				// Why trim one `/`: `stat` finds `/docs/` at `/docs`.
-				stat: async (path) => entries.get(path.length > 1 ? path.replace(/\/$/u, "") : path),
+				stat: async (path) => {
+					const trimmed = path.length > 1 ? path.replace(/\/$/u, "") : path;
+					const info = entries.get(trimmed);
+					// Why only a directory after a `/`: as on the disk, `/docs/` finds `/docs`, and
+					// `/llms.txt/` finds nothing.
+					return trimmed === path || info?.kind === "directory" ? info : undefined;
+				},
 				open: files.open,
 			};
 		},

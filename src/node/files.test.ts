@@ -58,10 +58,26 @@ describe("nodeFiles", () => {
 		const files = await nodeFiles(client).snapshot?.();
 		rmSync(join(client, "gone.txt"));
 		writeFileSync(join(client, "late.txt"), "late");
-		const paths = ["/", "/docs/", "/docs/index.html", "/gone.txt", "/late.txt", "/gone.txt/child"];
+		const paths = [
+			"/",
+			"/docs/",
+			"/docs/index.html",
+			"/gone.txt",
+			"/late.txt",
+			"/gone.txt/child",
+			"/docs/index.html/",
+		];
 		const kinds = await Promise.all(paths.map(async (path) => (await files?.stat(path))?.kind));
 
-		expect(kinds).toStrictEqual(["directory", "directory", "file", "file", undefined, undefined]);
+		expect(kinds).toStrictEqual([
+			"directory",
+			"directory",
+			"file",
+			"file",
+			undefined,
+			undefined,
+			undefined,
+		]);
 	});
 
 	it("lists the files of a directory under each symbolic link to it", async () => {

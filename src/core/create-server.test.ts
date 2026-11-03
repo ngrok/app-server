@@ -358,6 +358,18 @@ describe("createServer", () => {
 		await server.shutdown();
 	});
 
+	it("copies an incoming request with `new Request` in a route on the Node listener", async () => {
+		const server = await listening(async (request) => {
+			const copy = new Request(request, { method: "DELETE" });
+			return new Response(`${copy.method} ${new URL(copy.url).pathname}`);
+		});
+
+		const response = await fetch(new URL("/items", server.urls[0]));
+
+		await expect(response.text()).resolves.toBe("DELETE /items");
+		await server.shutdown();
+	});
+
 	it("ends an open event stream at shutdown and drains before the deadline", async () => {
 		const onShutdown = vi.fn<() => Promise<void>>(async () => {});
 		const server = await listening(
