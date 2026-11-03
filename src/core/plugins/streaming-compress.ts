@@ -14,6 +14,24 @@ type ReadResult = ReadableStreamReadResult<Uint8Array>;
 type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult> | undefined };
 
 /**
+ * The most bytes that one pull of {@link replay} joins. Why 16 KiB: a source
+ * that makes a chunk on each read looks queued, so the join reads ahead of the
+ * client by up to this size. A Node.js stream reads ahead by the same default.
+ */
+export const MAX_JOINED_BYTES = 16 * 1024;
+
+/** The next result if `reader` has it queued, or the read that is still open. */
+async function readIfQueued(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ result: ReadResult } | { pending: Promise<ReadResult> }> {
+	const pending = reader.read();
+	// Why: a client that leaves before the body is read must not cause an unhandled rejection.
+	pending.catch(() => {});
+	const result = await Promise.race([pending, Promise.resolve().then(async () => undefined)]);
+	return result == null ? { pending } : { result };
+}
+
+/**
  * Reads at most two chunks that `reader` has queued, and never waits for
  * more. Why two: a body from a string or a buffer queues its bytes and its
  * end, so the plugin can see that it is small. `@hono/node-server` reads a
@@ -22,42 +40,77 @@ type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult
 async function readQueued(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<Queued> {
 	const chunks: Uint8Array[] = [];
 	for (let count = 0; count < 2; count += 1) {
-		const pending = reader.read();
-		// Why: a client that leaves before the body is read must not cause an unhandled rejection.
-		pending.catch(() => {});
-		const result = await Promise.race([pending, Promise.resolve().then(async () => undefined)]);
-		if (result == null) {
-			return { chunks, done: false, pending };
+		const next = await readIfQueued(reader);
+		if ("pending" in next) {
+			return { chunks, done: false, pending: next.pending };
 		}
-		if (result.done) {
+		if (next.result.done) {
 			return { chunks, done: true, pending: undefined };
 		}
-		chunks.push(result.value);
+		chunks.push(next.result.value);
 	}
 	return { chunks, done: false, pending: undefined };
 }
 
-/** The body again: the queued chunks, then the rest of `reader`. */
+function join(chunks: Uint8Array[], size: number): Uint8Array {
+	const [first] = chunks;
+	if (chunks.length === 1 && first != null) {
+		return first;
+	}
+	const joined = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		joined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return joined;
+}
+
+/**
+ * The body again: the queued chunks, then the rest of `reader`. Each pull
+ * waits for one chunk at most, and joins it with the chunks that are queued
+ * after it. Why join: gzip flushes after each chunk, and each flush costs
+ * more than the bytes. A renderer such as React queues many small chunks at
+ * once. A chunk that comes later still goes out on its own. When `queued`
+ * has the end, the first pull sends the chunks and closes.
+ */
 function replay(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 	queued: Queued,
 ): ReadableStream<Uint8Array> {
 	const chunks = [...queued.chunks];
-	let { pending } = queued;
+	let { pending, done } = queued;
 	return new ReadableStream<Uint8Array>(
 		{
 			async pull(controller) {
-				const chunk = chunks.shift();
-				if (chunk != null) {
-					controller.enqueue(chunk);
-					return;
+				const parts = chunks.splice(0);
+				if (parts.length === 0) {
+					const result = await (pending ?? reader.read());
+					pending = undefined;
+					if (result.done) {
+						controller.close();
+						return;
+					}
+					parts.push(result.value);
 				}
-				const result = await (pending ?? reader.read());
-				pending = undefined;
-				if (result.done) {
+				let size = parts.reduce((sum, part) => sum + part.byteLength, 0);
+				// Why no read when `done`: the host reads a body the same way as `readQueued`, and it sends
+				// a body with its `Content-Length` only when the body ends within that read.
+				while (pending == null && !done && size < MAX_JOINED_BYTES) {
+					// oxlint-disable-next-line no-await-in-loop -- each read takes only a chunk that is queued already.
+					const next = await readIfQueued(reader);
+					if ("pending" in next) {
+						({ pending } = next);
+					} else if (next.result.done) {
+						done = true;
+					} else {
+						parts.push(next.result.value);
+						size += next.result.value.byteLength;
+					}
+				}
+				controller.enqueue(join(parts, size));
+				if (done) {
 					controller.close();
-				} else {
-					controller.enqueue(result.value);
 				}
 			},
 			cancel: async (reason) => reader.cancel(reason),
@@ -69,7 +122,8 @@ function replay(
 
 /**
  * Gzips text responses and flushes after each chunk, so a streamed page shell
- * or a server-sent event reaches the client at once. `hono/compress` holds a
+ * or a server-sent event reaches the client at once. Chunks that the body has
+ * queued together are one chunk, up to 16 KiB. `hono/compress` holds a
  * stream until it ends. Skips a response that is already encoded, a partial
  * response, one marked `no-transform`, and one whose `Content-Length` is
  * under 1 KiB. It adds `Accept-Encoding` to the `Vary` of each response that
