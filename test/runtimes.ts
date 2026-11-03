@@ -337,9 +337,9 @@ async function chunks(url: string, headers: Record<string, string> = {}) {
 	return { response, first: parts[0] ?? "", body: parts.join("") };
 }
 
-/** The URL path of the gzip copy that the build writes for the file at `path`. */
-function gzipCopy(path: string): string {
-	return path.replace(/[^/]*$/u, (name) => `.${name}.gz`);
+/** The URL path of the copy that the build writes for the file at `path`, such as `.app.js.br`. */
+function copyPath(path: string, extension: "br" | "gz"): string {
+	return path.replace(/[^/]*$/u, (name) => `.${name}.${extension}`);
 }
 
 /** Checks what each framework app shares: a prerendered page and a resource with its build headers. */
@@ -354,23 +354,34 @@ async function checkFrameworkShared(
 	assert.match(html, new RegExp(title, "u"), "the prerendered page answers");
 	assert.match(page.headers.get("etag") ?? "", /^W\//u, "the prerendered page comes from its file");
 
-	const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)]
-		.map((match) => match.groups?.path ?? "")
-		.filter((path) => existsSync(join(clientDirectory, gzipCopy(path))));
-	const fromCopy = await Promise.all(
-		scripts.map(async (path) => {
-			const response = await request(new URL(path, base).href, { "Accept-Encoding": "gzip" });
-			const parts: Buffer[] = [];
-			for await (const part of response) {
-				parts.push(Buffer.from(part as Uint8Array));
-			}
-			return Buffer.concat(parts).equals(readFileSync(join(clientDirectory, gzipCopy(path))));
-		}),
+	const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)].map(
+		(match) => match.groups?.path ?? "",
 	);
-	assert.ok(
-		fromCopy.length > 0 && fromCopy.every(Boolean),
-		"each script with a gzip copy from the build sends that copy",
-	);
+	for (const [extension, accept] of [
+		["gz", "gzip"],
+		["br", "gzip, br"],
+	] as const) {
+		const withCopy = scripts.filter((path) =>
+			existsSync(join(clientDirectory, copyPath(path, extension))),
+		);
+		// oxlint-disable-next-line no-await-in-loop -- one encoding at a time keeps a failure readable.
+		const fromCopy = await Promise.all(
+			withCopy.map(async (path) => {
+				const response = await request(new URL(path, base).href, { "Accept-Encoding": accept });
+				const parts: Buffer[] = [];
+				for await (const part of response) {
+					parts.push(Buffer.from(part as Uint8Array));
+				}
+				return Buffer.concat(parts).equals(
+					readFileSync(join(clientDirectory, copyPath(path, extension))),
+				);
+			}),
+		);
+		assert.ok(
+			fromCopy.length > 0 && fromCopy.every(Boolean),
+			`each script with a ${extension} copy from the build sends that copy for "${accept}"`,
+		);
+	}
 
 	const hello = await fetch(new URL("/hello.txt", base));
 	assert.equal(await hello.text(), "hello");

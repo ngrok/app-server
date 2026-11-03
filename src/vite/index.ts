@@ -10,12 +10,13 @@ import {
 } from "node:fs";
 import { isBuiltin } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { constants, gzipSync } from "node:zlib";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
-import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
+import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
+import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
@@ -602,50 +603,81 @@ function capture(server: PreviewServer): void {
 			),
 			scriptHashes: scriptHashesOf(clientDirectory),
 		});
-		// Why here too: the gzip step of `buildApp` runs before this pass when `appServer` comes
+		// Why here too: the copy step of `buildApp` runs before this pass when `appServer` comes
 		// before the framework's plugin. Why sync: Vite does not wait for this listener.
 		for (const path of paths) {
-			writeGzipCopy(join(clientDirectory, path));
+			writeCopies(join(clientDirectory, path));
 		}
 	});
 }
 
 /**
- * Writes a gzip copy (`.<file>.gz`) next to the file at `path` when the
- * server gzips the file: a compressible type that is not HTML, of 1 KiB or
- * more, whose copy is smaller. Else it removes an old copy, so a copy from an
- * earlier build never replaces a changed file.
+ * The brotli quality of the copies. Why 9, not the highest (11): on a docs
+ * build with 70 MB of text, 11 adds 46 s to the build and 9 adds 0.6 s. The
+ * copies of 9 are 9% larger, and still 25% smaller than the gzip copies.
  */
-function writeGzipCopy(path: string): void {
-	const copyPath = join(dirname(path), gzipCopyName(basename(path)));
-	const type = contentType(path, {});
+const BROTLI_QUALITY = 9;
+
+/**
+ * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of `file`
+ * when the server compresses it: a compressible type that is
+ * not HTML, of 1 KiB or more. It writes a copy only when it is smaller: the
+ * gzip copy than the file, and the brotli copy than the gzip copy. Else it
+ * removes an old copy, so a copy from an earlier build never replaces a
+ * changed file.
+ */
+function writeCopies(file: string): void {
+	const type = contentType(file, {});
 	const bytes =
 		isCompressible(type) &&
 		!type.startsWith("text/html") &&
-		statSync(path, { throwIfNoEntry: false })?.isFile() === true
-			? readFileSync(path)
+		statSync(file, { throwIfNoEntry: false })?.isFile() === true
+			? readFileSync(file)
 			: undefined;
-	// Why the highest level: the build gzips each file once, and each response sends fewer bytes.
-	const copy =
-		bytes == null || bytes.byteLength < MIN_GZIP_BYTES
+	// Why the highest gzip level: the build compresses each file once, and each response sends fewer bytes.
+	const gzip =
+		bytes == null || bytes.byteLength < MIN_COMPRESS_BYTES
 			? undefined
 			: gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION });
-	if (copy == null || bytes == null || copy.byteLength >= bytes.byteLength) {
-		rmSync(copyPath, { force: true });
-		return;
+	const gzipCopy =
+		gzip != null && bytes != null && gzip.byteLength < bytes.byteLength ? gzip : undefined;
+	const brotli =
+		gzipCopy == null || bytes == null
+			? undefined
+			: brotliCompressSync(bytes, {
+					params: {
+						[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+						[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+						[constants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
+					},
+				});
+	const brotliCopy =
+		brotli != null && gzipCopy != null && brotli.byteLength < gzipCopy.byteLength
+			? brotli
+			: undefined;
+	const copies: readonly (readonly [Encoding, Uint8Array | undefined])[] = [
+		["gzip", gzipCopy],
+		["br", brotliCopy],
+	];
+	for (const [encoding, copy] of copies) {
+		const copyPath = join(dirname(file), copyName(basename(file), encoding));
+		if (copy == null) {
+			rmSync(copyPath, { force: true });
+		} else {
+			writeFileSync(copyPath, copy);
+		}
 	}
-	writeFileSync(copyPath, copy);
 }
 
-/** Runs {@link writeGzipCopy} for each file in the client build, except dotfiles such as the copies. */
-function writeGzipCopies(clientDirectory: string): void {
+/** Runs {@link writeCopies} for each file in the client build, except dotfiles such as the copies. */
+function writeAllCopies(clientDirectory: string): void {
 	if (!existsSync(clientDirectory)) {
 		return;
 	}
 	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
 		// Why skip dotfiles: the server never sends one, such as `.app-server.json`.
 		if (entry.isFile() && !entry.name.startsWith(".")) {
-			writeGzipCopy(join(entry.parentPath, entry.name));
+			writeCopies(join(entry.parentPath, entry.name));
 		}
 	}
 }
@@ -675,10 +707,10 @@ function writeGzipCopies(clientDirectory: string): void {
  *   recorded.
  * - After the build and after the prerender pass, it records the hash of each
  *   inline script of each HTML file in `.app-server.json`, for the
- *   `contentSecurityPolicy` plugin. It also writes a gzip copy
- *   (`.<file>.gz`) next to each text file of 1 KiB or more in the client
- *   build, except HTML. The static stages send the copy, so the server does
- *   not gzip these files for each request.
+ *   `contentSecurityPolicy` plugin. It also writes a gzip copy (`.<file>.gz`)
+ *   and a brotli copy (`.<file>.br`) next to each text file of 1 KiB or more
+ *   in the client build, except HTML. The static stages send a copy, so the
+ *   server does not compress these files for each request.
  *
  * @example
  * // vite.config.ts
@@ -691,8 +723,8 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
-	const gzipCopies: Plugin = {
-		name: "@ngrok/app-server:gzip-copies",
+	const copies: Plugin = {
+		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
 		enforce: "post",
 		buildApp: {
@@ -703,7 +735,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientDirectory,
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
-				writeGzipCopies(clientDirectory);
+				writeAllCopies(clientDirectory);
 			},
 		},
 	};
@@ -792,5 +824,5 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 			}
 		},
 	};
-	return [main, gzipCopies, standalone()];
+	return [main, copies, standalone()];
 }
