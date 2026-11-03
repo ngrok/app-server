@@ -69,6 +69,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "bench": "node ./test/bench.ts",
     "changeset": "changeset",
     "fmt": "oxfmt --write .",
     "fmt:check": "oxfmt --check .",

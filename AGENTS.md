@@ -79,6 +79,7 @@ pnpm run typecheck
 pnpm run test         # vitest
 pnpm run build        # tsdown into dist/
 pnpm run test:runtimes # the built CLI on Node, Bun, and Deno; build first
+pnpm run bench        # req/s of the fixture apps on each runtime; build first, needs oha from mise
 ```
 
 Do not pipe a check through `tail` or `head`. The pipe returns the exit code of the last command, so a failed check looks green. Set `pipefail` or redirect to a file instead.
