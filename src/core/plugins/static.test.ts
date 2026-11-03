@@ -402,6 +402,32 @@ describe("assets", () => {
 		await expect(response.text()).resolves.toBe("export {};");
 	});
 
+	it("keeps a small asset in memory after the first read, and serves ranges from it", async () => {
+		writeFileSync(join(clientDirectory, "assets/kept-abc123.js"), "export const kept = 1;");
+		const { request } = await staticServer();
+		await (await request("/assets/kept-abc123.js")).text();
+		writeFileSync(join(clientDirectory, "assets/kept-abc123.js"), "export const kept = 2;");
+
+		const full = await request("/assets/kept-abc123.js");
+		const range = await request("/assets/kept-abc123.js", { headers: { Range: "bytes=7-11" } });
+
+		await expect(full.text()).resolves.toBe("export const kept = 1;");
+		expect(range.status).toBe(206);
+		await expect(range.text()).resolves.toBe("const");
+	});
+
+	it("reads an asset over 256 KiB from disk on each request", async () => {
+		const size = 256 * 1024 + 1;
+		writeFileSync(join(clientDirectory, "assets/large-abc123.js"), "a".repeat(size));
+		const { request } = await staticServer();
+		await (await request("/assets/large-abc123.js")).text();
+		writeFileSync(join(clientDirectory, "assets/large-abc123.js"), "b".repeat(size));
+
+		const response = await request("/assets/large-abc123.js");
+
+		await expect(response.text()).resolves.toBe("b".repeat(size));
+	});
+
 	it("answers a missing asset with a plain 404 that no cache keeps, not a rendered page", async () => {
 		const { request } = await staticServer();
 
