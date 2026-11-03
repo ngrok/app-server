@@ -562,6 +562,7 @@ function writtenBuildId(clientDirectory: string): string | undefined {
  */
 function capture(server: PreviewServer): void {
 	const clientDirectory = outDir(server.config, "client");
+	const started = Date.now();
 	const paths = new Set<string>();
 	const headers: BuildManifest["headers"] = {};
 	server.middlewares.use((request, response, next) => {
@@ -605,9 +606,10 @@ function capture(server: PreviewServer): void {
 		});
 		// Why here too: the copy step of `buildApp` runs before this pass when `appServer` comes
 		// before the framework's plugin. Why sync: Vite does not wait for this listener.
-		for (const path of paths) {
-			writeCopies(join(clientDirectory, path));
-		}
+		// Why each file that the pass changed, not each path: a path does not name its file, as
+		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
+		// modification time in steps of 1 or 2 s.
+		writeAllCopies(clientDirectory, { changedSince: started - 2000 });
 	});
 }
 
@@ -623,18 +625,13 @@ const BROTLI_QUALITY = 9;
  * `path` when the server compresses the file: a compressible type of 1 KiB
  * or more. It writes a copy only when it is smaller: the gzip copy than the
  * file, and the brotli copy than the gzip copy. Else it removes an old copy,
- * so a copy from an earlier build never replaces a changed file. A directory
- * gets the copies of its `index.html`, as the static stages serve it.
+ * so a copy from an earlier build never replaces a changed file.
  */
 function writeCopies(path: string): void {
-	const file =
-		statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
-			? join(path, "index.html")
-			: path;
 	const bytes =
-		isCompressible(contentType(file, {})) &&
-		statSync(file, { throwIfNoEntry: false })?.isFile() === true
-			? readFileSync(file)
+		isCompressible(contentType(path, {})) &&
+		statSync(path, { throwIfNoEntry: false })?.isFile() === true
+			? readFileSync(path)
 			: undefined;
 	// Why the highest gzip level: the build compresses each file once, and each response sends fewer bytes.
 	const gzip =
@@ -662,7 +659,7 @@ function writeCopies(path: string): void {
 		["br", brotliCopy],
 	];
 	for (const [encoding, copy] of copies) {
-		const copyPath = join(dirname(file), copyName(basename(file), encoding));
+		const copyPath = join(dirname(path), copyName(basename(path), encoding));
 		if (copy == null) {
 			rmSync(copyPath, { force: true });
 		} else {
@@ -671,15 +668,28 @@ function writeCopies(path: string): void {
 	}
 }
 
-/** Runs {@link writeCopies} for each file in the client build, except dotfiles such as the copies. */
-function writeAllCopies(clientDirectory: string): void {
+/**
+ * Runs {@link writeCopies} for each file in the client build, except dotfiles
+ * such as the copies. With `changedSince`, only for a file that changed at or
+ * after that time, in milliseconds since the epoch.
+ */
+function writeAllCopies(
+	clientDirectory: string,
+	{ changedSince }: { changedSince?: number } = {},
+): void {
 	if (!existsSync(clientDirectory)) {
 		return;
 	}
 	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
+		const path = join(entry.parentPath, entry.name);
 		// Why skip dotfiles: the server never sends one, such as `.app-server.json`.
-		if (entry.isFile() && !entry.name.startsWith(".")) {
-			writeCopies(join(entry.parentPath, entry.name));
+		if (
+			entry.isFile() &&
+			!entry.name.startsWith(".") &&
+			(changedSince == null ||
+				(statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= changedSince)
+		) {
+			writeCopies(path);
 		}
 	}
 }

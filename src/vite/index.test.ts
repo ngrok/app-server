@@ -295,12 +295,14 @@ describe("appServer", () => {
 		});
 	});
 
-	it("writes the copies of each prerendered file after the pass, before the framework's plugin too", async () => {
+	it("writes the copies of each file that the pass changed, before the framework's plugin too", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const client = join(root, "build/client");
 		const text = "Prerendered text for an agent.\n".repeat(50);
-		writeFileSync(join(root, "build/client/agents.txt"), text);
-		mkdirSync(join(root, "build/client/page"), { recursive: true });
-		writeFileSync(join(root, "build/client/page/index.html"), `<p>${text}</p>`);
+		// Why: copies from an earlier build of a page that the pass writes again.
+		writeFileSync(join(client, "flat.html"), "<p>old</p>".repeat(200));
+		writeFileSync(join(client, ".flat.html.gz"), "stale");
+		writeFileSync(join(client, ".flat.html.br"), "stale");
 		const server = await preview({
 			root,
 			configFile: false,
@@ -310,19 +312,30 @@ describe("appServer", () => {
 			build: { outDir: "build/client" },
 			preview: { port: 0, host: "127.0.0.1" },
 		});
+		// Why after the start: the framework writes each file while the pass runs. TanStack Start with
+		// `autoSubfolderIndex: false` writes `/flat` to `flat.html`.
+		writeFileSync(join(client, "agents.txt"), text);
+		mkdirSync(join(client, "page"), { recursive: true });
+		writeFileSync(join(client, "page/index.html"), `<p>${text}</p>`);
+		writeFileSync(join(client, "flat.html"), `<p>${text}</p>`);
 
-		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
-		await (await fetch(new URL("/page", server.resolvedUrls?.local[0]))).text();
+		for (const path of ["/agents.txt", "/page", "/flat"]) {
+			await (await fetch(new URL(path, server.resolvedUrls?.local[0]))).text();
+		}
 		await server.close();
 
-		const client = join(root, "build/client");
 		expect(gunzipSync(readFileSync(join(client, ".agents.txt.gz"))).toString()).toBe(text);
 		expect(brotliDecompressSync(readFileSync(join(client, ".agents.txt.br"))).toString()).toBe(
 			text,
 		);
-		expect(brotliDecompressSync(readFileSync(join(client, "page/.index.html.br"))).toString()).toBe(
-			`<p>${text}</p>`,
-		);
+		for (const page of ["page/.index.html", ".flat.html"]) {
+			expect(brotliDecompressSync(readFileSync(join(client, `${page}.br`))).toString()).toBe(
+				`<p>${text}</p>`,
+			);
+			expect(gunzipSync(readFileSync(join(client, `${page}.gz`))).toString()).toBe(
+				`<p>${text}</p>`,
+			);
+		}
 	});
 
 	it("writes a build ID from the client bundle, which changes with its code and outlasts the prerender pass", async () => {
