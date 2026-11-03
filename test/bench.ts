@@ -4,10 +4,9 @@
 //   node ./test/bench.ts [node|bun|deno ...] [--base <checkout>] [--rounds 3] [--seconds 5] [--json <file>]
 //   node ./test/bench.ts report <file.json ...> [--threshold 10]
 //
-// With `--base`, the script also measures the checkout at that path, which has its own build. Base
-// and head alternate in each round, so a slow period on the machine affects both. `report` merges
-// the JSON files into one Markdown table and fails when a route gets slower by more than the
-// threshold, in percent.
+// With `--base`, the script also measures the checkout at that path (with its own build), and base
+// and head alternate in each round. `report` merges the JSON files into one Markdown table and
+// fails when a route of the head gets slower by more than the threshold in percent, fails, or exits.
 import { execFile, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -39,16 +38,12 @@ const warmupSeconds = 1;
 const acceptEncoding = "Accept-Encoding: gzip, deflate, br";
 
 type Side = "base" | "head";
-type Sample = {
-	runtime: string;
-	app: string;
-	route: Route;
-	side: Side;
-	rps: number;
-	p99Ms: number;
-	/** Whether the server exited during the load. */
-	exited: boolean;
-};
+/** One measurement. `exits`: the server exited under load. `fails`: a request failed. */
+type Sample = { runtime: string; app: string; route: Route; side: Side } & (
+	| { outcome: "ok"; rps: number; p99Ms: number }
+	| { outcome: "exits" }
+	| { outcome: "fails"; reason: string }
+);
 type Meta = {
 	cpu: string;
 	cpus: number;
@@ -62,16 +57,22 @@ type Meta = {
 };
 type Results = { meta: Meta; samples: Sample[] };
 
-// Why pin on Linux: the server and `oha` then do not take CPU from each other. macOS has no
-// `taskset`.
+// Why pin on Linux: the server and `oha` then do not take central processing unit (CPU) time from
+// each other. macOS has no `taskset`, and a process with a limited CPU set can have other CPU IDs.
 const cpuCount = availableParallelism();
-const pinned = process.platform === "linux" && cpuCount >= 4;
+const pinned = process.platform === "linux" && cpuCount >= 4 && cpus().length === cpuCount;
 const half = Math.floor(cpuCount / 2);
 const serverPrefix = pinned ? ["taskset", "-c", `0-${half - 1}`] : [];
 const ohaPrefix = pinned ? ["taskset", "-c", `${half}-${cpuCount - 1}`] : [];
 
-/** Sends load to `url` for `seconds` and returns the requests per second and the p99 latency. */
-async function load(url: string, seconds: number): Promise<{ rps: number; p99Ms: number }> {
+/**
+ * Sends load to `url` for `seconds` and returns the successful requests per second and the 99th
+ * percentile (p99) latency, or the reason when a request fails.
+ */
+async function load(
+	url: string,
+	seconds: number,
+): Promise<{ rps: number; p99Ms: number } | { failure: string }> {
 	const args = [
 		"oha",
 		"-z",
@@ -98,16 +99,26 @@ async function load(url: string, seconds: number): Promise<{ rps: number; p99Ms:
 		});
 	});
 	const output: {
-		summary: { requestsPerSec: number };
+		summary: { total: number };
 		latencyPercentiles: { p99: number | null };
 		statusCodeDistribution: Record<string, number>;
+		errorDistribution: Record<string, number>;
 	} = JSON.parse(stdout);
-	const failed = Object.keys(output.statusCodeDistribution).filter((code) => !code.startsWith("2"));
+	// Why skip the deadline error: `oha` cancels the requests that are open at the end of the load.
+	// Why count only responses: `oha` also counts a reset connection in its requests per second.
+	const failed = [
+		...Object.keys(output.statusCodeDistribution).filter((code) => !code.startsWith("2")),
+		...Object.keys(output.errorDistribution).filter((error) => error !== "aborted due to deadline"),
+	];
 	if (failed.length > 0) {
-		throw new Error(`${url} answered with ${failed.join(", ")} under load.`);
+		return { failure: failed.join(", ") };
 	}
+	const responses = Object.values(output.statusCodeDistribution).reduce(
+		(sum, count) => sum + count,
+		0,
+	);
 	return {
-		rps: output.summary.requestsPerSec,
+		rps: responses / output.summary.total,
 		p99Ms: (output.latencyPercentiles.p99 ?? 0) * 1000,
 	};
 }
@@ -129,7 +140,8 @@ async function stop(child: ChildProcess): Promise<void> {
 /**
  * Starts one app's build on one runtime and measures one route. Each route gets
  * its own server, so a route that makes the server exit does not stop the
- * other routes. Returns nothing when the route does not answer with a 2xx.
+ * other routes. Returns nothing when the route of the base does not answer with
+ * a 2xx.
  */
 async function measure(
 	runtime: string,
@@ -141,6 +153,12 @@ async function measure(
 		prefix: serverPrefix,
 		record: false,
 	});
+	// Why listen now: the server can exit before the load ends, and a signal leaves no `exitCode`.
+	const exit = once(child, "exit").then(
+		() => true,
+		() => true,
+	);
+	const key = { runtime, app: app.name, route, side };
 	try {
 		const base = await url;
 		const home = await (await fetch(new URL("/", base))).text();
@@ -153,18 +171,22 @@ async function measure(
 		const target = new URL(paths[route], base).href;
 		const probe = await fetch(target);
 		await probe.arrayBuffer();
-		// Why skip: the base checkout can be older than a route.
 		if (!probe.ok) {
-			return undefined;
+			// Why skip on the base: the base checkout can be older than a route.
+			return side === "base"
+				? undefined
+				: { ...key, outcome: "fails", reason: `${target} answered with ${probe.status}` };
 		}
 		await load(target, warmupSeconds);
 		const measured = await load(target, seconds);
 		// Why wait: the server can exit just after `oha` closes its connections at the end.
-		const exited = await Promise.race([
-			once(child, "exit").then(() => true),
-			delay(500).then(() => child.exitCode != null),
-		]);
-		return { runtime, app: app.name, route, side, ...measured, exited };
+		if (await Promise.race([exit, delay(500).then(() => false)])) {
+			return { ...key, outcome: "exits" };
+		}
+		if ("failure" in measured) {
+			return { ...key, outcome: "fails", reason: `${target} failed with ${measured.failure}` };
+		}
+		return { ...key, outcome: "ok", ...measured };
 	} finally {
 		await stop(child);
 	}
@@ -188,21 +210,27 @@ function median(values: number[]): number {
 		: ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
-/** The medians of one side's samples, `"exits"` when the server exited, or nothing with no samples. */
+/**
+ * The medians of one side's samples, `"exits"` or `"fails"` when one sample has that outcome, or
+ * nothing with no samples.
+ */
 function summarize(
 	group: Sample[],
 	side: Side,
-): { rps: number; p99Ms: number } | "exits" | undefined {
+): { rps: number; p99Ms: number } | "exits" | "fails" | undefined {
 	const samples = group.filter((sample) => sample.side === side);
 	if (samples.length === 0) {
 		return undefined;
 	}
-	if (samples.some((sample) => sample.exited)) {
-		return "exits";
+	for (const outcome of ["exits", "fails"] as const) {
+		if (samples.some((sample) => sample.outcome === outcome)) {
+			return outcome;
+		}
 	}
+	const measured = samples.filter((sample) => sample.outcome === "ok");
 	return {
-		rps: median(samples.map((sample) => sample.rps)),
-		p99Ms: median(samples.map((sample) => sample.p99Ms)),
+		rps: median(measured.map((sample) => sample.rps)),
+		p99Ms: median(measured.map((sample) => sample.p99Ms)),
 	};
 }
 
@@ -210,14 +238,19 @@ function cell(summary: ReturnType<typeof summarize>): string {
 	if (summary == null) {
 		return "n/a";
 	}
-	return summary === "exits" ? "exits" : Math.round(summary.rps).toLocaleString("en-US");
+	return typeof summary === "string" ? summary : Math.round(summary.rps).toLocaleString("en-US");
 }
 
-/** One Markdown table of the median of each route, and whether a route got slower than `threshold`. */
-function report(
-	{ meta, samples }: Results,
-	threshold: number,
-): { markdown: string; slower: boolean } {
+/**
+ * One Markdown table of the median of each route, and whether a route of the head got slower than
+ * `threshold`, fails, or exits. A failure that the base has too does not count.
+ */
+function report(files: Results[], threshold: number): { markdown: string; slower: boolean } {
+	const meta = files[0]?.meta;
+	if (meta == null) {
+		throw new Error("`report` needs at least one JSON file.");
+	}
+	const samples = files.flatMap((file) => file.samples);
 	const groups = Map.groupBy(
 		samples,
 		(sample) => `${sample.runtime}\0${sample.app}\0${sample.route}`,
@@ -235,15 +268,16 @@ function report(
 	const rows = sorted.map((group) => {
 		const [{ runtime, app, route } = { runtime: "", app: "", route: "page" as Route }] = group;
 		const head = summarize(group, "head");
-		const p99 = typeof head === "object" ? `${head.p99Ms.toFixed(1)} ms` : "n/a";
-		if (!hasBase) {
-			return `| ${runtime} | ${app} | ${routes[route]} | ${cell(head)} | ${p99} |`;
-		}
 		const base = summarize(group, "base");
+		const p99 = typeof head === "object" ? `${head.p99Ms.toFixed(1)} ms` : "n/a";
+		const broken = typeof head === "string" && head !== base;
+		slower ||= broken;
+		if (!hasBase) {
+			return `| ${runtime} | ${app} | ${routes[route]} | ${cell(head)}${broken ? " ⚠️" : ""} | ${p99} |`;
+		}
 		let change = "n/a";
-		if (head === "exits" && base !== "exits") {
-			slower = true;
-			change = "exits ⚠️";
+		if (broken) {
+			change = `${head} ⚠️`;
 		} else if (typeof head === "object" && typeof base === "object") {
 			const percent = ((head.rps - base.rps) / base.rps) * 100;
 			const isSlower = percent < -threshold;
@@ -261,9 +295,15 @@ function report(
 	const commits = hasBase
 		? `Base \`${meta.commits.base}\`, head \`${meta.commits.head}\`.`
 		: `Head \`${meta.commits.head}\`.`;
-	const machine = `${meta.cpu}, ${meta.cpus} CPUs, ${meta.platform}${
-		meta.pinned ? `. The server runs on half of the CPUs, and \`oha\` on the other half` : ""
-	}`;
+	// Why one line for each file: each runtime runs on its own machine.
+	const machines = files.map(
+		({ meta: { versions, cpu, cpus: count, platform, pinned: isPinned } }) =>
+			`- ${Object.entries(versions)
+				.map(([runtime, value]) => `${runtime} ${value}`)
+				.join(", ")}: ${cpu}, ${count} CPUs, ${platform}${
+				isPinned ? `. The server runs on half of the CPUs, and \`oha\` on the other half.` : "."
+			}`,
+	);
 	const markdown = [
 		"<!-- app-server-bench -->",
 		"### Benchmarks",
@@ -271,19 +311,15 @@ function report(
 		...header,
 		...rows,
 		"",
-		...(hasBase
-			? [
-					`⚠️ marks a route that got slower by more than ${threshold}%, or whose server exits under load.`,
-					"",
-				]
-			: []),
+		`⚠️ marks a route that got slower by more than ${threshold}%, that fails, or whose server exits under load.`,
+		"",
 		"<details><summary>How this was measured</summary>",
 		"",
 		`${commits} The production build of each fixture app runs as \`<build>/server/app-server.js\`. For each route, \`oha\` sends ${meta.connections} connections for ${meta.seconds} s after a ${warmupSeconds} s warmup, with \`${acceptEncoding}\`. Each value is the median of ${meta.rounds} round${meta.rounds === 1 ? "" : "s"}${hasBase ? ", and base and head alternate in each round" : ""}.`,
 		"",
-		`Machine: ${machine}. ${Object.entries(meta.versions)
-			.map(([runtime, value]) => `${runtime} ${value}`)
-			.join(", ")}.`,
+		"Machines:",
+		"",
+		...machines,
 		"",
 		"</details>",
 		"",
@@ -316,18 +352,7 @@ if (positionals[0] === "report") {
 		const results: Results = JSON.parse(readFileSync(file, "utf8"));
 		return results;
 	});
-	const [first] = files;
-	if (first == null) {
-		throw new Error("`report` needs at least one JSON file.");
-	}
-	const merged: Results = {
-		meta: {
-			...first.meta,
-			versions: Object.assign({}, ...files.map((file) => file.meta.versions)),
-		},
-		samples: files.flatMap((file) => file.samples),
-	};
-	const { markdown, slower } = report(merged, threshold);
+	const { markdown, slower } = report(files, threshold);
 	process.stdout.write(markdown);
 	process.exitCode = slower ? 1 : 0;
 } else {
@@ -367,6 +392,9 @@ if (positionals[0] === "report") {
 		process.stderr.write(`[${index + 1}/${runs.length}] ${runtime} ${app.name} ${route} ${side}\n`);
 		// oxlint-disable-next-line no-await-in-loop -- one server at a time, so the runs do not share the CPU.
 		const sample = await measure(runtime, app, { route, side, root, seconds });
+		if (sample?.outcome === "fails") {
+			process.stderr.write(`${sample.reason}\n`);
+		}
 		if (sample != null) {
 			samples.push(sample);
 		}
@@ -388,5 +416,5 @@ if (positionals[0] === "report") {
 	if (values.json != null) {
 		writeFileSync(values.json, `${JSON.stringify(results, null, "\t")}\n`);
 	}
-	process.stdout.write(report(results, threshold).markdown);
+	process.stdout.write(report([results], threshold).markdown);
 }

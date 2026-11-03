@@ -1,7 +1,7 @@
 name: Benchmarks
 
-# Measures the requests per second of the PR and of its base on the same runner, and posts one
-# comment on the PR that each push updates. Why not in vibe-check: a shared runner is noisy, so
+# Measures the requests per second of the pull request (PR) and of its base on the same runner, and
+# posts one comment on the PR that each push updates. Why not in vibe-check: a shared runner is noisy, so
 # this check reports and does not block a merge.
 on:
   pull_request:
@@ -14,6 +14,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsdown.config.ts"
+      - "tsconfig.json"
       - "mise.toml"
       - "mise.lock"
       - ".github/workflows/bench.yml"
@@ -142,11 +143,33 @@ jobs:
           path: results
           merge-multiple: true
 
+      # Why the check of each runtime: a benchmark job that fails before its upload has no file, and
+      # the table must not hide it.
       - name: Report 📊
         id: report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           status=0
-          node test/bench.ts report results/*.json > report.md || status=$?
+          files=()
+          missing=()
+          for runtime in node bun deno; do
+            if [ -f "results/bench-${runtime}.json" ]; then
+              files+=("results/bench-${runtime}.json")
+            else
+              missing+=("${runtime}")
+            fi
+          done
+          if [ "${#files[@]}" -gt 0 ]; then
+            node test/bench.ts report "${files[@]}" > report.md || status=$?
+          else
+            printf '<!-- app-server-bench -->\n### Benchmarks\n\n' > report.md
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '\n⚠️ The benchmark of %s failed, so it is not in the table. See [the run](%s).\n' \
+              "${missing[*]}" "${RUN_URL}" >> report.md
+            status=1
+          fi
           cat report.md >> "${GITHUB_STEP_SUMMARY}"
           echo "status=${status}" >> "${GITHUB_OUTPUT}"
 
@@ -170,5 +193,5 @@ jobs:
       - name: Fail on a slower route
         if: steps.report.outputs.status != '0'
         run: |
-          echo "::error::A route got slower by more than the threshold, or its server exits under load. See the job summary."
+          echo "::error::A route got slower by more than the threshold, fails, or exits under load, or a benchmark failed. See the job summary."
           exit 1

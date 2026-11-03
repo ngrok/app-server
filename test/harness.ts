@@ -20,7 +20,8 @@ export const commands: Record<string, (args: string[]) => [string, string[]]> = 
 			"--allow-read",
 			"--allow-sys",
 			// Why: in `start`, Vite loads its native bundler and writes its cache. On Linux, Vite also
-			// reads a WSL file that Deno gives only to `--allow-all`, so Deno ignores that read.
+			// reads a Windows Subsystem for Linux (WSL) file that only `--allow-all` allows, so Deno
+			// ignores that read.
 			...(args.includes("start")
 				? ["--allow-ffi", "--allow-write", "--ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop"]
 				: []),
@@ -36,6 +37,11 @@ export type Line = { level: string; message: string; [attribute: string]: unknow
  * goes before the runtime's command, such as `taskset`. With `record: false`,
  * the lines after `listening` are not kept, so a long load test does not fill
  * the memory.
+ *
+ * @example
+ * const { child, url } = startServer("bun", ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"]);
+ * await fetch(new URL("/cpu", await url));
+ * child.kill("SIGTERM");
  */
 export function startServer(
 	runtime: string,
@@ -92,7 +98,12 @@ export function startServer(
 	return { child, lines, url };
 }
 
-/** Builds the framework fixture apps of the checkout at `root` with its built package. */
+/**
+ * Builds the framework fixture apps of the checkout at `root` with its built package.
+ *
+ * @example
+ * buildFixtures("base"); // builds base/test/fixtures/react-router and base/test/fixtures/tanstack-start
+ */
 export function buildFixtures(root = packageDirectory): void {
 	const bin = join(root, "node_modules/.bin");
 	execFileSync(`${bin}/react-router`, ["build"], {
