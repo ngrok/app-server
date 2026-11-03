@@ -58,6 +58,32 @@ function fileStream(path: string, range: ByteRange | undefined): ReadableStream<
 	);
 }
 
+/** The bytes of `range` in the file at `path`, from one read. */
+async function readRange(path: string, range: ByteRange): Promise<Uint8Array> {
+	const handle = await open(path);
+	try {
+		const { bytesRead, buffer } = await handle.read({
+			buffer: new Uint8Array(range.end - range.start + 1),
+			position: range.start,
+		});
+		return buffer.subarray(0, bytesRead);
+	} finally {
+		await handle.close();
+	}
+}
+
+/** A stream of one chunk. */
+function oneChunk(chunk: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			if (chunk.byteLength > 0) {
+				controller.enqueue(chunk);
+			}
+			controller.close();
+		},
+	});
+}
+
 /** Why: these codes mean that nothing is at the path. Any other error, such as `EACCES`, throws. */
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 
@@ -111,6 +137,9 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		stat: async (path) => fileInfo(await statOrMissing(filePath(path))),
 		open: async (path, range) => {
 			const candidate = filePath(path);
+			if (range != null && range.end - range.start < CHUNK_BYTES) {
+				return oneChunk(await readRange(candidate, range));
+			}
 			// Why: an unreadable file then gets a logged 500, not a 200 whose body fails. The check
 			// holds no `FileHandle`, so a response that no one reads leaves nothing open.
 			await access(candidate, constants.R_OK);
