@@ -10,62 +10,10 @@ import { trimTrailingSlashes } from "./trailing-slash.js";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
-/** Why these caps: they hold the hashed chunks of a typical app, and they limit the memory of each process. */
-const KEPT_FILE_BYTES = 256 * 1024;
-const KEPT_TOTAL_BYTES = 32 * 1024 * 1024;
-
-/**
- * `files` that keep the bytes of each small file in memory after the first
- * read, up to {@link KEPT_TOTAL_BYTES} in all. Why only for `/assets/`: a
- * hashed name means that the bytes never change.
- */
-function keptFiles(files: StaticFiles): StaticFiles {
-	const kept = new Map<string, Promise<Uint8Array>>();
-	let total = 0;
-	return {
-		stat: files.stat,
-		open: async (path, range) => {
-			let bytes = kept.get(path);
-			if (bytes == null) {
-				const info = await files.stat(path);
-				if (
-					info?.kind !== "file" ||
-					info.size > KEPT_FILE_BYTES ||
-					total + info.size > KEPT_TOTAL_BYTES
-				) {
-					return files.open(path, range);
-				}
-				total += info.size;
-				// Why the size as a range: the kept bytes then match the `Content-Length` from the lookup.
-				bytes = files
-					.open(path, { start: 0, end: info.size - 1 })
-					.then(async (stream) => new Uint8Array(await new Response(stream).arrayBuffer()));
-				kept.set(path, bytes);
-				bytes.catch(() => {
-					kept.delete(path);
-					total -= info.size;
-				});
-			}
-			// Why a copy: a later stage can change the bytes that it reads.
-			const chunk = (await bytes).slice(
-				range?.start ?? 0,
-				range == null ? undefined : range.end + 1,
-			);
-			return new ReadableStream<Uint8Array>({
-				start(controller) {
-					controller.enqueue(chunk);
-					controller.close();
-				},
-			});
-		},
-	};
-}
-
 /**
  * Serves the hashed files under `/assets/` with a one-year immutable cache.
- * It keeps each file up to 256 KiB in memory after the first read, up to
- * 32 MiB in all. A missing asset gets a plain 404 with
- * `Cache-Control: no-store`, not a rendered page. In development, the dev server serves the source modules,
+ * A missing asset gets a plain 404 with `Cache-Control: no-store`, not a
+ * rendered page. In development, the dev server serves the source modules,
  * the HMR client, and the CSS here instead.
  *
  * @example
@@ -80,8 +28,7 @@ export function assets(): Plugin {
 				stage = info.devServer;
 				return;
 			}
-			const { contentTypes } = info;
-			const files = keptFiles(info.files);
+			const { files, contentTypes } = info;
 			stage = async (context, next) => {
 				const { method, path } = context.req;
 				if (!path.startsWith("/assets/") || (method !== "GET" && method !== "HEAD")) {

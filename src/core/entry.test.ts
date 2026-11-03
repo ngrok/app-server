@@ -120,6 +120,49 @@ describe("createEntry", () => {
 		await expect(late?.text()).resolves.toBe("rendered");
 	});
 
+	it("keeps a small file in memory after the first read, and serves ranges from it", async () => {
+		writeFileSync(join(clientDirectory, "kept.txt"), "export const kept = 1;");
+		const { host, fetch } = testHost();
+		const entry = createEntry({
+			app: createServer({ plugins: [prerendered()], logger: recordingLogger([]) }),
+			host,
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+		await entry.start();
+		const request = async (init?: RequestInit) =>
+			fetch()?.(new Request("http://localhost/kept.txt", init), {});
+		await (await request())?.text();
+		writeFileSync(join(clientDirectory, "kept.txt"), "export const kept = 2;");
+
+		const full = await request();
+		const range = await request({ headers: { Range: "bytes=7-11" } });
+
+		await expect(full?.text()).resolves.toBe("export const kept = 1;");
+		expect(range?.status).toBe(206);
+		await expect(range?.text()).resolves.toBe("const");
+	});
+
+	it("reads a file over 256 KiB from disk on each request", async () => {
+		const size = 256 * 1024 + 1;
+		writeFileSync(join(clientDirectory, "large.txt"), "a".repeat(size));
+		const { host, fetch } = testHost();
+		const entry = createEntry({
+			app: createServer({ plugins: [prerendered()], logger: recordingLogger([]) }),
+			host,
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+		await entry.start();
+		const request = async () => fetch()?.(new Request("http://localhost/large.txt"), {});
+		await (await request())?.text();
+		writeFileSync(join(clientDirectory, "large.txt"), "b".repeat(size));
+
+		const response = await request();
+
+		await expect(response?.text()).resolves.toBe("b".repeat(size));
+	});
+
 	it("gives the request ID and logger to requestContext() during a request", async () => {
 		const { host, fetch } = testHost();
 		const seen = vi.fn<(id: string | undefined) => void>();

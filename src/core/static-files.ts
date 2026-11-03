@@ -157,6 +157,60 @@ export function byteRange(header: string, size: number): ByteRange | "unsatisfia
 	return start >= size ? "unsatisfiable" : { start, end: Math.min(end, size - 1) };
 }
 
+/** Why these caps: they hold the hashed chunks of a typical app, and they limit the memory of each process. */
+const KEPT_FILE_BYTES = 256 * 1024;
+const KEPT_TOTAL_BYTES = 32 * 1024 * 1024;
+
+/**
+ * `files` that keep the bytes of each small file in memory after the first
+ * read, up to {@link KEPT_TOTAL_BYTES} in all. Use it only for files that
+ * do not change while the server runs, such as a `StaticFiles.snapshot()`.
+ *
+ * @example
+ * const files = keptFiles(await nodeFiles("build/client").snapshot());
+ */
+export function keptFiles(files: StaticFiles): StaticFiles {
+	const kept = new Map<string, Promise<Uint8Array>>();
+	let total = 0;
+	return {
+		stat: files.stat,
+		open: async (path, range) => {
+			let bytes = kept.get(path);
+			if (bytes == null) {
+				const info = await files.stat(path);
+				if (
+					info?.kind !== "file" ||
+					info.size > KEPT_FILE_BYTES ||
+					total + info.size > KEPT_TOTAL_BYTES
+				) {
+					return files.open(path, range);
+				}
+				total += info.size;
+				// Why the size as a range: the kept bytes then match the `Content-Length` from the lookup.
+				bytes = files
+					.open(path, { start: 0, end: info.size - 1 })
+					.then(async (stream) => new Uint8Array(await new Response(stream).arrayBuffer()));
+				kept.set(path, bytes);
+				bytes.catch(() => {
+					kept.delete(path);
+					total -= info.size;
+				});
+			}
+			// Why a copy: a later stage can change the bytes that it reads.
+			const chunk = (await bytes).slice(
+				range?.start ?? 0,
+				range == null ? undefined : range.end + 1,
+			);
+			return new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+		},
+	};
+}
+
 /**
  * The gzip copy of the file at `path` that the build wrote, when the request
  * gets it. When the copy exists, it adds `Accept-Encoding` to the `Vary` in
