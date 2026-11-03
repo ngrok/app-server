@@ -25,11 +25,16 @@ describe("streamingCompress", () => {
 	});
 
 	it("drops a Content-Length and an Accept-Ranges that the gzip body would break", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
 		const { request } = await testServer({
 			plugins: [streamingCompress()],
 			render: async () =>
-				new Response("<p>hi</p>", {
-					headers: { "Content-Type": "text/html", "Content-Length": "9", "Accept-Ranges": "bytes" },
+				new Response(page, {
+					headers: {
+						"Content-Type": "text/html",
+						"Content-Length": String(page.length),
+						"Accept-Ranges": "bytes",
+					},
 				}),
 		});
 
@@ -37,7 +42,43 @@ describe("streamingCompress", () => {
 
 		expect(response.headers.get("Content-Length")).toBeNull();
 		expect(response.headers.get("Accept-Ranges")).toBeNull();
-		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe("<p>hi</p>");
+		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe(page);
+	});
+
+	it("sends a body under 1 KiB as it is, because gzip would make it larger", async () => {
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response('{"ok":true}', {
+					headers: { "Content-Type": "application/json", "Content-Length": "11" },
+				}),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+		await expect(response.text()).resolves.toBe('{"ok":true}');
+	});
+
+	it("adds Accept-Encoding to Vary once, and only on a type that it can gzip", async () => {
+		const responses: Record<string, () => Response> = {
+			"/image": () => new Response("png", { headers: { "Content-Type": "image/png" } }),
+			"/varied": () =>
+				new Response("text", {
+					headers: { "Content-Type": "text/plain", Vary: "Accept, accept-encoding" },
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async (incoming) => responses[new URL(incoming.url).pathname]?.() ?? new Response(),
+		});
+
+		const image = await request("/image");
+		const varied = await request("/varied");
+
+		expect(image.headers.get("Vary")).toBeNull();
+		expect(varied.headers.get("Vary")).toBe("Accept, accept-encoding");
 	});
 
 	it("leaves an image, a no-transform response, and a client with no gzip alone", async () => {

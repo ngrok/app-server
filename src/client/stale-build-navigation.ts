@@ -107,6 +107,17 @@ function targetOf(request: Request): string {
 }
 
 /**
+ * Reloads a document that the back/forward cache shows again. Why: Back can
+ * show the document that {@link loadDocument} left, with its router still in a
+ * navigation that never ends. Why one function: the browser adds it once.
+ */
+function reloadIfRestored(event: PageTransitionEvent): void {
+	if (event.persisted) {
+		location.reload();
+	}
+}
+
+/**
  * Loads `target` as a document, so the old code never gets the new build's
  * data. It returns a promise that never settles, because the page unloads.
  */
@@ -124,6 +135,7 @@ async function loadDocument(
 	// not to remove a fragment: `assign` to a URL with no fragment loads the document.
 	const isSamePage = pageOf(target) === pageOf(location.href);
 	const removesFragment = new URL(target, location.href).hash === "" && location.hash !== "";
+	addEventListener("pageshow", reloadIfRestored, { once: true });
 	if (navigationType === "POP" || (isSamePage && !removesFragment)) {
 		location.reload();
 	} else if (navigationType === "REPLACE") {
@@ -144,6 +156,10 @@ function onAbort(signal: AbortSignal, clear: () => void): void {
 
 /** Reads the build of each response, and tells when the server runs a new build. */
 function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildOptions) {
+	// Why: on the server, such as in a router factory that runs for each request, there is no tab to move.
+	if (typeof document === "undefined") {
+		return null;
+	}
 	const current = build ?? timingBuild(performance.getEntriesByType("navigation"));
 	if (current == null) {
 		return null;
@@ -154,7 +170,12 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
 			return;
 		}
 		stale = true;
-		onNewBuild?.(served);
+		// Why a catch: an error in the app's callback must not fail the request that found the build.
+		try {
+			onNewBuild?.(served);
+		} catch (error) {
+			reportError(error);
+		}
 	};
 	// Why resource timing: it shows the build of a response that no script fetched, such as a
 	// prefetch on hover, so the tab can find a new build before the click. Why buffered: a prefetch

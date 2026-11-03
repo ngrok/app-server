@@ -6,7 +6,7 @@ import type { Plugin } from "vite";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
-import { appServer, serverEntrySource } from "./index.js";
+import { SERVER_ENTRY_ID, appServer, serverEntrySource } from "./index.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vite-"));
 mkdirSync(join(root, "build/client"), { recursive: true });
@@ -61,13 +61,18 @@ describe("appServer", () => {
 		await (await fetch(new URL("/components/button/", base))).text();
 		await (await fetch(new URL("/missing", base))).text();
 		await (await fetch(new URL("/page", base))).text();
+		await (await fetch(new URL("/caf%C3%A9.txt", base))).text();
 		await server.close();
 
 		expect(
 			JSON.parse(readFileSync(join(root, "build/client/.app-server.json"), "utf8")),
 		).toStrictEqual({
-			prerendered: ["/components/button", "/llms.txt", "/page"],
+			prerendered: ["/café.txt", "/components/button", "/llms.txt", "/page"],
 			headers: {
+				"/café.txt": {
+					"access-control-allow-origin": "*",
+					"content-type": "text/plain; charset=utf-8",
+				},
 				"/components/button": {
 					"access-control-allow-origin": "*",
 					"content-type": "text/plain; charset=utf-8",
@@ -133,6 +138,42 @@ describe("appServer", () => {
 				clientDirectory: "CLIENT",
 			}),
 		).toContain("framework: (mode) => runtime(serverModule, { ...{ serverFnBase: BASE }, mode }),");
+	});
+
+	it("fails the build for a server build inside the client build, so no one can fetch its code", () => {
+		const plugin = appServer({ framework: reactRouterAdapter(), host: node() });
+		const configResolved = plugin.configResolved;
+		const load = plugin.load;
+		const build = (outDir: string) => ({ build: { outDir } });
+		Reflect.apply(
+			(typeof configResolved === "function" ? configResolved : configResolved?.handler) ??
+				(() => {}),
+			{},
+			[
+				{
+					root,
+					base: "/",
+					build: { outDir: "build" },
+					environments: { client: build("build"), ssr: build("build/server") },
+				},
+			],
+		);
+
+		const loadEntry = (mode: string): void => {
+			Reflect.apply(
+				(typeof load === "function" ? load : load?.handler) ?? (() => {}),
+				{ environment: { mode } },
+				[`\0${SERVER_ENTRY_ID}`],
+			);
+		};
+
+		expect(() => {
+			loadEntry("build");
+		}).toThrow("needs the server build outside the client build");
+		// Why: development serves no build directory, so a config can share one there.
+		expect(() => {
+			loadEntry("dev");
+		}).not.toThrow();
 	});
 
 	it("fails the build for a server build that is not an ES module", () => {

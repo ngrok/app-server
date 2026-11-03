@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { manifestKey } from "../build-manifest.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, staticResponse } from "../static-files.js";
+import { withVary } from "../vary.js";
 import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
@@ -133,15 +134,6 @@ async function findTwin(
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
 
-/** A `Vary` value with `Accept` added, or `undefined` when `vary` already covers `Accept`. */
-function varyWithAccept(vary: string | null): string | undefined {
-	if (vary == null || vary.trim() === "") {
-		return "Accept";
-	}
-	const values = new Set(vary.split(",").map((value) => value.trim().toLowerCase()));
-	return values.has("accept") || values.has("*") ? undefined : `${vary}, Accept`;
-}
-
 /** The `twinOf` function that the `markdownTwins` option selects, or `undefined` when it is off. */
 function twinOfOption(
 	markdownTwins: PrerenderedOptions["markdownTwins"],
@@ -237,7 +229,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				} else {
 					context.res = await serve(context, path, file);
 				}
-				const vary = twin == null ? undefined : varyWithAccept(context.res.headers.get("Vary"));
+				const vary = twin == null ? undefined : withVary(context.res.headers.get("Vary"), "Accept");
 				if (vary != null) {
 					// Why `context.header`: it also works on a framework response with immutable headers.
 					context.header("Vary", vary);

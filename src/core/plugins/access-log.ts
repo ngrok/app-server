@@ -97,33 +97,37 @@ export function accessLog({
 			}
 			const reader = response.body.getReader();
 			let bytes = 0;
-			const counted = new ReadableStream<Uint8Array>({
-				async pull(controller) {
-					let result: ReadableStreamReadResult<Uint8Array>;
-					try {
-						result = await reader.read();
-					} catch (error) {
-						// Why here: `cancel` does not run for a stream that failed.
-						write({ bytes, aborted: true });
-						throw error;
-					}
-					const { done, value } = result;
-					if (done) {
-						controller.close();
-						write({ bytes, aborted: false });
-						return;
-					}
-					bytes += value.byteLength;
-					controller.enqueue(value);
+			const counted = new ReadableStream<Uint8Array>(
+				{
+					async pull(controller) {
+						let result: ReadableStreamReadResult<Uint8Array>;
+						try {
+							result = await reader.read();
+						} catch (error) {
+							// Why here: `cancel` does not run for a stream that failed.
+							write({ bytes, aborted: true });
+							throw error;
+						}
+						const { done, value } = result;
+						if (done) {
+							controller.close();
+							write({ bytes, aborted: false });
+							return;
+						}
+						bytes += value.byteLength;
+						controller.enqueue(value);
+					},
+					async cancel(reason) {
+						try {
+							write({ bytes, aborted: true });
+						} finally {
+							await reader.cancel(reason);
+						}
+					},
 				},
-				async cancel(reason) {
-					try {
-						write({ bytes, aborted: true });
-					} finally {
-						await reader.cancel(reason);
-					}
-				},
-			});
+				// Why 0: a pass-through stream must not read ahead of the client.
+				{ highWaterMark: 0 },
+			);
 			context.res = new Response(counted, response);
 		},
 	};

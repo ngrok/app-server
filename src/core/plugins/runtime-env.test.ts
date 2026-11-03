@@ -72,6 +72,39 @@ describe("runtimeEnv", () => {
 		expect(response.headers.get("Content-Length")).toBeNull();
 	});
 
+	it("reads nothing from a document that an outer stage drops", async () => {
+		let pulls = 0;
+		const { request } = await testServer({
+			plugins: [
+				{
+					name: "drop",
+					middleware: async (context, next) => {
+						await next();
+						context.res = new Response("dropped");
+					},
+				},
+				runtimeEnv(schema, { source: validSource }),
+			],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>(
+						{
+							pull(controller) {
+								pulls += 1;
+								controller.enqueue(new TextEncoder().encode("<html><head></head></html>"));
+								controller.close();
+							},
+						},
+						{ highWaterMark: 0 },
+					),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		await expect((await request("/")).text()).resolves.toBe("dropped");
+		expect(pulls).toBe(0);
+	});
+
 	it("drops the ETag of a document it changes, so a 304 cannot keep old values", async () => {
 		const { request } = await testServer({
 			plugins: [runtimeEnv(schema, { source: validSource })],

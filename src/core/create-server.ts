@@ -199,7 +199,8 @@ function checkCount(name: string, value: number, max = Number.MAX_SAFE_INTEGER):
 /** The request with the scheme from `X-Forwarded-Proto`, when that header holds one. */
 function withForwardedProto(request: Request): Request {
 	const proto = request.headers.get("X-Forwarded-Proto");
-	if (proto !== "http" && proto !== "https") {
+	// Why check the scheme first: a new `Request` costs a copy of the request on each call.
+	if ((proto !== "http" && proto !== "https") || request.url.startsWith(`${proto}:`)) {
 		return request;
 	}
 	const url = new URL(request.url);

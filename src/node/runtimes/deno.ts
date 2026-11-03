@@ -26,34 +26,38 @@ function closableResponse(response: Response, open: Set<() => void>): Response {
 	}
 	const reader = response.body.getReader();
 	let force: () => void;
-	const body = new ReadableStream<Uint8Array>({
-		start(controller) {
-			force = () => {
-				open.delete(force);
-				controller.error(new Error("The shutdown deadline passed."));
-				void reader.cancel();
-			};
-			open.add(force);
-		},
-		async pull(controller) {
-			try {
-				const { done, value } = await reader.read();
-				if (done) {
+	const body = new ReadableStream<Uint8Array>(
+		{
+			start(controller) {
+				force = () => {
 					open.delete(force);
-					controller.close();
-				} else {
-					controller.enqueue(value);
+					controller.error(new Error("The shutdown deadline passed."));
+					void reader.cancel();
+				};
+				open.add(force);
+			},
+			async pull(controller) {
+				try {
+					const { done, value } = await reader.read();
+					if (done) {
+						open.delete(force);
+						controller.close();
+					} else {
+						controller.enqueue(value);
+					}
+				} catch (error) {
+					open.delete(force);
+					throw error;
 				}
-			} catch (error) {
+			},
+			async cancel(reason) {
 				open.delete(force);
-				throw error;
-			}
+				return reader.cancel(reason);
+			},
 		},
-		async cancel(reason) {
-			open.delete(force);
-			return reader.cancel(reason);
-		},
-	});
+		// Why 0: a pass-through stream must not read ahead of the client.
+		{ highWaterMark: 0 },
+	);
 	return new Response(body, response);
 }
 

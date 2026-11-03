@@ -104,6 +104,8 @@ A React Router app with no Vite plugin also works: `app-server serve build/serve
 - `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
 - `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer.
 
+`-p` is short for `--port`. `--help` writes the usage. A bad argument writes a message and the usage, and exits with code 1.
+
 On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys node_modules/@ngrok/app-server/dist/cli.js serve`. For `start` on Deno, also give `--allow-ffi --allow-write --ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop`. Vite loads its native bundler and writes its cache. On Linux, Vite also reads a WSL file that Deno gives only to `--allow-all`.
 
 ## The pipeline
@@ -112,7 +114,7 @@ On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run
 
 1. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
 2. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses. The host gives the gzip stream. On a host with none, the plugin does nothing.
+3. `streamingCompress()`: gzip that flushes after each chunk. It skips encoded, partial, and `no-transform` responses, and a body whose `Content-Length` is under 1,024 bytes. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. The host gives the gzip stream. On a host with none, the plugin does nothing.
 4. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
 5. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 MiB by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
 6. The `beforeStatic` plugins: they see every response, prerendered pages included. `runtimeEnv`, `buildId`, and an auth check go here.

@@ -273,6 +273,43 @@ describe("staleBuildReactRouter", () => {
 		},
 	);
 
+	it("answers the request when onNewBuild throws, and reports the error", async () => {
+		page({ serverBuild: "v2" });
+		const reported = vi.fn<(error: unknown) => void>();
+		vi.stubGlobal("reportError", reported);
+		const failure = new Error("no RUM yet");
+		const routerFetch = started({
+			build: "v1",
+			onNewBuild: () => {
+				throw failure;
+			},
+		}).fetch;
+
+		const response = await routerFetch(dataRequest("/dashboard.data"), {
+			type: "revalidation",
+			navigationType: null,
+		});
+
+		expect(response.status).toBe(200);
+		expect(reported).toHaveBeenCalledExactlyOnceWith(failure);
+	});
+
+	it("reloads the old document when the back/forward cache shows it again", async () => {
+		const { documentLoads } = page({ serverBuild: "v2" });
+		const routerFetch = started({ build: "v1" }).fetch;
+
+		void routerFetch(dataRequest("/settings.data"), PUSH);
+		await vi.waitFor(() => {
+			expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
+		});
+		dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+
+		expect(documentLoads).toStrictEqual([
+			"http://localhost:3000/settings",
+			"reload http://localhost:3000/dashboard",
+		]);
+	});
+
 	it.each([
 		["an action", true],
 		["a `clientAction` with no request", false],
@@ -717,6 +754,16 @@ describe("staleBuildTanStack", () => {
 		);
 		return { router, loaded };
 	}
+
+	it("does nothing on the server, where there is no tab to move", async () => {
+		const send = fetch;
+		const { router } = tanstack();
+		vi.stubGlobal("document", undefined);
+
+		cleanups.push(staleBuildTanStack(router, { build: "v1" }));
+
+		expect(fetch).toBe(send);
+	});
 
 	it("lets a navigation load its data, and gives a later request from a new build its response", async () => {
 		const { server, requests, documentLoads } = page({ serverBuild: "v1" });

@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { getPath } from "hono/utils/url";
 import type { Plugin, PreviewServer, ResolvedConfig } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
@@ -139,7 +140,8 @@ function capture(server: PreviewServer): void {
 	const paths = new Set<string>();
 	const headers: BuildManifest["headers"] = {};
 	server.middlewares.use((request, response, next) => {
-		const { pathname } = new URL(request.url ?? "/", "http://localhost");
+		// Why `getPath`: the static stages look a file up by Hono's decoded path, such as `/café.json`.
+		const pathname = getPath(new Request(new URL(request.url ?? "/", "http://localhost")));
 		// Why: Node keeps the headers that `writeHead` gets readable only when a header was set first.
 		response.setHeader(CAPTURE_MARKER, "1");
 		response.once("finish", () => {
@@ -233,9 +235,22 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin {
 				return null;
 			}
 			const clientDirectory = outDir(config, "client");
+			const serverDirectory = outDir(config, SERVER_ENVIRONMENT);
+			const fromClient = relative(clientDirectory, serverDirectory);
+			// Why: the static stages serve each file in the client build, so they would serve the server's
+			// code. Why a build only: development serves no build directory.
+			if (
+				this.environment.mode === "build" &&
+				!fromClient.startsWith("..") &&
+				!isAbsolute(fromClient)
+			) {
+				throw new Error(
+					`@ngrok/app-server needs the server build outside the client build, and both are in ${clientDirectory}.`,
+				);
+			}
 			// Why a URL in a build: the build can move, and the client build stays next to it.
 			const fromEntry = relative(
-				dirname(join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName)),
+				dirname(join(serverDirectory, host.entryFileName)),
 				clientDirectory,
 			).replaceAll("\\", "/");
 			return serverEntrySource({
