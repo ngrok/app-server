@@ -87,7 +87,8 @@ export type PrerenderedOptions = {
 	 *   for the twin's own URL gets none.
 	 * - In development, the client build has no twins. A request that prefers
 	 *   markdown gets the framework's answer for the twin's URL, so an edit
-	 *   shows at once. An answer that is not markdown gives the HTML.
+	 *   shows at once. An error, or an answer that is not markdown, gives the
+	 *   HTML.
 	 *
 	 * `true` uses the default `twinOf`: the path with no trailing slash plus
 	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
@@ -150,18 +151,31 @@ function varyOnAccept(context: Context<AppServerEnv>): void {
 	}
 }
 
+/**
+ * The percent-encoded URL path for a decoded path, so it holds no space,
+ * `>`, or non-ASCII character. Why the replace: a URL removes a tab or a
+ * newline, which a file name can hold.
+ */
+function urlPath(path: string): string {
+	return new URL(
+		path.replaceAll(/[\t\n\r]/gu, (character) => encodeURIComponent(character)),
+		"http://localhost",
+	).pathname;
+}
+
 /** Adds a `Link` to the twin at `twinPath`, so a client that does not ask for markdown can find it. */
 function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
-	// Why a URL: it percent-encodes the path, so the header holds no space, `>`, or non-ASCII character.
-	const href = new URL(twinPath, "http://localhost").pathname;
-	writableHeaders(context).append("Link", `<${href}>; rel="alternate"; type="text/markdown"`);
+	writableHeaders(context).append(
+		"Link",
+		`<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`,
+	);
 }
 
 /**
  * The development stage of `markdownTwins`. The client build has no twins
  * then, so a request that prefers markdown gets the framework's answer for
- * the twin's URL: the route that prerenders the twin. An answer that is not
- * markdown sends the request on for the HTML.
+ * the twin's URL: the route that prerenders the twin. An error, or an answer
+ * that is not markdown, sends the request on for the HTML.
  */
 function developmentTwins(
 	twinOf: (path: string) => string | undefined,
@@ -180,8 +194,8 @@ function developmentTwins(
 			return next();
 		}
 		const url = new URL(context.req.url);
-		url.pathname = twinPath;
-		// Why: the URL can change the path, for example it removes a tab. Then the framework answers a path that `twinOf` did not name.
+		url.pathname = urlPath(twinPath);
+		// Why: the URL can change the path, for example `%2e%2e` to `..`. Then the framework answers a path that `twinOf` did not name.
 		if (getPath(new Request(url)) !== twinPath) {
 			return next();
 		}
@@ -190,7 +204,10 @@ function developmentTwins(
 		const twin = new Request(url, { method, headers, signal });
 		const response = await context.env.framework.fetch(twin, context);
 		// Why only markdown: production serves a twin from a `.md` file, so an HTML page or an error is no twin.
-		if (response.headers.get("Content-Type")?.startsWith("text/markdown") !== true) {
+		// A 304 has no body to check, and it answers a validator from the twin.
+		const markdown =
+			response.headers.get("Content-Type")?.toLowerCase().startsWith("text/markdown") === true;
+		if (response.status !== 304 && !(response.ok && markdown)) {
 			await response.body?.cancel();
 			return next();
 		}

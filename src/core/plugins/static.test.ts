@@ -18,6 +18,7 @@ const files: Record<string, string> = {
 	"index.md": "# Home",
 	"docs/rendered.md": "# Rendered",
 	"docs/café.md": "# Café",
+	"docs/tab\tstop.md": "# Tab",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
 	"digits.bin": "0123456789",
@@ -533,13 +534,17 @@ describe("prerendered markdownTwins", () => {
 		});
 	});
 
-	it("percent-encodes the Link to a twin", async () => {
+	it("percent-encodes the Link to a twin, a tab included", async () => {
 		const { request } = await staticServer({ markdownTwins: true });
 
-		const response = await request("/docs/caf%C3%A9", browser);
+		const accent = await request("/docs/caf%C3%A9", browser);
+		const tab = await request("/docs/tab%09stop", browser);
 
-		expect(response.headers.get("Link")).toBe(
+		expect(accent.headers.get("Link")).toBe(
 			'</docs/caf%C3%A9.md>; rel="alternate"; type="text/markdown"',
+		);
+		expect(tab.headers.get("Link")).toBe(
+			'</docs/tab%09stop.md>; rel="alternate"; type="text/markdown"',
 		);
 	});
 
@@ -649,19 +654,27 @@ describe("prerendered markdownTwins in development", () => {
 
 	/**
 	 * A development server whose framework renders each `.md` URL as markdown,
-	 * except `/docs/missing.md` (a 404) and `/tags/react.md` (an HTML page).
+	 * with a 304 for an `If-None-Match`. `/docs/missing.md` is a markdown 404,
+	 * and `/tags/react.md` is an HTML page.
 	 */
 	async function devServer(options: PrerenderedOptions) {
 		const seen: string[] = [];
 		const framework = stubFramework(async (request) => {
 			const { pathname } = new URL(request.url);
 			seen.push(`${request.method} ${pathname}`);
+			const type = { "Content-Type": "Text/Markdown; charset=utf-8" };
 			if (pathname === "/docs/missing.md") {
-				return new Response("Not Found", { status: 404 });
+				return new Response("# Not Found", {
+					status: 404,
+					headers: { "Content-Type": "text/markdown" },
+				});
 			}
-			return pathname.endsWith(".md") && pathname !== "/tags/react.md"
-				? new Response(`# ${pathname}`, { headers: { "Content-Type": "text/markdown" } })
-				: new Response("rendered", { headers: { "Content-Type": "text/html" } });
+			if (!pathname.endsWith(".md") || pathname === "/tags/react.md") {
+				return new Response("rendered", { headers: { "Content-Type": "text/html" } });
+			}
+			return request.headers.has("If-None-Match")
+				? new Response(null, { status: 304 })
+				: new Response(`# ${pathname}`, { headers: type });
 		});
 		const logger = { log: () => {} };
 		const app = createServer({
@@ -690,6 +703,20 @@ describe("prerendered markdownTwins in development", () => {
 
 		await expect(response.text()).resolves.toBe("# /docs/button.md");
 		expect(negotiation(response)).toStrictEqual({ vary: "Accept", link: null });
+	});
+
+	it("keeps the twin's 304 and a tab in the twin's path", async () => {
+		const { request, seen } = await devServer({ markdownTwins: true });
+
+		const notModified = await request("/docs/button", {
+			headers: { ...markdown.headers, "If-None-Match": '"v1"' },
+		});
+		const tab = await request("/docs/tab%09stop", markdown);
+
+		expect(notModified.status).toBe(304);
+		expect(negotiation(notModified)).toStrictEqual({ vary: "Accept", link: null });
+		await expect(tab.text()).resolves.toBe("# /docs/tab%09stop.md");
+		expect(seen).toStrictEqual(["GET /docs/button.md", "GET /docs/tab%09stop.md"]);
 	});
 
 	it("answers HEAD with the twin, and the root with /index.md", async () => {
@@ -726,17 +753,18 @@ describe("prerendered markdownTwins in development", () => {
 	});
 
 	it("asks the framework for no twin whose URL changes its path", async () => {
-		const { request, seen } = await devServer({
-			markdownTwins: true,
-			skip: (path) => path.startsWith("/private"),
-		});
+		const skip = (path: string) => path.startsWith("/private");
+		const backslash = await devServer({ markdownTwins: true, skip });
+		const dots = await devServer({ markdownTwins: { twinOf: (path) => `/docs/%2e%2e${path}.md` } });
 
-		const backslash = await request("/docs%5C..%5Cprivate", markdown);
-		const tab = await request("/pri%09vate", markdown);
-
-		await expect(backslash.text()).resolves.toBe("rendered");
-		await expect(tab.text()).resolves.toBe("rendered");
-		expect(seen).toStrictEqual(["GET /docs%5C..%5Cprivate", "GET /pri%09vate"]);
+		await expect((await backslash.request("/docs%5C..%5Cprivate", markdown)).text()).resolves.toBe(
+			"rendered",
+		);
+		await expect((await dots.request("/page", markdown)).text()).resolves.toBe("rendered");
+		expect([...backslash.seen, ...dots.seen]).toStrictEqual([
+			"GET /docs%5C..%5Cprivate",
+			"GET /page",
+		]);
 	});
 
 	it("uses twinOf, and is off by default", async () => {
