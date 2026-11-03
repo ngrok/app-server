@@ -222,19 +222,24 @@ defaultPlugins({
 - A browser keeps `Strict-Transport-Security` for its `max-age`. Add `includeSubDomains` only when each subdomain serves HTTPS. Behind a proxy that ends TLS, set `trustForwardedProto`, else the server sees an HTTP request and sends no HSTS.
 - `Content-Security-Policy` has no default, so another site can put the page in a frame. Set `frame-ancestors 'none'` to stop that. The plugin adds the value as a second policy, next to the response's own policy, and a browser enforces both.
 
-### A CSP nonce for each request
+### A CSP for each document
 
-`cspNonce({ policy })` makes a random nonce for each request that reaches the app's routes or the framework. It sets the `Content-Security-Policy` from `policy` on each HTML document that has none. Put it after the static stages. A prerendered page has one nonce in its file for every visitor, so it uses script hashes instead. See [Prerendered headers](#prerendered-headers).
+`contentSecurityPolicy({ policy })` sets the `Content-Security-Policy` from `policy` on each HTML document that has none. `policy` gets the `script-src` source list that trusts the document's scripts, and the request's Hono context, so the policy can change by path:
+
+- A rendered document gets `'nonce-…' 'strict-dynamic'`, with a new nonce for each request.
+- A prerendered document gets `'self'` and the hash of each of its inline scripts, such as `'self' 'sha256-…'`. The `appServer` Vite plugin records the hashes. The prerender writes one nonce into the file, and every visitor can read it, so a nonce protects nothing. A hash does not carry to the imports of an inline module script, so this list has no `'strict-dynamic'`.
+
+If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. Put the plugin in `beforeStatic`, so it sees the prerendered documents.
 
 ```ts
 createServer({
-	plugins: [
-		...defaultPlugins(),
-		cspNonce({
-			policy: (nonce) =>
-				`script-src 'nonce-${nonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'`,
-		}),
-	],
+	plugins: defaultPlugins({
+		beforeStatic: [
+			contentSecurityPolicy({
+				policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+			}),
+		],
+	}),
 });
 ```
 
@@ -529,7 +534,7 @@ A resource route, or a TanStack Start server route, gets the same `Request`. Cal
 
 During the framework's prerender pass, `appServer` records each prerendered path and the response headers of each prerendered file that is not an HTML document into `.app-server.json` in the client build. `prerendered()` replays the headers. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`. When the framework does not list its prerendered paths, as with TanStack Start, the server reads them from this file.
 
-A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. For its CSP, use a `script-src` with the hash of each inline script, not a nonce. The prerender writes one nonce into the file, and every visitor can read it, so it protects nothing.
+A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. The file also records the hash of each inline script of each HTML file in the client build, so `contentSecurityPolicy()` can give a prerendered page a CSP. See [A CSP for each document](#a-csp-for-each-document).
 
 ## Logs
 

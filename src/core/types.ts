@@ -23,7 +23,7 @@ export type RequestContext = {
 	requestId: string | undefined;
 	/** The request's logger. Its lines carry the request ID. */
 	logger: RequestLogger;
-	/** The nonce for the request's inline scripts, when the `cspNonce` plugin runs. */
+	/** The nonce for the request's inline scripts, when the `contentSecurityPolicy` plugin runs. */
 	cspNonce: string | undefined;
 	/** The client's IP address, from `X-Forwarded-For` when `trustedProxyHops` is set, else from the socket. */
 	clientAddress: string | undefined;
@@ -155,8 +155,13 @@ export type AppServerEnv = {
 		/** The request ID, set by the `requestId` plugin. */
 		requestId?: string;
 		logger: RequestLogger;
-		/** The nonce for the request's inline scripts, set by the `cspNonce` plugin. */
+		/** The nonce for the request's inline scripts, set by the `contentSecurityPolicy` plugin. */
 		cspNonce?: string;
+		/**
+		 * The URL path of the client build file that the response sends, such as
+		 * `/about/index.html`. The static stages set it.
+		 */
+		staticFile?: string;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
@@ -200,6 +205,11 @@ export type SetupInfo = {
 	files: StaticFiles;
 	/** The headers of each prerendered file, by URL path, that the Vite plugin captured. */
 	capturedHeaders: ReadonlyMap<string, Readonly<Record<string, string>>>;
+	/**
+	 * The base64 SHA-256 of each inline script of each HTML file in the client
+	 * build, by the file's URL path, that the Vite plugin recorded.
+	 */
+	scriptHashes: ReadonlyMap<string, readonly string[]>;
 	/** Whether a URL path is a data request of the framework. */
 	isDataRequest: (path: string) => boolean;
 	/** Content types of the framework's files that `mime` does not know, by file extension. */

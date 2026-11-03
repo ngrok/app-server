@@ -58,7 +58,7 @@ export {
 } from "./plugins/runtime-env.js";
 export {
 	//,
-	cspNonce,
+	contentSecurityPolicy,
 	securityHeaders,
 } from "./plugins/security-headers.js";
 export {
@@ -138,7 +138,7 @@ export type {
 } from "./plugins/runtime-env.js";
 export type {
 	//,
-	CspNonceOptions,
+	ContentSecurityPolicyOptions,
 	SecurityHeadersOptions,
 	SecurityHeaderValues,
 } from "./plugins/security-headers.js";

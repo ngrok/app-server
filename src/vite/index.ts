@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -7,7 +8,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Plugin, PreviewServer, ResolvedConfig } from "vite";
@@ -141,10 +142,46 @@ function outDir(config: ResolvedConfig, environment: string): string {
 	);
 }
 
+/** A `<script>` element with no `src` attribute. The `text` group is its text. */
+const INLINE_SCRIPT = /<script\b(?![^>]*\ssrc\s*=)[^>]*>(?<text>[\s\S]*?)<\/script\s*>/giu;
+
+/**
+ * The base64 SHA-256 of each inline script in `html`, once each, in document
+ * order. Why each type: a hash of a data block, such as JSON, trusts no code,
+ * and a scan that skips a type that runs breaks the page.
+ *
+ * @example
+ * inlineScriptHashes("<script>go()</script>"); // => ["…base64…"]
+ */
+function inlineScriptHashes(html: string): string[] {
+	const hashes = Array.from(html.matchAll(INLINE_SCRIPT), (match) =>
+		createHash("sha256")
+			.update(match.groups?.text ?? "")
+			.digest("base64"),
+	);
+	return [...new Set(hashes)];
+}
+
+/** The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path. */
+function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] {
+	const hashes: BuildManifest["scriptHashes"] = {};
+	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
+		if (entry.isFile() && entry.name.endsWith(".html")) {
+			const path = join(entry.parentPath, entry.name);
+			const urlPath = `/${relative(clientDirectory, path).split(sep).join("/")}`;
+			hashes[urlPath] = inlineScriptHashes(readFileSync(path, "utf8"));
+		}
+	}
+	return Object.fromEntries(
+		Object.entries(hashes).toSorted(([first], [second]) => first.localeCompare(second)),
+	);
+}
+
 /**
  * Records each 2xx path and the headers of each non-document response while
  * the framework's prerender pass runs. It writes them to `.app-server.json` in
- * the client build when the preview server closes.
+ * the client build when the preview server closes, with the script hashes of
+ * each HTML file.
  */
 function capture(server: PreviewServer): void {
 	const clientDirectory = outDir(server.config, "client");
@@ -179,13 +216,14 @@ function capture(server: PreviewServer): void {
 		next();
 	});
 	server.httpServer.once("close", () => {
+		mkdirSync(clientDirectory, { recursive: true });
 		const manifest: BuildManifest = {
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
 			),
+			scriptHashes: scriptHashesOf(clientDirectory),
 		};
-		mkdirSync(clientDirectory, { recursive: true });
 		writeFileSync(
 			join(clientDirectory, BUILD_MANIFEST_FILE),
 			`${JSON.stringify(manifest, null, "\t")}\n`,
@@ -251,7 +289,8 @@ function writeGzipCopies(clientDirectory: string): void {
  *   and the headers of each prerendered file that is not an HTML document into
  *   `.app-server.json` in the client build. The `prerendered` plugin replays
  *   the headers. A document's headers depend on its request, so they are not
- *   recorded.
+ *   recorded. It also records the hash of each inline script of each HTML
+ *   file, for the `contentSecurityPolicy` plugin.
  * - After the build and after the prerender pass, it writes a gzip copy
  *   (`.<file>.gz`) next to each text file of 1 KiB or more in the client
  *   build, except HTML. The static stages send the copy, so the server does

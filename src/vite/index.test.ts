@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -47,6 +48,8 @@ function responder(): Plugin {
 describe("appServer", () => {
 	it("records each 2xx path, and the headers of each that is not a document, with no cookie or length", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		mkdirSync(join(root, "build/client/page"), { recursive: true });
+		writeFileSync(join(root, "build/client/page/index.html"), "<p>no scripts</p>");
 		const server = await preview({
 			root,
 			configFile: false,
@@ -83,7 +86,47 @@ describe("appServer", () => {
 					"content-type": "text/plain; charset=utf-8",
 				},
 			},
+			scriptHashes: { "/page/index.html": [] },
 		});
+	});
+
+	it("records the hash of each inline script of each HTML file, once each", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const theme = "document.documentElement.dataset.theme = 'dark';";
+		const entry = 'import("/assets/entry.js");';
+		const data = '{"a":1}';
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-hashes-"));
+		mkdirSync(join(directory, "build/client/docs"), { recursive: true });
+		writeFileSync(
+			join(directory, "build/client/docs/index.html"),
+			[
+				`<head><script nonce="baked">${theme}</script>`,
+				'<script type="module" src="/assets/entry.js"></script>',
+				`<SCRIPT type="module">${entry}</SCRIPT >`,
+				`<script id="env" type="application/json">${data}</script></head>`,
+				`<body><script nonce="baked">${theme}</script></body>`,
+			].join(""),
+		);
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer({ framework: reactRouterAdapter(), host: node() }), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/docs", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		const sha256 = (text: string) => createHash("sha256").update(text).digest("base64");
+		expect(
+			JSON.parse(readFileSync(join(directory, "build/client/.app-server.json"), "utf8")),
+		).toMatchObject({
+			scriptHashes: { "/docs/index.html": [theme, entry, data].map((text) => sha256(text)) },
+		});
+		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it("writes the gzip copy of each prerendered file after the pass, before the framework's plugin too", async () => {

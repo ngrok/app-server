@@ -291,6 +291,7 @@ export async function staticResponse(
 	context: Context<AppServerEnv>,
 	{ files, file, headers, contentTypes }: StaticResponseOptions,
 ): Promise<Response> {
+	context.set("staticFile", file.path);
 	const etag = await fileEtag(file, context.get("etagParts") ?? []);
 	const responseHeaders = new Headers({
 		"Content-Type": contentType(file.path, contentTypes),

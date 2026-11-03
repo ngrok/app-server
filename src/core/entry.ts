@@ -107,13 +107,14 @@ export function createEntry({
 			const snapshot = await shared.files.snapshot?.();
 			// Why only with a snapshot: it promises that the client build does not change while the server runs.
 			const files = snapshot == null ? shared.files : keptFiles(snapshot);
-			const { prerendered, headers } = await readBuildManifest(files);
+			const { prerendered, headers, scriptHashes } = await readBuildManifest(files);
 			const info: SetupInfo = {
 				...shared,
 				files,
 				mode: "production",
 				prerenderedPaths: runtime.prerenderedPaths ?? prerendered,
 				capturedHeaders: new Map(Object.entries(headers)),
+				scriptHashes: new Map(Object.entries(scriptHashes)),
 			};
 			await internals.prepare(info);
 			const server = await internals.listen(runtime, host.listeners());
@@ -132,6 +133,7 @@ export function createEntry({
 				devServer,
 				prerenderedPaths: development.prerenderedPaths,
 				capturedHeaders: new Map(),
+				scriptHashes: new Map(),
 			});
 			return app.fetch(request, { ...bindings, framework: development });
 		},

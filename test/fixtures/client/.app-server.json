@@ -1,8 +1,5 @@
 {
   "prerendered": ["/cpu", "/gone"],
-  "headers": {
-    "/cpu": {
-      "x-captured": "yes"
-    }
-  }
+  "headers": { "/cpu": { "x-captured": "yes" } },
+  "scriptHashes": {}
 }
