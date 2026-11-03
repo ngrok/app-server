@@ -3,13 +3,15 @@
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { createServer } from "node:net";
 import type { Server } from "node:net";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { constants, createGunzip } from "node:zlib";
 
 const packageDirectory = join(import.meta.dirname, "..");
@@ -409,7 +411,9 @@ async function stopCleanly(child: ChildProcess, what: string): Promise<void> {
 
 /** The React Router fixture app: built with the Vite plugin, served by `app-server serve`. */
 async function checkReactRouter(runtime: string): Promise<void> {
-	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: reactRouterDirectory });
+	const { child, lines, url } = startServer(runtime, [cliPath, "serve"], {
+		cwd: reactRouterDirectory,
+	});
 	try {
 		const base = await url;
 		await checkFrameworkShared(
@@ -425,6 +429,11 @@ async function checkReactRouter(runtime: string): Promise<void> {
 		);
 		await data.text();
 		await stopCleanly(child, "the React Router app");
+		assert.equal(
+			lines.filter((line) => line.message === "listening").length,
+			1,
+			"`serve` starts the build once",
+		);
 		process.stdout.write(`ok ${runtime} react-router\n`);
 	} finally {
 		child.kill("SIGKILL");
@@ -433,7 +442,9 @@ async function checkReactRouter(runtime: string): Promise<void> {
 
 /** The TanStack Start fixture app: built with the Vite plugin, served by `app-server serve`. */
 async function checkTanstackStart(runtime: string): Promise<void> {
-	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: tanstackStartDirectory });
+	const { child, lines, url } = startServer(runtime, [cliPath, "serve"], {
+		cwd: tanstackStartDirectory,
+	});
 	try {
 		const base = await url;
 		await checkFrameworkShared(
@@ -457,9 +468,79 @@ async function checkTanstackStart(runtime: string): Promise<void> {
 		assert.match(stream.body, /streamed late/u, "the slow part streams after the shell");
 
 		await stopCleanly(child, "the TanStack Start app");
+		assert.equal(
+			lines.filter((line) => line.message === "listening").length,
+			1,
+			"`serve` starts the build once",
+		);
 		process.stdout.write(`ok ${runtime} tanstack-start\n`);
 	} finally {
 		child.kill("SIGKILL");
+	}
+}
+
+/** A framework fixture app, and the files of its build that a deploy copies. */
+const standaloneApps = [
+	{
+		name: "react-router",
+		directory: reactRouterDirectory,
+		buildDirectory: "build",
+		frameworkEntry: "build/server/index.js",
+		title: "React Router home",
+		// Why: the fixture keeps this CommonJS package in `ssr.external`, and it reads a file next to it.
+		paths: { "/greeting": "hello from a copied package" },
+	},
+	{
+		name: "tanstack-start",
+		directory: tanstackStartDirectory,
+		buildDirectory: "dist",
+		frameworkEntry: "dist/server/server.js",
+		title: "TanStack Start home",
+		paths: {},
+	},
+];
+
+/**
+ * A fixture's build directory alone, as a deploy copies it: the runtime runs
+ * `<build>/server/app-server.js` with no `npm install` and no `node_modules`
+ * above it.
+ */
+async function checkStandalone(
+	runtime: string,
+	app: (typeof standaloneApps)[number],
+): Promise<void> {
+	const deployed = realpathSync(mkdtempSync(join(tmpdir(), "app-server-deployed-")));
+	cpSync(join(app.directory, app.buildDirectory), join(deployed, app.buildDirectory), {
+		recursive: true,
+	});
+	for (let directory = deployed; directory !== dirname(directory); directory = dirname(directory)) {
+		assert.ok(!existsSync(join(directory, "node_modules")), `no node_modules above ${deployed}`);
+	}
+	const { child, lines, url } = startServer(
+		runtime,
+		[`${app.buildDirectory}/server/app-server.js`],
+		{ cwd: deployed },
+	);
+	try {
+		const base = await url;
+		await checkFrameworkShared(base, app.title, join(deployed, app.buildDirectory, "client"));
+		for (const [path, text] of Object.entries(app.paths)) {
+			assert.equal(await (await fetch(new URL(path, base))).text(), text);
+		}
+		await stopCleanly(child, `the ${app.name} build alone`);
+		assert.deepEqual(
+			lines.map((line) => line.message).filter((message) => message !== "request"),
+			["listening", "draining", "stopped"],
+			"SIGTERM drains the server, and the build starts it once",
+		);
+		if (runtime === "node") {
+			const frameworkEntry = pathToFileURL(join(deployed, app.frameworkEntry)).href;
+			execFileSync("node", ["--input-type=module", "-e", `await import("${frameworkEntry}");`]);
+		}
+		process.stdout.write(`ok ${runtime} ${app.name} standalone\n`);
+	} finally {
+		child.kill("SIGKILL");
+		rmSync(deployed, { recursive: true, force: true });
 	}
 }
 
@@ -509,5 +590,8 @@ for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	}
 	await checkReactRouter(runtime);
 	await checkTanstackStart(runtime);
+	for (const app of standaloneApps) {
+		await checkStandalone(runtime, app);
+	}
 	await checkTanstackStartDev(runtime);
 }

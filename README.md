@@ -94,7 +94,7 @@ Run it:
 }
 ```
 
-`appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework.
+`appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. The build also bundles the dependencies, so the build directory runs with no install. See [Deploy](#deploy).
 
 After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) next to each text file of 1 kibibyte (KiB) or more in the client build, except HTML. `app-server serve` sends the copy to a client that accepts gzip, so it does not gzip the file for each request. The copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copy. The build does not change a `.gz` file of the app. The copies include the prerendered files, in any plugin order. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
@@ -105,11 +105,41 @@ A React Router app with no Vite plugin also works: `app-server serve build/serve
 ## Commands
 
 - `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
+- `node build/server/app-server.js`: production, with no install. Use `dist/server/app-server.js` for TanStack Start. It reads `PORT` and `HOST`, and it drains on `SIGTERM` or `SIGINT`, as `app-server serve` does. It has no `--port`. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value.
 - `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. A server process serves the client build that was there at start. A deploy starts a new process.
 
 `-p` is short for `--port`. `--help` writes the usage. A bad argument writes a message and the usage, and exits with code 1.
 
-On Bun, run `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys node_modules/@ngrok/app-server/dist/cli.js serve`. For `start` on Deno, also give `--allow-ffi --allow-write --ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop`. Vite loads its native bundler and writes its cache. On Linux, Vite also reads a WSL file that Deno gives only to `--allow-all`.
+On Bun, run `bun build/server/app-server.js`, or `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys build/server/app-server.js`, or give the same flags to `node_modules/@ngrok/app-server/dist/cli.js serve`. A native package on Deno also needs `--allow-ffi`. For `start` on Deno, also give `--allow-ffi --allow-write --ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop`. Vite loads its native bundler and writes its cache. On Linux, Vite also reads a WSL file that Deno gives only to `--allow-all`.
+
+## Deploy
+
+`vite build`, or `react-router build`, writes a server build that runs with no `npm install`. Copy the build directory alone, and run its server entry:
+
+- `appServer` bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal`.
+- Two kinds of package stay external: each package in the app's `ssr.external`, and each native package. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`.
+- The build copies each external package, whole, with its installed dependencies, into `node_modules` in the server build. Each file stays where its package expects it, so CommonJS, a file read through `__dirname`, and a `.node` addon work.
+- The build writes a `package.json` with `"type": "module"` into the server build, so Node, Bun, and Deno load it as ES modules and find its `node_modules`.
+
+The copy holds only the native addon that the install put on the build machine. So run the build on the platform of the server, such as in the builder stage of a Docker image:
+
+```dockerfile
+FROM node:26-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM gcr.io/distroless/nodejs26-debian13
+WORKDIR /app
+COPY --from=build /app/build ./build
+EXPOSE 3000
+# The image runs `node` with these arguments.
+CMD ["build/server/app-server.js"]
+```
+
+For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 ## The pipeline
 
@@ -679,6 +709,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 
 - The build must serve at `/` (Vite `base`). The Vite plugin fails the build for another base.
 - `appServer` does not support React Router `serverBundles`.
+- The server build holds one copy of each external package. If the build finds two copies of one external package, such as two versions, the build fails.
 - One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
 - The package has one host adapter, `node`. A serverless host, such as Cloudflare Workers or Vercel, needs its own adapter. See `HostRuntime` and `HostBuild`.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.

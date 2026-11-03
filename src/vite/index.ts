@@ -8,10 +8,11 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { isBuiltin } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
-import type { Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
+import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
@@ -19,6 +20,7 @@ import { contentType } from "../core/static-files.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
+import { copyPackages, findPackage, isNativePackage, packageName } from "./standalone.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
 export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";
@@ -26,6 +28,9 @@ const RESOLVED_SERVER_ENTRY_ID = `\0${SERVER_ENTRY_ID}`;
 
 /** The Vite environment that builds the server. */
 const SERVER_ENVIRONMENT = "ssr";
+
+/** A bare import, such as `react` or `@scope/name/path`: not a path, a `\0` ID, or a `node:` or `virtual:` ID. */
+const BARE_IMPORT = /^[\w@][^:]*$/u;
 
 /** The header that turns on Node's header store for a response, so `finish` can read every header. */
 const CAPTURE_MARKER = "x-app-server-capture";
@@ -149,31 +154,52 @@ type EntrySource = {
 	clientDirectory: string;
 };
 
-/** The source of the server entry. */
+/**
+ * The source of the server entry. When a runtime runs the file as its main
+ * module, such as `node build/server/app-server.js`, the entry starts the
+ * server. When the CLI imports it, the CLI starts the server.
+ */
 export function serverEntrySource({
 	framework,
 	host,
 	appModule,
 	clientDirectory,
 }: EntrySource): string {
-	return [
-		`import * as serverModule from ${JSON.stringify(framework.serverModule)};`,
+	const modules = [
+		framework.serverModule,
 		// Why from the bundle: the CLI calls this export, so the server runs on the bundle's copy of
 		// this package and of the framework, the same copies as the app and the routes.
-		`import { createEntry, createServer } from "@ngrok/app-server";`,
-		`import { runtime } from ${JSON.stringify(framework.runtimeModule)};`,
-		`import { host } from ${JSON.stringify(host.runtimeModule)};`,
+		"@ngrok/app-server",
+		framework.runtimeModule,
+		host.runtimeModule,
+		...(appModule == null ? [] : [appModule]),
+	];
+	return [
+		// Why before the imports: React reads `NODE_ENV` when it loads. Why dynamic imports: a static
+		// import loads before this line.
+		"if (import.meta.main) {",
+		'\tprocess.env.NODE_ENV ??= "production";',
+		'\tif (typeof process.setSourceMapsEnabled === "function") {',
+		"\t\tprocess.setSourceMapsEnabled(true);",
+		"\t}",
+		"}",
+		`const [serverModule, { createEntry, createServer }, { runtime }, { host }${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
+		...modules.map((module) => `\timport(${JSON.stringify(module)}),`),
+		"]);",
 		...(appModule == null
 			? [
 					`const app = createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1", trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0) });`,
 				]
-			: [`import app from ${JSON.stringify(appModule)};`]),
+			: []),
 		`export const appServer = createEntry({`,
 		`\tapp,`,
 		`\thost,`,
 		`\tclientDirectory: ${clientDirectory},`,
 		`\tframework: (mode) => runtime(serverModule, { ${framework.runtimeOptions == null ? "" : `...${framework.runtimeOptions}, `}mode }),`,
 		`});`,
+		"if (import.meta.main) {",
+		"\tawait appServer.start();",
+		"}",
 	].join("\n");
 }
 
@@ -183,6 +209,107 @@ function outDir(config: ResolvedConfig, environment: string): string {
 		config.root,
 		config.environments[environment]?.build.outDir ?? config.build.outDir,
 	);
+}
+
+/** Whether `environment` builds the server. */
+function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean {
+	return environment.name === SERVER_ENVIRONMENT && environment.mode === "build";
+}
+
+/**
+ * Makes the server build run with no install. The build bundles each
+ * dependency, except the packages that the app keeps in `ssr.external` and
+ * each native package (see `isNativePackage`). Those stay external, so the
+ * plugin copies each one, whole, with its dependencies, into `node_modules` in
+ * the server build. It also writes a `package.json` there, so Node, Bun, and
+ * Deno load the build as ES modules and find that `node_modules`.
+ */
+function standalone(): Plugin {
+	// Why a value for each name: two copies of one external package cannot share one `node_modules`.
+	const externals = new Map<string, string | undefined>();
+	const natives = new Map<string, boolean>();
+	const isNative = (directory: string): boolean => {
+		const native = natives.get(directory) ?? isNativePackage(directory);
+		natives.set(directory, native);
+		return native;
+	};
+	return {
+		name: "@ngrok/app-server:standalone",
+		// Why `pre`: Vite's resolver runs before a plugin with no `enforce`, so that plugin cannot keep
+		// a native package out of the bundle.
+		enforce: "pre",
+		config: (config, { command }) =>
+			// Why a build only: in development, Vite loads each dependency from `node_modules`. Why not
+			// with the app's value: Vite merges `true` over a list, so the list then has no effect.
+			command === "build" &&
+			config.ssr?.noExternal == null &&
+			config.environments?.[SERVER_ENVIRONMENT]?.resolve?.noExternal == null
+				? { ssr: { noExternal: true } }
+				: undefined,
+		buildStart() {
+			if (isServerBuild(this.environment)) {
+				externals.clear();
+				natives.clear();
+			}
+		},
+		resolveId: {
+			filter: { id: BARE_IMPORT },
+			async handler(source, importer, options) {
+				if (!isServerBuild(this.environment) || isBuiltin(source)) {
+					return null;
+				}
+				const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+				const bundled = resolved?.external === false;
+				// Why only a file: a plugin can resolve a bare import to a virtual module.
+				if (resolved == null || (bundled && !isAbsolute(resolved.id))) {
+					return resolved;
+				}
+				const name = packageName(source);
+				const directory = findPackage(
+					name,
+					importer != null && isAbsolute(importer)
+						? dirname(importer)
+						: this.environment.config.root,
+				);
+				if (bundled && (directory == null || !isNative(directory))) {
+					return resolved;
+				}
+				const known = externals.get(name);
+				if (known != null && directory != null && known !== directory) {
+					throw new Error(
+						`@ngrok/app-server found two copies of "${name}" that stay external, and the server build can hold one: ${known} and ${directory}. Install one version of "${name}".`,
+					);
+				}
+				externals.set(name, known ?? directory);
+				return bundled ? { id: source, external: true } : resolved;
+			},
+		},
+		writeBundle() {
+			if (!isServerBuild(this.environment)) {
+				return;
+			}
+			const directory = outDir(this.environment.getTopLevelConfig(), SERVER_ENVIRONMENT);
+			const found = new Map<string, string>();
+			for (const [name, source] of externals) {
+				if (source == null) {
+					this.environment.logger.warn(
+						`@ngrok/app-server cannot find "${name}", which stays external, so the server build does not hold it. The server fails if it imports "${name}".`,
+					);
+				} else {
+					found.set(name, source);
+				}
+			}
+			const target = join(directory, "node_modules");
+			rmSync(target, { recursive: true, force: true });
+			copyPackages(found, target);
+			writeFileSync(join(directory, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
+			if (found.size > 0) {
+				this.environment.logger.info(
+					`@ngrok/app-server copied the external packages ${[...found.keys()].join(", ")}, with their dependencies, into ${target}.`,
+				);
+			}
+		},
+	};
 }
 
 /**
@@ -450,7 +577,11 @@ function writeGzipCopies(clientDirectory: string): void {
  *   `build/server/app-server.js` on the node host. The entry bundles the app
  *   (the default export of `app`) with the framework's server module, so the
  *   server gets the app's path aliases and its one copy of the framework.
- *   The framework's own entry does not change.
+ *   The framework's own entry does not change. When a runtime runs the entry
+ *   as its main module, the entry starts the server.
+ * - In a build, it bundles each dependency into the server build. It copies
+ *   each package that stays external into `node_modules` in the server build.
+ *   So the build directory runs with no install.
  * - After the client build, it writes `.app-server.json` in the client
  *   build with the build ID: a hash of the client bundle. After the build,
  *   it adds the files that the server build wrote to the client's assets
@@ -510,7 +641,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		buildStart() {
 			// Why a chunk and not an input: the framework's own entry stays the same, and its prerender
 			// preview reads that entry.
-			if (this.environment.name === SERVER_ENVIRONMENT && this.environment.mode === "build") {
+			if (isServerBuild(this.environment)) {
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
 			}
 		},
@@ -580,5 +711,5 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 			}
 		},
 	};
-	return [main, gzipCopies];
+	return [main, gzipCopies, standalone()];
 }
