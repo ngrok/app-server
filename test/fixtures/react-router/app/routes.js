@@ -4,4 +4,5 @@ export default [
 	index("routes/home.jsx"),
 	route("hello.txt", "routes/hello.js"),
 	route("whoami", "routes/whoami.js"),
+	route("greeting", "routes/greeting.js"),
 ];

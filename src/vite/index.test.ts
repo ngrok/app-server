@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -10,10 +12,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { preview, resolveConfig } from "vite";
-import type { Plugin, ViteBuilder } from "vite";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { build as viteBuild, preview, resolveConfig } from "vite";
+import type { InlineConfig, Plugin, ViteBuilder } from "vite";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
@@ -92,9 +95,9 @@ describe("appServer with no options", () => {
 			plugins: [frameworkPlugin("react-router:virtual-modules")],
 		});
 
-		expect(entry).toContain('import * as serverModule from "virtual:react-router/server-build";');
-		expect(entry).toContain('import { runtime } from "@ngrok/app-server/react-router";');
-		expect(entry).toContain('import { host } from "@ngrok/app-server/node";');
+		expect(entry).toContain('import("virtual:react-router/server-build"),');
+		expect(entry).toContain('import("@ngrok/app-server/react-router"),');
+		expect(entry).toContain('import("@ngrok/app-server/node"),');
 	});
 
 	it("uses the TanStack Start adapter when the config has the TanStack Start plugin", async () => {
@@ -102,8 +105,8 @@ describe("appServer with no options", () => {
 			plugins: [frameworkPlugin("tanstack-react-start:config")],
 		});
 
-		expect(entry).toContain('import * as serverModule from "virtual:tanstack-start-server-entry";');
-		expect(entry).toContain('import { runtime } from "@ngrok/app-server/tanstack-start";');
+		expect(entry).toContain('import("virtual:tanstack-start-server-entry"),');
+		expect(entry).toContain('import("@ngrok/app-server/tanstack-start"),');
 	});
 
 	it("fails for a config with no framework plugin, and says to pass `framework`", async () => {
@@ -133,11 +136,11 @@ describe("appServer with no options", () => {
 		);
 		writeFileSync(join(project, "server.js"), "");
 		await expect(serverEntry(undefined, { plugins, projectRoot: project })).resolves.toContain(
-			`import app from ${JSON.stringify(join(project, "server.js"))};`,
+			`import(${JSON.stringify(join(project, "server.js"))}),`,
 		);
 		writeFileSync(join(project, "server.ts"), "");
 		await expect(serverEntry(undefined, { plugins, projectRoot: project })).resolves.toContain(
-			`import app from ${JSON.stringify(join(project, "server.ts"))};`,
+			`import(${JSON.stringify(join(project, "server.ts"))}),`,
 		);
 		rmSync(project, { recursive: true, force: true });
 	});
@@ -155,9 +158,9 @@ describe("appServer with no options", () => {
 			{ plugins: [frameworkPlugin("react-router:virtual-modules")], projectRoot: project },
 		);
 
-		expect(entry).toContain('import { runtime } from "@ngrok/app-server/tanstack-start";');
-		expect(entry).toContain('import { host } from "edge-host";');
-		expect(entry).toContain(`import app from ${JSON.stringify(join(project, "src/app.ts"))};`);
+		expect(entry).toContain('import("@ngrok/app-server/tanstack-start"),');
+		expect(entry).toContain('import("edge-host"),');
+		expect(entry).toContain(`import(${JSON.stringify(join(project, "src/app.ts"))}),`);
 		rmSync(project, { recursive: true, force: true });
 	});
 });
@@ -435,17 +438,28 @@ describe("appServer", () => {
 			}),
 		).toBe(
 			[
-				'import * as serverModule from "virtual:react-router/server-build";',
-				'import { createEntry, createServer } from "@ngrok/app-server";',
-				'import { runtime } from "@ngrok/app-server/react-router";',
-				'import { host } from "@ngrok/app-server/node";',
-				'import app from "/app/server.ts";',
+				"if (import.meta.main) {",
+				'\tprocess.env.NODE_ENV ??= "production";',
+				'\tif (typeof process.setSourceMapsEnabled === "function") {',
+				"\t\tprocess.setSourceMapsEnabled(true);",
+				"\t}",
+				"}",
+				"const [serverModule, { createEntry, createServer }, { runtime }, { host }, { default: app }] = await Promise.all([",
+				'\timport("virtual:react-router/server-build"),',
+				'\timport("@ngrok/app-server"),',
+				'\timport("@ngrok/app-server/react-router"),',
+				'\timport("@ngrok/app-server/node"),',
+				'\timport("/app/server.ts"),',
+				"]);",
 				"export const appServer = createEntry({",
 				"\tapp,",
 				"\thost,",
 				"\tclientDirectory: CLIENT,",
 				"\tframework: (mode) => runtime(serverModule, { mode }),",
 				"});",
+				"if (import.meta.main) {",
+				"\tawait appServer.start();",
+				"}",
 			].join("\n"),
 		);
 	});
@@ -576,5 +590,235 @@ describe("appServer", () => {
 		}
 		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
 		expect(readFileSync(join(client, "data.json.gz"), "utf8")).toBe("app data");
+	});
+});
+
+describe("appServer in a server build", () => {
+	/** The plugin of `appServer` that makes the server build run with no install. */
+	const standalonePlugin = () =>
+		appServer({ framework: reactRouterAdapter(), host: node() }).find(
+			(plugin) => plugin.name === "@ngrok/app-server:standalone",
+		);
+
+	/** Writes files under `directory`. */
+	function writeFiles(directory: string, files: Record<string, string>): void {
+		for (const [path, content] of Object.entries(files)) {
+			mkdirSync(dirname(join(directory, path)), { recursive: true });
+			writeFileSync(join(directory, path), content);
+		}
+	}
+
+	/**
+	 * Builds `entry.js` of a project with `files` and the Vite `config`, copies
+	 * the build alone to a new directory, and gives the `values` export of the
+	 * copy, and the path of the copied server build.
+	 */
+	async function buildAlone(
+		files: Record<string, string>,
+		config: InlineConfig,
+	): Promise<{ values: unknown; server: string }> {
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-standalone-")));
+		const deployed = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-deployed-")));
+		onTestFinished(() => {
+			rmSync(project, { recursive: true, force: true });
+			rmSync(deployed, { recursive: true, force: true });
+		});
+		writeFiles(project, { "package.json": JSON.stringify({ type: "module" }), ...files });
+		await viteBuild({
+			root: project,
+			configFile: false,
+			logLevel: "silent",
+			plugins: [standalonePlugin()],
+			...config,
+			build: { ssr: "entry.js", outDir: "build/server", ...config.build },
+		});
+		// Why a copy: no `node_modules` is above the temporary directory, so the build must hold each package.
+		cpSync(join(project, "build"), join(deployed, "build"), { recursive: true });
+		const url = pathToFileURL(join(deployed, "build/server/entry.js")).href;
+		const output = execFileSync(
+			process.execPath,
+			["--input-type=module", "-e", `console.log(JSON.stringify((await import("${url}")).values))`],
+			{ encoding: "utf8" },
+		);
+		return { values: JSON.parse(output), server: join(deployed, "build/server") };
+	}
+
+	/** A package in `node_modules` with `main` at `index.js`. */
+	const commonJsPackage = (
+		name: string,
+		source: string,
+		manifest: Record<string, unknown> = {},
+	): Record<string, string> => ({
+		[`node_modules/${name}/package.json`]: JSON.stringify({ name, main: "index.js", ...manifest }),
+		[`node_modules/${name}/index.js`]: source,
+	});
+
+	it("bundles each dependency, and copies each native or external package next to the build", async () => {
+		const { values, server } = await buildAlone(
+			{
+				"entry.js": [
+					'import { pure } from "pure";',
+					'import { native } from "native";',
+					'import { kept } from "kept";',
+					"export const values = [pure, native, kept];",
+				].join("\n"),
+				...commonJsPackage("pure", 'exports.pure = "pure";'),
+				// Why `__dirname`: a native package loads its addon from a path next to its own code.
+				...commonJsPackage(
+					"native",
+					[
+						'const { readFileSync } = require("node:fs");',
+						'exports.native = readFileSync(__dirname + "/build/Release/native.node", "utf8");',
+					].join("\n"),
+				),
+				"node_modules/native/build/Release/native.node": "native",
+				...commonJsPackage(
+					"kept",
+					[
+						'const { readFileSync } = require("node:fs");',
+						'exports.kept = readFileSync(__dirname + "/word.txt", "utf8") + require("helper");',
+					].join("\n"),
+					{ dependencies: { helper: "1.0.0" } },
+				),
+				"node_modules/kept/word.txt": "kept with ",
+				...commonJsPackage("helper", 'module.exports = "helper";'),
+			},
+			{ ssr: { external: ["kept"] } },
+		);
+
+		expect(values).toStrictEqual(["pure", "native", "kept with helper"]);
+		expect(readFileSync(join(server, "entry.js"), "utf8")).toContain('"pure"');
+		expect(existsSync(join(server, "node_modules/pure"))).toBe(false);
+	});
+
+	it.each([
+		{ ssr: { external: ["widget"] } },
+		{ ssr: { external: ["widget/server"] } },
+		{ build: { rolldownOptions: { external: ["widget/server"] } } },
+	])(
+		"gives the bundle and an external package one copy of each shared package: %j",
+		async (config) => {
+			const { values } = await buildAlone(
+				{
+					"entry.js": [
+						'import { token } from "shared";',
+						'import { registry } from "widget";',
+						'import { sameToken, sameRegistry } from "widget/server";',
+						"export const values = [sameToken(token), sameRegistry(registry)];",
+					].join("\n"),
+					...commonJsPackage("shared", "exports.token = {};"),
+					// Why a peer two levels down: `widget` gets `shared` through the peer of its peer.
+					...commonJsPackage("middle", 'exports.token = require("shared").token;', {
+						peerDependencies: { shared: "1.0.0" },
+					}),
+					...commonJsPackage("widget", "exports.registry = {};", {
+						exports: { ".": "./index.js", "./server": "./server.js" },
+						peerDependencies: { middle: "1.0.0" },
+					}),
+					"node_modules/widget/server.js": [
+						'exports.sameToken = (token) => token === require("middle").token;',
+						'exports.sameRegistry = (registry) => registry === require("./index.js").registry;',
+					].join("\n"),
+				},
+				config,
+			);
+
+			expect(values).toStrictEqual([true, true]);
+		},
+	);
+
+	it("bundles a JSON file or an asset of a native package", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import manifest from "native/package.json";',
+					'import notes from "native/notes.txt?raw";',
+					'import license from "native/LICENSE?raw";',
+					"export const values = [manifest.name, notes, license];",
+				].join("\n"),
+				...commonJsPackage("native", ""),
+				"node_modules/native/addon.node": "",
+				"node_modules/native/notes.txt": "notes",
+				"node_modules/native/LICENSE": "License text",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["native", "notes", "License text"]);
+	});
+
+	it("copies a package that the bundler's own `external` option keeps external", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": 'import { word } from "wrapper";\nexport const values = [word];',
+				"node_modules/wrapper/package.json": JSON.stringify({ name: "wrapper", type: "module" }),
+				"node_modules/wrapper/index.js": 'export { word } from "outside";',
+				// Why only in `wrapper`: with pnpm, a dependency of a dependency is not at the top.
+				...commonJsPackage("wrapper/node_modules/outside", 'exports.word = "outside";'),
+			},
+			{ build: { rolldownOptions: { external: ["outside"] } } },
+		);
+
+		expect(values).toStrictEqual(["outside"]);
+	});
+
+	it("copies a package in `ssr.external` that the app reads at run time with no import", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { readFileSync } from "node:fs";',
+					'import { createRequire } from "node:module";',
+					"const require = createRequire(import.meta.url);",
+					'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+				].join("\n"),
+				"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
+				"node_modules/fonts/mono.woff": "font",
+			},
+			{ ssr: { external: ["fonts"] } },
+		);
+
+		expect(values).toStrictEqual(["font"]);
+	});
+
+	it("copies the native package that Vite resolves, such as for `resolve.dedupe`", async () => {
+		const nativePackage = (directory: string, version: string) => ({
+			...commonJsPackage(
+				directory,
+				`exports.version = require("node:fs").readFileSync(__dirname + "/addon.node", "utf8");`,
+				{ version },
+			),
+			[`node_modules/${directory}/addon.node`]: version,
+		});
+		const { values } = await buildAlone(
+			{
+				"entry.js": 'import { version } from "wrapper";\nexport const values = [version];',
+				...commonJsPackage("wrapper", 'exports.version = require("native").version;'),
+				...nativePackage("native", "2.0.0"),
+				...nativePackage("wrapper/node_modules/native", "1.0.0"),
+			},
+			{ resolve: { dedupe: ["native"] } },
+		);
+
+		expect(values).toStrictEqual(["2.0.0"]);
+	});
+
+	it("bundles each dependency in a build, unless the app sets its own `ssr.noExternal` or `ssr.external: true`", async () => {
+		const resolve = async (
+			ssr: { noExternal?: string[]; external?: true },
+			command: "build" | "serve",
+		) =>
+			(
+				await resolveConfig(
+					{ root, configFile: false, logLevel: "silent", plugins: [standalonePlugin()], ssr },
+					command,
+				)
+			).ssr.noExternal;
+
+		await expect(resolve({}, "build")).resolves.toBe(true);
+		await expect(resolve({ noExternal: ["only-this"] }, "build")).resolves.toStrictEqual([
+			"only-this",
+		]);
+		await expect(resolve({}, "serve")).resolves.toStrictEqual([]);
+		await expect(resolve({ external: true }, "build")).resolves.toStrictEqual([]);
 	});
 });
