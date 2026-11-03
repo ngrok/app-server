@@ -117,9 +117,9 @@ On Bun, run `bun build/server/app-server.js`, or `bun node_modules/@ngrok/app-se
 `vite build`, or `react-router build`, writes a server build that runs with no `npm install`. Copy the build directory alone, and run its server entry:
 
 - `appServer` bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal` or sets `ssr.external: true`.
-- Some packages stay external: each package in the app's `ssr.external` or in the bundler's `external` option, the whole package of an external subpath, each peer dependency of a package that the app keeps external, the peers of each peer, and each native package. So the bundle and an external package use one copy of a package, such as `react` for a component library. The build reads the peers of a string in the bundler's `external` option, but not of a `RegExp` or a function. For those, add the peers to `ssr.external`. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`.
+- Some packages stay external: each package in the app's `ssr.external` or in the bundler's `external` option, the whole package of an external subpath, each peer dependency of a package that the app keeps external, the peers of each peer, each native package, and each package that reads a file next to its own module. So the bundle and an external package use one copy of a package, such as `react` for a component library. For a `RegExp` or a function in the bundler's `external` option, the build tests the name of each package in the `dependencies`, `optionalDependencies`, and `devDependencies` of the app. It keeps the peers of each match external too. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`. A package reads a file next to its module when the file that an import resolves to has `new URL("./…", import.meta.url)`, `fileURLToPath(import.meta.url)`, or `import.meta.dirname`. For example, `@vercel/og` reads `resvg.wasm` so.
 - The build copies each external package, whole, with its installed dependencies, into `node_modules` in the server build. Each file stays where its package expects it, so CommonJS, a file read through `__dirname`, and a `.node` addon work.
-- The build copies each package in `ssr.external`, also when no code imports it. So when the app reads a file of a package at run time, such as through `require.resolve`, add the package to `ssr.external`.
+- The build copies each package in `ssr.external`, also when no code imports it. It also copies each package that the app's code gives to `require.resolve()` or `import.meta.resolve()` as a string, such as `require.resolve("@fontsource/inter/files/inter-latin-400-normal.woff")`. When the code makes the name at run time, add the package to `ssr.external`.
 - The build writes a `package.json` with `"type": "module"` into the server build, so Node, Bun, and Deno load it as ES modules and find its `node_modules`.
 
 The copy holds only the native addon that the install put on the build machine. So run the build on the platform of the server, such as in the builder stage of a Docker image:
@@ -166,7 +166,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. A plugin of a named option in `beforeStatic`, such as `buildId()`, stops startup, so a plugin never runs twice. Use the option. A plugin is Hono middleware plus optional hooks:
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is Hono middleware plus optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";
@@ -270,6 +270,8 @@ defaultPlugins({
 - A prerendered document gets `'self'` and the hash of each of its inline scripts, such as `'self' 'sha256-…'`. The `appServer` Vite plugin records the hashes. The prerender writes one nonce into the file, and every visitor can read it, so a nonce protects nothing. A hash does not carry to the imports of an inline module script, so this list has no `'strict-dynamic'`.
 
 If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. A 304 for a prerendered document gets the policy too, because a browser replaces the policy of its cached copy with the policy of the 304. The `contentSecurityPolicy` option of `defaultPlugins()` puts the plugin before the static stages, so it sees the prerendered documents.
+
+In development, `app-server start` sends the same policy. A rendered page gets a nonce. An HTML file in Vite's public directory, such as `public/offline.html`, gets the hashes of its inline scripts, so a script that production blocks is blocked in development too.
 
 ```ts
 createServer({

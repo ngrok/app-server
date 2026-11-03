@@ -8,7 +8,7 @@ import { health } from "./health.js";
 
 describe("health", () => {
 	it("answers the probes with no-store and logs no line for them", async () => {
-		const { request, lines } = await testServer({ plugins: [health(), ...defaultPlugins()] });
+		const { request, lines } = await testServer({ plugins: defaultPlugins() });
 
 		const live = await request("/livez");
 		const ready = await request("/readyz");

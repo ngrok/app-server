@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { build as viteBuild, preview, resolveConfig } from "vite";
+import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
 import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
@@ -719,11 +719,15 @@ describe("appServer in a server build", () => {
 		{ ssr: { external: ["widget"] } },
 		{ ssr: { external: ["widget/server"] } },
 		{ build: { rolldownOptions: { external: ["widget/server"] } } },
+		{ build: { rolldownOptions: { external: [/^widget/u] } } },
+		{ build: { rolldownOptions: { external: (id: string) => id.startsWith("widget") } } },
 	])(
 		"gives the bundle and an external package one copy of each shared package: %j",
 		async (config) => {
 			const { values } = await buildAlone(
 				{
+					// Why `widget` here: the build tests a `RegExp` or a function external on the app's dependencies.
+					"package.json": JSON.stringify({ type: "module", dependencies: { widget: "1.0.0" } }),
 					"entry.js": [
 						'import { token } from "shared";',
 						'import { registry } from "widget";',
@@ -750,6 +754,27 @@ describe("appServer in a server build", () => {
 			expect(values).toStrictEqual([true, true]);
 		},
 	);
+
+	it("builds when a function external throws for a package with no importer", async () => {
+		const external = (id: string, importer: string | undefined) => {
+			if (importer == null) {
+				throw new Error("This external reads the importer.");
+			}
+			return id === "outside";
+		};
+		const { values } = await buildAlone(
+			{
+				"package.json": JSON.stringify({ type: "module", dependencies: { wrapper: "1.0.0" } }),
+				"entry.js": 'import { word } from "wrapper";\nexport const values = [word];',
+				"node_modules/wrapper/package.json": JSON.stringify({ name: "wrapper", type: "module" }),
+				"node_modules/wrapper/index.js": 'export { word } from "outside";',
+				...commonJsPackage("wrapper/node_modules/outside", 'exports.word = "outside";'),
+			},
+			{ build: { rolldownOptions: { external } } },
+		);
+
+		expect(values).toStrictEqual(["outside"]);
+	});
 
 	it("bundles a JSON file or an asset of a native package", async () => {
 		const { values } = await buildAlone(
@@ -786,22 +811,160 @@ describe("appServer in a server build", () => {
 		expect(values).toStrictEqual(["outside"]);
 	});
 
-	it("copies a package in `ssr.external` that the app reads at run time with no import", async () => {
+	it.each([{ ssr: { external: ["fonts"] } }, {}])(
+		"copies a package that the app reads at run time with no import: %j",
+		async (config) => {
+			const { values } = await buildAlone(
+				{
+					"entry.js": [
+						'import { readFileSync } from "node:fs";',
+						'import { createRequire } from "node:module";',
+						"const require = createRequire(import.meta.url);",
+						'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+					].join("\n"),
+					"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
+					"node_modules/fonts/mono.woff": "font",
+				},
+				config,
+			);
+
+			expect(values).toStrictEqual(["font"]);
+		},
+	);
+
+	it("keeps a package external that reads a file next to its own module", async () => {
+		const { values, server } = await buildAlone(
+			{
+				"entry.js": 'import { word } from "og";\nexport const values = [word];',
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					main: "index.js",
+				}),
+				"node_modules/og/index.js": [
+					'import { readFileSync } from "node:fs";',
+					'export const word = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+				].join("\n"),
+				"node_modules/og/word.txt": "own file",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file"]);
+		expect(existsSync(join(server, "node_modules/og/word.txt"))).toBe(true);
+	});
+
+	it("keeps the peers of a package that reads its own files external, so the bundle shares one copy", async () => {
 		const { values } = await buildAlone(
 			{
 				"entry.js": [
-					'import { readFileSync } from "node:fs";',
-					'import { createRequire } from "node:module";',
-					"const require = createRequire(import.meta.url);",
-					'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+					'import { token, word } from "og";',
+					'import { direct } from "./direct.js";',
+					"export const values = [token === direct, word];",
 				].join("\n"),
-				"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
-				"node_modules/fonts/mono.woff": "font",
+				"direct.js": 'export { token as direct } from "token";',
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					main: "index.js",
+					peerDependencies: { token: "*" },
+				}),
+				"node_modules/og/index.js": [
+					'import { readFileSync } from "node:fs";',
+					'export { token } from "token";',
+					'export const word = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+				].join("\n"),
+				"node_modules/og/word.txt": "own file",
+				...commonJsPackage("token", "exports.token = {};"),
 			},
-			{ ssr: { external: ["fonts"] } },
+			{},
 		);
 
-		expect(values).toStrictEqual(["font"]);
+		expect(values).toStrictEqual([true, "own file"]);
+	});
+
+	it("bundles a package that reads its own files, and warns, when the bundle already holds its peer", async () => {
+		const warnings: string[] = [];
+		const logger = createLogger("silent");
+		logger.warn = (message) => {
+			warnings.push(message);
+		};
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { token } from "token";',
+					'import { same } from "./a.js";',
+					"export const values = [same(token)];",
+				].join("\n"),
+				"a.js": 'export { same } from "./b.js";',
+				"b.js": 'import { token } from "og";\nexport const same = (value) => value === token;',
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					main: "index.js",
+					peerDependencies: { token: "*" },
+				}),
+				"node_modules/og/index.js": [
+					'export { token } from "token";',
+					'export const read = () => new URL("./word.txt", import.meta.url);',
+				].join("\n"),
+				...commonJsPackage("token", "exports.token = {};"),
+			},
+			{ customLogger: logger },
+		);
+
+		expect(values).toStrictEqual([true]);
+		expect(warnings).toStrictEqual([expect.stringContaining('bundles "og"')]);
+	});
+
+	it("bundles a bare import that resolves outside a package, or to a module that is not on disk", async () => {
+		const resolver: Plugin = {
+			name: "resolver",
+			resolveId(source, importer) {
+				if (importer == null) {
+					return null;
+				}
+				if (source === "shim") {
+					return join(dirname(importer), "lib/shim.js");
+				}
+				return source === "gen" ? join(dirname(importer), "node_modules/gen/generated.js") : null;
+			},
+			load: (id) => (id.endsWith("generated.js") ? 'export const word = "generated";' : null),
+		};
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { kind } from "shim";',
+					'import { word } from "gen";',
+					"export const values = [kind, word];",
+				].join("\n"),
+				"lib/shim.js": "export const kind = typeof import.meta.dirname;",
+				"node_modules/gen/package.json": JSON.stringify({ name: "gen", type: "module" }),
+			},
+			{ plugins: [standalonePlugin(), resolver] },
+		);
+
+		expect(values).toStrictEqual(["string", "generated"]);
+	});
+
+	it("copies an external package that the app's code also resolves as an optional file", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { createRequire } from "node:module";',
+					'import { word } from "wrapper";',
+					"const require = createRequire(import.meta.url);",
+					'try { require.resolve("outside"); } catch {}',
+					"export const values = [word];",
+				].join("\n"),
+				"node_modules/wrapper/package.json": JSON.stringify({ name: "wrapper", type: "module" }),
+				"node_modules/wrapper/index.js": 'export { word } from "outside";',
+				...commonJsPackage("wrapper/node_modules/outside", 'exports.word = "outside";'),
+			},
+			{ build: { rolldownOptions: { external: ["outside"] } } },
+		);
+
+		expect(values).toStrictEqual(["outside"]);
 	});
 
 	it("copies the native package that Vite resolves, such as for `resolve.dedupe`", async () => {

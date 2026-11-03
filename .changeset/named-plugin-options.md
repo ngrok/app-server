@@ -15,7 +15,7 @@ These plugins see every response, prerendered pages included. `beforeStatic` sta
 Breaking changes:
 
 - With `defaultPlugins()`, each document and data response now gets `X-Build-Id` and the `build` metric in `Server-Timing`.
-- A plugin of a named option in `beforeStatic`, such as `buildId()` or the plugin from `runtimeEnv()`, now stops startup, so a plugin never runs twice. Move it to its option.
+- Two plugins of one named option now stop startup, such as `buildId()` in `beforeStatic` next to the default `buildId`. One would replace the headers of the other, so the value that the app gave would be lost. Move the plugin to its option.
 
 Before:
 

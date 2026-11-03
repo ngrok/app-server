@@ -1,4 +1,5 @@
 import { withHeaderHook } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
 /**
@@ -11,11 +12,11 @@ import type { Plugin } from "../types.js";
  * defaultPlugins({ noindex: process.env.PREVIEW === "1" });
  */
 export function noindex(): Plugin {
-	return {
+	return optionPlugin("noindex", {
 		name: "noindex",
 		middleware: async (context, next) =>
 			withHeaderHook(context, next, (response) => {
 				response.set("X-Robots-Tag", "noindex, nofollow");
 			}),
-	};
+	});
 }

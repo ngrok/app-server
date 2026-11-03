@@ -13,6 +13,8 @@ import { eventStream } from "./event-stream.js";
 import { renewShutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
+import { health } from "./plugins/health.js";
+import { noindex } from "./plugins/noindex.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
 import { tcp } from "../node/tcp.js";
 import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
@@ -628,11 +630,26 @@ describe("defaultPlugins", () => {
 		expect((await request("/about")).headers.get("X-Build-Id")).toBeNull();
 	});
 
-	it("stops startup for a plugin of a named option in beforeStatic", () => {
-		expect(() => defaultPlugins({ beforeStatic: [buildId({ value: "v42" })] })).toThrow(
-			'Set the "buildId" option of defaultPlugins(), not the build-id plugin in beforeStatic.',
+	it("stops startup for two plugins of one option, anywhere in the list", () => {
+		expect(() =>
+			createServer({ plugins: defaultPlugins({ beforeStatic: [buildId({ value: "v42" })] }) }),
+		).toThrow("the build-id plugin two times");
+		expect(() => createServer({ plugins: [...defaultPlugins(), health()] })).toThrow(
+			'set the "health" option of defaultPlugins()',
 		);
-		expect(() => defaultPlugins({ beforeStatic: [env] })).toThrow('Set the "env" option');
+		expect(() => createServer({ plugins: [...defaultPlugins({ env }), env] })).toThrow(
+			'set the "env" option',
+		);
+	});
+
+	it("takes an app plugin that has the name of an option plugin", () => {
+		const own: Plugin = { name: "health" };
+
+		expect(() =>
+			createServer({ plugins: defaultPlugins({ noindex: true, beforeStatic: [own, noindex()] }) }),
+		).toThrow("noindex");
+		expect(() => createServer({ plugins: defaultPlugins({ beforeStatic: [own] }) })).not.toThrow();
+		expect(() => createServer({ plugins: defaultPlugins({ beforeStatic: [env] }) })).not.toThrow();
 	});
 
 	it("takes an app plugin whose name is a property of every object, such as constructor", () => {

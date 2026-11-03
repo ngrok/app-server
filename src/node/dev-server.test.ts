@@ -1,12 +1,15 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { createServer, serverInternals } from "../core/create-server.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { withHeaderHook } from "../core/header-hook.js";
 import { bodyLimit } from "../core/plugins/body-limit.js";
 import { buildId } from "../core/plugins/build-id.js";
 import { noindex } from "../core/plugins/noindex.js";
-import { securityHeaders } from "../core/plugins/security-headers.js";
+import { contentSecurityPolicy, securityHeaders } from "../core/plugins/security-headers.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { assets } from "../core/plugins/static.js";
 import type { Plugin } from "../core/types.js";
@@ -17,6 +20,97 @@ import type { NodeMiddleware } from "./dev-server.js";
 import { tcp } from "./tcp.js";
 
 describe("devServerStage", () => {
+	it("gives an HTML file of the public directory the CSP with its script hashes, for a 304 too", async () => {
+		const publicDirectory = mkdtempSync(join(tmpdir(), "app-server-public-"));
+		onTestFinished(() => {
+			rmSync(publicDirectory, { recursive: true, force: true });
+		});
+		mkdirSync(join(publicDirectory, "docs"));
+		writeFileSync(join(publicDirectory, "docs/offline.html"), "<script>go()</script>");
+		const app = createServer({
+			plugins: [
+				contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` }),
+				assets(),
+			],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (request, response) => {
+			if (request.headers["if-none-match"] != null) {
+				response.statusCode = 304;
+				response.end();
+				return;
+			}
+			response.setHeader("Content-Type", "text/html");
+			response.end("<script>go()</script>");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware, {
+				publicFiles: () => ({ directory: publicDirectory, base: "/" }),
+			}),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+		const url = new URL("/docs/offline.html", server?.urls[0]);
+
+		const ok = await fetch(url);
+		const notModified = await fetch(url, { headers: { "If-None-Match": 'W/"1"' } });
+		const notPublic = await fetch(new URL("/other.html", server?.urls[0]));
+		await server?.shutdown();
+
+		const policy = "script-src 'self' 'sha256-5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw='";
+		expect(ok.headers.get("Content-Security-Policy")).toBe(policy);
+		expect(notModified.status).toBe(304);
+		expect(notModified.headers.get("Content-Security-Policy")).toBe(policy);
+		expect(notPublic.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
+	});
+
+	it("finds the public file with or without Vite's base, and keeps the nonce policy when the middleware passes", async () => {
+		const publicDirectory = mkdtempSync(join(tmpdir(), "app-server-public-"));
+		onTestFinished(() => {
+			rmSync(publicDirectory, { recursive: true, force: true });
+		});
+		writeFileSync(join(publicDirectory, "offline.html"), "<script>go()</script>");
+		const app = createServer({
+			plugins: [
+				contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` }),
+				assets(),
+			],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (request, response, next) => {
+			if (request.method === "POST") {
+				next();
+				return;
+			}
+			response.setHeader("Content-Type", "text/html");
+			response.end("<script>go()</script>");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware, {
+				publicFiles: () => ({ directory: publicDirectory, base: "/docs/" }),
+			}),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+		const url = new URL("/docs/offline.html", server?.urls[0]);
+
+		const served = await fetch(url);
+		const noBase = await fetch(new URL("/offline.html", server?.urls[0]));
+		const passed = await fetch(url, { method: "POST" });
+		await server?.shutdown();
+
+		const policy = "script-src 'self' 'sha256-5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw='";
+		expect(served.headers.get("Content-Security-Policy")).toBe(policy);
+		expect(noBase.headers.get("Content-Security-Policy")).toBe(policy);
+		expect(passed.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
+	});
+
 	it("sends the request ID with the middleware's answer and logs its status and length", async () => {
 		const lines: LoggedLine[] = [];
 		const app = createServer({

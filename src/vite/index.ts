@@ -18,6 +18,7 @@ import type { BuildManifest } from "../core/build-manifest.js";
 import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
+import { inlineScriptHashes } from "../node/script-hashes.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
@@ -28,6 +29,7 @@ import {
 	isNativePackage,
 	packageDirectoryOf,
 	packageName,
+	readsOwnFiles,
 } from "./standalone.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
@@ -232,6 +234,16 @@ function isJavaScriptFile(id: string): boolean {
 	return isAbsolute(id) && !id.includes("?") && JAVASCRIPT_EXTENSIONS.has(extname(id));
 }
 
+/**
+ * A `require.resolve()` or an `import.meta.resolve()` of a string literal.
+ * The `source` group is the string.
+ */
+const RESOLVE_CALL =
+	/\b(?:require|import\.meta)\.resolve\(\s*(?<quote>["'`])(?<source>[^"'`$]+)\k<quote>/gu;
+
+/** The dependency fields of the app's `package.json` that can name a package the server imports. */
+const APP_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "devDependencies"];
+
 /** Whether `environment` builds the server. */
 function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean {
 	return environment.name === SERVER_ENVIRONMENT && environment.mode === "build";
@@ -241,6 +253,7 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
  * Makes the server build run with no install. The build bundles each
  * dependency, except the packages that the app keeps external (`ssr.external`
  * or the bundler's `external`), each native package (see `isNativePackage`),
+ * each package that reads a file next to its own module (see `readsOwnFiles`),
  * and each package that the bundle shares with a package that the app keeps
  * external: the whole package of an external subpath, and each peer, at each
  * level. Those stay external, so the plugin copies each one, whole, with its
@@ -259,6 +272,45 @@ function standalone(): Plugin {
 		const native = natives.get(directory) ?? isNativePackage(directory, scans);
 		natives.set(directory, native);
 		return native;
+	};
+	// Why: many modules import one package, and each check reads the file.
+	const ownFiles = new Map<string, boolean>();
+	// Why `existsSync`: another plugin can give a module that is not on disk.
+	const readsOwnFile = (file: string): boolean => {
+		const reads = ownFiles.get(file) ?? (existsSync(file) && readsOwnFiles(file));
+		ownFiles.set(file, reads);
+		return reads;
+	};
+	// Why: a package that stays external after the bundle holds one of its peers gets a second copy.
+	const inBundle = new Set<string>();
+	/**
+	 * Whether the bundled module `file` of package `name` must stay external:
+	 * the package is native, or `file` reads a file next to it. Then the
+	 * package and each of its peers stay external, so the bundle shares them.
+	 */
+	const staysExternal = (
+		{ name, file, directory }: { name: string; file: string; directory: string | undefined },
+		logger: Environment["logger"],
+	): boolean => {
+		const native = directory != null && isNative(directory);
+		if (directory == null || (!native && !readsOwnFile(file))) {
+			inBundle.add(name);
+			return false;
+		}
+		const group = withPeers([{ name, from: directory }]);
+		const held = [...group].find((peer) => inBundle.has(peer));
+		// Why bundle it: a second copy of a peer, such as `react`, breaks more than a lost file.
+		if (held != null && !native) {
+			logger.warn(
+				`@ngrok/app-server bundles "${name}", but it reads a file next to its own module, so the server can fail when it reads that file. The bundle already holds "${held}", so "${name}" cannot stay external alone. Add "${name}" to \`ssr.external\`.`,
+			);
+			inBundle.add(name);
+			return false;
+		}
+		for (const peer of group) {
+			shared.add(peer);
+		}
+		return true;
 	};
 	return {
 		name: "@ngrok/app-server:standalone",
@@ -286,6 +338,8 @@ function standalone(): Plugin {
 			shared.clear();
 			natives.clear();
 			scans.clear();
+			ownFiles.clear();
+			inBundle.clear();
 			const { resolve: resolveOptions, build, root } = this.environment.config;
 			const kept = [
 				...(resolveOptions.external === true ? [] : resolveOptions.external),
@@ -294,6 +348,17 @@ function standalone(): Plugin {
 			const names = kept.flatMap((id) =>
 				typeof id === "string" && BARE_IMPORT.test(id) ? [packageName(id)] : [],
 			);
+			const patterns = kept.filter(
+				(id): id is Exclude<typeof id, string | undefined> => id != null && typeof id !== "string",
+			);
+			// Why the app's dependencies: the bundler never shows the plugin an import that a `RegExp` or
+			// a function keeps external, so the build must find their peers before it bundles.
+			const matched =
+				patterns.length === 0 || !existsSync(join(root, "package.json"))
+					? []
+					: dependencyNames(root, APP_DEPENDENCY_FIELDS).filter((name) =>
+							patterns.some((pattern) => matchesExternal(pattern, name)),
+						);
 			// Why with no import: the app can read a file of a package at run time, such as through
 			// `require.resolve`.
 			for (const name of names) {
@@ -302,16 +367,10 @@ function standalone(): Plugin {
 					externals.set(name, directory);
 				}
 			}
-			const queue = names.map((name) => ({ name, from: root }));
-			// Why each level: a peer can have peers, such as `react` for `react-router`.
-			for (const { name, from } of queue) {
-				const directory = shared.has(name) ? undefined : findPackage(name, from);
+			for (const name of withPeers(
+				[...names, ...matched].map((dependency) => ({ name: dependency, from: root })),
+			)) {
 				shared.add(name);
-				if (directory != null) {
-					for (const peer of dependencyNames(directory, ["peerDependencies"])) {
-						queue.push({ name: peer, from: directory });
-					}
-				}
 			}
 		},
 		resolveId: {
@@ -336,7 +395,11 @@ function standalone(): Plugin {
 							? dirname(importer)
 							: this.environment.config.root,
 					);
-				if (bundled && !shared.has(name) && (directory == null || !isNative(directory))) {
+				if (
+					bundled &&
+					!shared.has(name) &&
+					!staysExternal({ name, file: resolved.id, directory }, this.environment.logger)
+				) {
 					return resolved;
 				}
 				const known = externals.get(name);
@@ -347,6 +410,33 @@ function standalone(): Plugin {
 				}
 				externals.set(name, known ?? directory);
 				return bundled ? { id: source, external: true } : resolved;
+			},
+		},
+		transform: {
+			// Why only the app's code: a package that resolves a file of another package at run time,
+			// such as an optional binary, would copy a large package that the server never reads.
+			filter: {
+				id: { exclude: /[\\/]node_modules[\\/]/u },
+				code: /\b(?:require|import\.meta)\.resolve\(/u,
+			},
+			handler(code, id) {
+				if (!isServerBuild(this.environment)) {
+					return null;
+				}
+				// Why: the server reads a file of the package at run time, so the build must hold the package.
+				for (const { groups } of code.matchAll(RESOLVE_CALL)) {
+					const source = groups?.source ?? "";
+					const name = packageName(source);
+					const directory =
+						BARE_IMPORT.test(source) && !isBuiltin(source) && !externals.has(name)
+							? findPackage(name, isAbsolute(id) ? dirname(id) : this.environment.config.root)
+							: undefined;
+					// Why only a package it finds: the module-graph pass in `writeBundle` can find it from another importer.
+					if (directory != null) {
+						externals.set(name, directory);
+					}
+				}
+				return null;
 			},
 		},
 		writeBundle() {
@@ -395,39 +485,41 @@ function standalone(): Plugin {
 }
 
 /**
- * An HTML comment, or a `<script>` element. The `attributes` group is the
- * script's attributes, and the `text` group is its text. Why the comment: a
- * `<script>` tag in a comment starts no element.
+ * Whether the app's `RegExp` or function external keeps the package `name`
+ * external. Why `false` when the function throws: the build calls it with no
+ * importer, and a function that reads the importer can throw.
  */
-const COMMENT_OR_SCRIPT =
-	/<!--[\s\S]*?-->|<script(?=[\s/>])(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>(?<text>[\s\S]*?)<\/script(?=[\s/>])/giu;
-
-/** An attribute value, so that a `src=` in a value is not the `src` attribute. */
-const ATTRIBUTE_VALUE = /[=]\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gu;
-
-/** A `src` attribute, in attributes with no values. */
-const SRC_ATTRIBUTE = /(?:^|[\s/])src(?:[\s/=]|$)/iu;
+function matchesExternal(
+	pattern: RegExp | ((id: string, importer: string | undefined, isResolved: boolean) => unknown),
+	name: string,
+): boolean {
+	if (typeof pattern !== "function") {
+		return name.search(pattern) !== -1;
+	}
+	try {
+		return pattern(name, undefined, false) === true;
+	} catch {
+		return false;
+	}
+}
 
 /**
- * The base64 `SHA-256` of each inline script in `html`, once each, in
- * document order. Why each type: a hash of a data block, such as JSON, trusts
- * no code, and a scan that skips a type that runs breaks the page. Why LF:
- * the browser changes each CRLF and CR to LF before it hashes a script.
- *
- * @example
- * inlineScriptHashes("<script>go()</script>"); // => ["…base64…"]
+ * Each package of `start` and each of its peers, at each level. Why each
+ * level: a peer can have peers, such as `react` for `react-router`.
  */
-function inlineScriptHashes(html: string): string[] {
-	const hashes: string[] = [];
-	for (const { groups } of html.replaceAll(/\r\n?/gu, "\n").matchAll(COMMENT_OR_SCRIPT)) {
-		if (
-			groups?.text != null &&
-			!SRC_ATTRIBUTE.test((groups.attributes ?? "").replaceAll(ATTRIBUTE_VALUE, "="))
-		) {
-			hashes.push(createHash("sha256").update(groups.text).digest("base64"));
+function withPeers(start: { name: string; from: string }[]): Set<string> {
+	const names = new Set<string>();
+	const queue = [...start];
+	for (const { name, from } of queue) {
+		const directory = names.has(name) ? undefined : findPackage(name, from);
+		names.add(name);
+		if (directory != null) {
+			for (const peer of dependencyNames(directory, ["peerDependencies"])) {
+				queue.push({ name: peer, from: directory });
+			}
 		}
 	}
-	return [...new Set(hashes)];
+	return names;
 }
 
 /** The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path. */

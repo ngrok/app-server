@@ -1,4 +1,5 @@
 import { withHeaderHook } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import type { Plugin, ResponseHeaders, SetupInfo } from "../types.js";
 
 /** The header that {@link buildId} sets by default. */
@@ -117,7 +118,7 @@ export function buildId({
 	let value = explicit;
 	let timing = buildMetric(value);
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;
-	return {
+	return optionPlugin("buildId", {
 		name: "build-id",
 		setup: (info) => {
 			({ isDataRequest } = info);
@@ -150,5 +151,5 @@ export function buildId({
 					response.delete(header);
 				}
 			}),
-	};
+	});
 }

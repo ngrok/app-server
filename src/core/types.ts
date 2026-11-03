@@ -162,6 +162,12 @@ export type AppServerEnv = {
 		 * such as `/about/index.html`. The static stages set it, for a 304 too.
 		 */
 		staticDocument?: string;
+		/**
+		 * The hashes of the inline scripts of an HTML file that the dev server
+		 * sends as it is on disk, such as a file of Vite's public directory. The
+		 * dev server stage sets it, for a 304 too.
+		 */
+		documentScriptHashes?: readonly string[];
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
