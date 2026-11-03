@@ -150,7 +150,11 @@ export function createEntry({
 			);
 		},
 		fetch: async (request, bindings) => {
-			const runtime = await production();
+			// Why log it: the host sends a 500 with no log, and no app handler runs before setup ends.
+			const runtime = await production().catch((error: unknown) => {
+				internals.logger.log("error", "setup failed", errorAttributes(error));
+				throw error;
+			});
 			return app.fetch(request, { ...bindings, framework: runtime });
 		},
 		fetchDev: async (request, bindings, devServer) => {

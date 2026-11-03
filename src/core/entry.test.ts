@@ -287,8 +287,12 @@ describe("createEntry", () => {
 		const setup = vi.fn<() => void>().mockImplementationOnce(() => {
 			throw new Error("config server down");
 		});
+		const lines: string[] = [];
 		const entry = createEntry({
-			app: createServer({ plugins: [{ name: "remote-config", setup }] }),
+			app: createServer({
+				plugins: [{ name: "remote-config", setup }],
+				logger: recordingLogger(lines),
+			}),
 			host: { name: "serverless", files: nodeHost.files },
 			clientDirectory,
 			framework: () => ({ name: "stub", fetch: renderedFramework }),
@@ -301,6 +305,7 @@ describe("createEntry", () => {
 
 		await expect(response.text()).resolves.toBe("rendered");
 		expect(setup).toHaveBeenCalledTimes(2);
+		expect(lines).toStrictEqual([expect.stringMatching(/^setup failed .*config server down/u)]);
 	});
 
 	it("refuses to start when neither the app nor the host has a listener", async () => {

@@ -20,7 +20,7 @@ After the build, `vercel()` writes `.vercel/output`. Deploy it with `vercel depl
 
 For a host adapter:
 
-- The `appServer` export of a build has a `fetch(request, bindings)` for a serverless host. It answers one request and does not listen. The first call runs each plugin's `setup`, and after a failed `setup`, the next call runs each one again.
+- The `appServer` export of a build has a `fetch(request, bindings)` for a serverless host. It answers one request and does not listen. The first call runs each plugin's `setup`. A failed `setup` logs `setup failed`, and the next call runs each `setup` again.
 - The server entry also exports `hostModule`, the host's run-side module, from the bundle.
 - `HostRuntime.listeners` is optional. `start()` throws when the app and the host have no listener.
 - `HostBuild` has an optional `output` that writes the host's deploy output after the build.

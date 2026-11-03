@@ -265,7 +265,13 @@ export function withForwardedProto(request: Request): Request {
 	url.protocol = `${proto}:`;
 	// Why copy it first: the Node listener gives a light request, which `new Request` copies only as
 	// its first argument. As the second, its getters throw "Illegal invocation".
-	return new Request(url, new Request(request));
+	const copy = new Request(url, new Request(request));
+	// Why: a `Request` cannot hold TRACE, so the Node listener gives a GET request that says TRACE.
+	// The copy must say TRACE too, or a GET route answers it.
+	if (copy.method !== request.method) {
+		Object.defineProperty(copy, "method", { value: request.method });
+	}
+	return copy;
 }
 
 /**

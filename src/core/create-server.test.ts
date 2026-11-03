@@ -382,6 +382,36 @@ describe("createServer", () => {
 		await server.shutdown();
 	});
 
+	it("keeps the TRACE method when it reads the scheme from X-Forwarded-Proto on the Node listener", async () => {
+		const server = await listening(
+			async (request) => new Response(`${request.method} ${new URL(request.url).protocol}`),
+			[],
+			{ trustForwardedProto: true },
+		);
+
+		const body = await new Promise<string>((resolve, reject) => {
+			const outgoing = httpRequest(server.urls[0] ?? "", {
+				method: "TRACE",
+				headers: { "X-Forwarded-Proto": "https" },
+			});
+			outgoing.on("response", (incoming) => {
+				incoming.setEncoding("utf8");
+				let text = "";
+				incoming.on("data", (chunk: string) => {
+					text += chunk;
+				});
+				incoming.on("end", () => {
+					resolve(text);
+				});
+			});
+			outgoing.on("error", reject);
+			outgoing.end();
+		});
+
+		expect(body).toBe("TRACE https:");
+		await server.shutdown();
+	});
+
 	it("reads the scheme from X-Forwarded-Proto for a request with a body on the Node listener", async () => {
 		const server = await listening(
 			async (request) => new Response(`${new URL(request.url).protocol} ${await request.text()}`),
