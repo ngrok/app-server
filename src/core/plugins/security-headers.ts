@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { withHeaderHook, writableHeaders } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import { optionPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
@@ -134,24 +134,27 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 		middleware: async (context, next) => {
 			const nonce = randomNonce();
 			context.set("cspNonce", nonce);
-			await next();
-			const { headers } = context.res;
-			// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
-			const file = context.get("staticDocument");
-			if (
-				headers.has("Content-Security-Policy") ||
-				(file == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
-			) {
-				return;
-			}
-			// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
-			const scriptSrc =
-				file == null
-					? `'nonce-${nonce}' 'strict-dynamic'`
-					: ["'self'", ...(scriptHashes.get(file) ?? []).map((hash) => `'sha256-${hash}'`)].join(
-							" ",
-						);
-			writableHeaders(context).set("Content-Security-Policy", oneLine(policy(scriptSrc, context)));
+			// Why a header hook: in development, the dev server sends its own response, such as a file of
+			// Vite's public directory, and runs the hooks before it sends the head.
+			await withHeaderHook(context, next, (headers) => {
+				// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
+				const file = context.get("staticDocument");
+				const hashes =
+					context.get("documentScriptHashes") ??
+					(file == null ? undefined : (scriptHashes.get(file) ?? []));
+				if (
+					headers.has("Content-Security-Policy") ||
+					(hashes == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
+				) {
+					return;
+				}
+				// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
+				const scriptSrc =
+					hashes == null
+						? `'nonce-${nonce}' 'strict-dynamic'`
+						: ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
+				headers.set("Content-Security-Policy", oneLine(policy(scriptSrc, context)));
+			});
 		},
 	});
 }

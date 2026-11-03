@@ -18,6 +18,7 @@ import type { BuildManifest } from "../core/build-manifest.js";
 import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
+import { inlineScriptHashes } from "../node/script-hashes.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
@@ -392,42 +393,6 @@ function standalone(): Plugin {
 			}
 		},
 	};
-}
-
-/**
- * An HTML comment, or a `<script>` element. The `attributes` group is the
- * script's attributes, and the `text` group is its text. Why the comment: a
- * `<script>` tag in a comment starts no element.
- */
-const COMMENT_OR_SCRIPT =
-	/<!--[\s\S]*?-->|<script(?=[\s/>])(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>(?<text>[\s\S]*?)<\/script(?=[\s/>])/giu;
-
-/** An attribute value, so that a `src=` in a value is not the `src` attribute. */
-const ATTRIBUTE_VALUE = /[=]\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gu;
-
-/** A `src` attribute, in attributes with no values. */
-const SRC_ATTRIBUTE = /(?:^|[\s/])src(?:[\s/=]|$)/iu;
-
-/**
- * The base64 `SHA-256` of each inline script in `html`, once each, in
- * document order. Why each type: a hash of a data block, such as JSON, trusts
- * no code, and a scan that skips a type that runs breaks the page. Why LF:
- * the browser changes each CRLF and CR to LF before it hashes a script.
- *
- * @example
- * inlineScriptHashes("<script>go()</script>"); // => ["…base64…"]
- */
-function inlineScriptHashes(html: string): string[] {
-	const hashes: string[] = [];
-	for (const { groups } of html.replaceAll(/\r\n?/gu, "\n").matchAll(COMMENT_OR_SCRIPT)) {
-		if (
-			groups?.text != null &&
-			!SRC_ATTRIBUTE.test((groups.attributes ?? "").replaceAll(ATTRIBUTE_VALUE, "="))
-		) {
-			hashes.push(createHash("sha256").update(groups.text).digest("base64"));
-		}
-	}
-	return [...new Set(hashes)];
 }
 
 /** The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path. */

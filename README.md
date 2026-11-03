@@ -271,6 +271,8 @@ defaultPlugins({
 
 If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. A 304 for a prerendered document gets the policy too, because a browser replaces the policy of its cached copy with the policy of the 304. The `contentSecurityPolicy` option of `defaultPlugins()` puts the plugin before the static stages, so it sees the prerendered documents.
 
+In development, `app-server start` sends the same policy. A rendered page gets a nonce. An HTML file in Vite's public directory, such as `public/offline.html`, gets the hashes of its inline scripts, so a script that production blocks is blocked in development too.
+
 ```ts
 createServer({
 	plugins: defaultPlugins({

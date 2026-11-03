@@ -3,6 +3,7 @@ import type { OutgoingHttpHeader, OutgoingHttpHeaders } from "node:http";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { MiddlewareHandler } from "hono";
 import type { AppServerEnv, HeaderHook, ListenerBindings, ResponseHeaders } from "../core/types.js";
+import { publicScriptHashes } from "./script-hashes.js";
 
 /** A Connect middleware, such as `vite.middlewares`. */
 export type NodeMiddleware = (
@@ -83,19 +84,39 @@ function runHooksAtHead(outgoing: ServerResponse, hooks: readonly HeaderHook[]):
 	};
 }
 
+/** Options for {@link devServerStage}. */
+export type DevServerStageOptions = {
+	/**
+	 * The directory that the middleware serves as it is, such as Vite's
+	 * `publicDir`. An HTML file from it gets the `contentSecurityPolicy` with
+	 * the hashes of its inline scripts, as it does in production.
+	 */
+	publicDirectory?: string;
+};
+
 /**
  * Runs a Connect middleware, such as Vite's, inside the pipeline. The
  * middleware answers or calls `next`. A request with no Node request and
  * response goes on.
  *
  * @example
- * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares));
+ * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares, { publicDirectory: viteServer.config.publicDir }));
  */
-export function devServerStage(middleware: NodeMiddleware): MiddlewareHandler<AppServerEnv> {
+export function devServerStage(
+	middleware: NodeMiddleware,
+	{ publicDirectory }: DevServerStageOptions = {},
+): MiddlewareHandler<AppServerEnv> {
 	return async (context, next) => {
 		const { incoming, outgoing } = context.env;
 		if (!(incoming instanceof IncomingMessage) || !isServerResponse(outgoing)) {
 			return next();
+		}
+		const hashes =
+			publicDirectory == null
+				? undefined
+				: publicScriptHashes(publicDirectory, new URL(context.req.url).pathname);
+		if (hashes != null) {
+			context.set("documentScriptHashes", hashes);
 		}
 		// Why before the middleware: it sends the headers itself, so the headers the earlier stages
 		// set, such as the request ID, must be on `outgoing` first.

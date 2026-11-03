@@ -43,7 +43,9 @@ export async function start(): Promise<void> {
 			"`app-server start` needs the `appServer` plugin from @ngrok/app-server/vite in the Vite config.",
 		);
 	}
-	const devServer = devServerStage(viteServer.middlewares);
+	const devServer = devServerStage(viteServer.middlewares, {
+		publicDirectory: viteServer.config.publicDir,
+	});
 	const sink = jsonSink();
 	const apps = servedApps();
 

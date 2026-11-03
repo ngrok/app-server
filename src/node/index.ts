@@ -22,6 +22,7 @@ export {
 
 export type {
 	//,
+	DevServerStageOptions,
 	NodeBindings,
 	NodeMiddleware,
 } from "./dev-server.js";
