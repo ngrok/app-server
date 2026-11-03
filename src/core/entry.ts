@@ -103,9 +103,11 @@ export function createEntry({
 		start: async () => {
 			const runtime = framework("production");
 			const shared = await setupInfo(runtime);
-			const { prerendered, headers } = await readBuildManifest(shared.files);
+			const files = (await shared.files.snapshot?.()) ?? shared.files;
+			const { prerendered, headers } = await readBuildManifest(files);
 			const info: SetupInfo = {
 				...shared,
+				files,
 				mode: "production",
 				prerenderedPaths: runtime.prerenderedPaths ?? prerendered,
 				capturedHeaders: new Map(Object.entries(headers)),

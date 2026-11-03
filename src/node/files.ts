@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
-import { access, open, stat } from "node:fs/promises";
+import { access, open, readdir, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ByteRange, StaticFiles } from "../core/types.js";
+import type { ByteRange, FileInfo, StaticFiles } from "../core/types.js";
 
 /** Why: one read fills one chunk, so a slow client holds one chunk, not the whole file. */
 const CHUNK_BYTES = 65_536;
@@ -60,9 +61,34 @@ function fileStream(path: string, range: ByteRange | undefined): ReadableStream<
 /** Why: these codes mean that nothing is at the path. Any other error, such as `EACCES`, throws. */
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG"]);
 
+/** The stats of `path`, or `undefined` when nothing is there. */
+async function statOrMissing(path: string): Promise<Stats | undefined> {
+	try {
+		return await stat(path);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && MISSING_CODES.has(String(error.code))) {
+			return;
+		}
+		throw error;
+	}
+}
+
+/** The {@link FileInfo} of a file or a directory, else `undefined`. */
+function fileInfo(stats: Stats | undefined): FileInfo | undefined {
+	if (stats?.isFile() === true) {
+		return { kind: "file", size: stats.size, mtimeMs: stats.mtimeMs };
+	}
+	return stats?.isDirectory() === true
+		? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
+		: undefined;
+}
+
 /**
  * The client build on the file system. A relative `clientDirectory` is
  * relative to the working directory.
+ *
+ * Its `snapshot` reads each file and directory once. It throws for an error
+ * that does not mean a missing file, so the server does not start.
  *
  * @example
  * nodeFiles("build/client").stat("/llms.txt");
@@ -81,21 +107,8 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		}
 		return candidate;
 	};
-	return {
-		stat: async (path) => {
-			const stats = await stat(filePath(path)).catch((error: unknown) => {
-				if (error instanceof Error && "code" in error && MISSING_CODES.has(String(error.code))) {
-					return;
-				}
-				throw error;
-			});
-			if (stats?.isFile() === true) {
-				return { kind: "file", size: stats.size, mtimeMs: stats.mtimeMs };
-			}
-			return stats?.isDirectory() === true
-				? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
-				: undefined;
-		},
+	const files: StaticFiles = {
+		stat: async (path) => fileInfo(await statOrMissing(filePath(path))),
 		open: async (path, range) => {
 			const candidate = filePath(path);
 			// Why: an unreadable file then gets a logged 500, not a 200 whose body fails. The check
@@ -103,5 +116,43 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 			await access(candidate, constants.R_OK);
 			return fileStream(candidate, range);
 		},
+		snapshot: async () => {
+			const entries = new Map<string, FileInfo>();
+			// Why the inodes: a symbolic link to a parent directory must not make the walk endless.
+			const walked = new Set<string>();
+			const walk = async (path: string, stats: Stats): Promise<void> => {
+				const info = fileInfo(stats);
+				if (info == null) {
+					return;
+				}
+				entries.set(path, info);
+				const inode = `${stats.dev}:${stats.ino}`;
+				if (info.kind === "file" || walked.has(inode)) {
+					return;
+				}
+				walked.add(inode);
+				const prefix = path === "/" ? "" : path;
+				const names = await readdir(filePath(path));
+				await Promise.all(
+					names.map(async (name) => {
+						const childPath = `${prefix}/${name}`;
+						const childStats = await statOrMissing(filePath(childPath));
+						if (childStats != null) {
+							await walk(childPath, childStats);
+						}
+					}),
+				);
+			};
+			const rootStats = await statOrMissing(root);
+			if (rootStats != null) {
+				await walk("/", rootStats);
+			}
+			return {
+				// Why trim one `/`: `stat` finds `/docs/` at `/docs`.
+				stat: async (path) => entries.get(path.length > 1 ? path.replace(/\/$/u, "") : path),
+				open: files.open,
+			};
+		},
 	};
+	return files;
 }

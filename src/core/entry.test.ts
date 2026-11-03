@@ -102,6 +102,24 @@ describe("createEntry", () => {
 		);
 	});
 
+	it("serves the client build as it was at start", async () => {
+		const { host, fetch } = testHost();
+		const entry = createEntry({
+			app: createServer({ plugins: [prerendered()], logger: recordingLogger([]) }),
+			host,
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await entry.start();
+		writeFileSync(join(clientDirectory, "late.txt"), "late");
+		const page = await fetch()?.(new Request("http://localhost/cpu"), {});
+		const late = await fetch()?.(new Request("http://localhost/late.txt"), {});
+
+		await expect(page?.text()).resolves.toBe("<h1>CPU</h1>");
+		await expect(late?.text()).resolves.toBe("rendered");
+	});
+
 	it("gives the request ID and logger to requestContext() during a request", async () => {
 		const { host, fetch } = testHost();
 		const seen = vi.fn<(id: string | undefined) => void>();
