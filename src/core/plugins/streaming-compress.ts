@@ -69,10 +69,12 @@ function join(chunks: Uint8Array[], size: number): Uint8Array {
 /**
  * The body again: the queued chunks, then the rest of `reader`. Each pull
  * waits for one chunk at most, and joins it with the chunks that are queued
- * after it. Why join: gzip flushes after each chunk, and each flush costs
- * more than the bytes. A renderer such as React queues many small chunks at
- * once. A chunk that comes later still goes out on its own. When `queued`
- * has the end, the first pull sends the chunks and closes.
+ * after it, up to {@link MAX_JOINED_BYTES}. Why join: gzip flushes after each
+ * chunk, and each flush costs more than the bytes. A renderer such as React
+ * queues many small chunks at once. A chunk that comes later still goes out on
+ * its own. A chunk that does not fit waits for the next pull, and an empty
+ * chunk ends the join. When `queued` has the end, the first pull sends the
+ * chunks and closes.
  */
 function replay(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -83,7 +85,15 @@ function replay(
 	return new ReadableStream<Uint8Array>(
 		{
 			async pull(controller) {
-				const parts = chunks.splice(0);
+				const parts: Uint8Array[] = [];
+				let size = 0;
+				const fits = (chunk: Uint8Array) =>
+					parts.length === 0 || size + chunk.byteLength <= MAX_JOINED_BYTES;
+				for (let [chunk] = chunks; chunk != null && fits(chunk); [chunk] = chunks) {
+					chunks.shift();
+					parts.push(chunk);
+					size += chunk.byteLength;
+				}
 				if (parts.length === 0) {
 					const result = await (pending ?? reader.read());
 					pending = undefined;
@@ -92,24 +102,29 @@ function replay(
 						return;
 					}
 					parts.push(result.value);
+					size = result.value.byteLength;
 				}
-				let size = parts.reduce((sum, part) => sum + part.byteLength, 0);
 				// Why no read when `done`: the host reads a body the same way as `readQueued`, and it sends
 				// a body with its `Content-Length` only when the body ends within that read.
-				while (pending == null && !done && size < MAX_JOINED_BYTES) {
+				while (chunks.length === 0 && pending == null && !done && size < MAX_JOINED_BYTES) {
 					// oxlint-disable-next-line no-await-in-loop -- each read takes only a chunk that is queued already.
 					const next = await readIfQueued(reader);
 					if ("pending" in next) {
 						({ pending } = next);
 					} else if (next.result.done) {
 						done = true;
-					} else {
+					} else if (next.result.value.byteLength === 0) {
+						// Why stop: empty chunks add no bytes, so a source of them would hold the join open.
+						break;
+					} else if (fits(next.result.value)) {
 						parts.push(next.result.value);
 						size += next.result.value.byteLength;
+					} else {
+						chunks.push(next.result.value);
 					}
 				}
 				controller.enqueue(join(parts, size));
-				if (done) {
+				if (done && chunks.length === 0) {
 					controller.close();
 				}
 			},
