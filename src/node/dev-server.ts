@@ -102,9 +102,11 @@ function publicFileHashes(
 	pathname: string,
 ): string[] | undefined {
 	const prefix = base.replace(/\/$/u, "");
-	return pathname.startsWith(`${prefix}/`)
-		? publicScriptHashes(directory, pathname.slice(prefix.length))
-		: undefined;
+	// Why both forms: in middleware mode, Vite's base middleware passes a path with no base on as it is.
+	return publicScriptHashes(
+		directory,
+		pathname.startsWith(`${prefix}/`) ? pathname.slice(prefix.length) : pathname,
+	);
 }
 
 /**

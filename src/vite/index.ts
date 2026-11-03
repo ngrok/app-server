@@ -357,11 +357,7 @@ function standalone(): Plugin {
 				patterns.length === 0 || !existsSync(join(root, "package.json"))
 					? []
 					: dependencyNames(root, APP_DEPENDENCY_FIELDS).filter((name) =>
-							patterns.some((pattern) =>
-								typeof pattern === "function"
-									? pattern(name, undefined, false) === true
-									: name.search(pattern) !== -1,
-							),
+							patterns.some((pattern) => matchesExternal(pattern, name)),
 						);
 			// Why with no import: the app can read a file of a package at run time, such as through
 			// `require.resolve`.
@@ -486,6 +482,25 @@ function standalone(): Plugin {
 			}
 		},
 	};
+}
+
+/**
+ * Whether the app's `RegExp` or function external keeps the package `name`
+ * external. Why `false` when the function throws: the build calls it with no
+ * importer, and a function that reads the importer can throw.
+ */
+function matchesExternal(
+	pattern: RegExp | ((id: string, importer: string | undefined, isResolved: boolean) => unknown),
+	name: string,
+): boolean {
+	if (typeof pattern !== "function") {
+		return name.search(pattern) !== -1;
+	}
+	try {
+		return pattern(name, undefined, false) === true;
+	} catch {
+		return false;
+	}
 }
 
 /**

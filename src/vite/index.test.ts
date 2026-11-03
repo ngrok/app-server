@@ -755,6 +755,27 @@ describe("appServer in a server build", () => {
 		},
 	);
 
+	it("builds when a function external throws for a package with no importer", async () => {
+		const external = (id: string, importer: string | undefined) => {
+			if (importer == null) {
+				throw new Error("This external reads the importer.");
+			}
+			return id === "outside";
+		};
+		const { values } = await buildAlone(
+			{
+				"package.json": JSON.stringify({ type: "module", dependencies: { wrapper: "1.0.0" } }),
+				"entry.js": 'import { word } from "wrapper";\nexport const values = [word];',
+				"node_modules/wrapper/package.json": JSON.stringify({ name: "wrapper", type: "module" }),
+				"node_modules/wrapper/index.js": 'export { word } from "outside";',
+				...commonJsPackage("wrapper/node_modules/outside", 'exports.word = "outside";'),
+			},
+			{ build: { rolldownOptions: { external } } },
+		);
+
+		expect(values).toStrictEqual(["outside"]);
+	});
+
 	it("bundles a JSON file or an asset of a native package", async () => {
 		const { values } = await buildAlone(
 			{

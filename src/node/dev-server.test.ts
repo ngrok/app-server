@@ -67,7 +67,7 @@ describe("devServerStage", () => {
 		expect(notPublic.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
 	});
 
-	it("finds the public file under Vite's base, and keeps the nonce policy when the middleware passes", async () => {
+	it("finds the public file with or without Vite's base, and keeps the nonce policy when the middleware passes", async () => {
 		const publicDirectory = mkdtempSync(join(tmpdir(), "app-server-public-"));
 		onTestFinished(() => {
 			rmSync(publicDirectory, { recursive: true, force: true });
@@ -101,12 +101,13 @@ describe("devServerStage", () => {
 		const url = new URL("/docs/offline.html", server?.urls[0]);
 
 		const served = await fetch(url);
+		const noBase = await fetch(new URL("/offline.html", server?.urls[0]));
 		const passed = await fetch(url, { method: "POST" });
 		await server?.shutdown();
 
-		expect(served.headers.get("Content-Security-Policy")).toBe(
-			"script-src 'self' 'sha256-5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw='",
-		);
+		const policy = "script-src 'self' 'sha256-5KYv+PUboo5h+0+YAtGRPbwv5d/QxzHslP4YGnUaxRw='";
+		expect(served.headers.get("Content-Security-Policy")).toBe(policy);
+		expect(noBase.headers.get("Content-Security-Policy")).toBe(policy);
 		expect(passed.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
 	});
 
