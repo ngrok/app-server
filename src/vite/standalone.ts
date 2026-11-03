@@ -2,7 +2,15 @@ import { cpSync, existsSync, readdirSync, readFileSync, realpathSync } from "nod
 import { basename, dirname, join, sep } from "node:path";
 
 /**
- * The package names in the dependency `fields` of the `package.json` in `directory`.
+ * A package name: an optional scope and a name, each with no `/` or `\` and
+ * no `.` at the start. Why: a name such as `..` or `../x` in a manifest must
+ * not move a copy out of `node_modules`.
+ */
+const PACKAGE_NAME = /^(?:@[^./\\][^/\\]*\/)?[^./\\][^/\\]*$/u;
+
+/**
+ * The package names in the dependency `fields` of the `package.json` in
+ * `directory`. It skips a key that is not a package name.
  *
  * @example
  * dependencyNames("/app/node_modules/react-dom", ["peerDependencies"]); // => ["react"]
@@ -12,7 +20,9 @@ export function dependencyNames(directory: string, fields: readonly string[]): s
 	const names = fields.flatMap((field) => {
 		const value: unknown =
 			typeof manifest === "object" && manifest != null ? Reflect.get(manifest, field) : undefined;
-		return typeof value === "object" && value != null ? Object.keys(value) : [];
+		return typeof value === "object" && value != null
+			? Object.keys(value).filter((name) => PACKAGE_NAME.test(name))
+			: [];
 	});
 	return [...new Set(names)];
 }
@@ -85,17 +95,23 @@ function hasNodeFile(directory: string): boolean {
  * `optionalDependencies`. The second case finds a package that gets its addon
  * from a package for each platform, such as `oxc-parser` from
  * `@oxc-parser/binding-darwin-arm64`. Only the installed platform package is
- * there.
+ * there. `scans` keeps the result for each directory that the function
+ * searched, so a call with the same map does not search a directory again.
  *
  * @example
  * isNativePackage("/app/node_modules/better-sqlite3"); // => true
  */
-export function isNativePackage(directory: string): boolean {
+export function isNativePackage(directory: string, scans = new Map<string, boolean>()): boolean {
+	const scan = (path: string): boolean => {
+		const found = scans.get(path) ?? hasNodeFile(path);
+		scans.set(path, found);
+		return found;
+	};
 	return (
-		hasNodeFile(directory) ||
+		scan(directory) ||
 		dependencyNames(directory, ["dependencies", "optionalDependencies"]).some((name) => {
 			const dependency = findPackage(name, directory);
-			return dependency != null && hasNodeFile(dependency);
+			return dependency != null && scan(dependency);
 		})
 	);
 }

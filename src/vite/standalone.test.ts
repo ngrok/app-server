@@ -2,6 +2,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -181,6 +182,19 @@ describe("copyPackages", () => {
 		expect(realpathSync(createRequire(join(target, "b/index.js")).resolve("a"))).toBe(
 			join(target, "a/index.js"),
 		);
+	});
+
+	it("does not copy out of the target for a dependency key that is not a package name", () => {
+		const outside = join(root, "outside");
+		const evil = writePackage(
+			join(outside, "node_modules/evil"),
+			{ name: "evil", dependencies: { "..": "1.0.0", "../assets": "1.0.0", "@scope/..": "1.0.0" } },
+			{ "index.js": "", "assets/package.json": "{}" },
+		);
+		copyPackages(new Map([["evil", evil]]), join(outside, "build/server/node_modules"));
+
+		expect(readdirSync(join(outside, "build/server"))).toStrictEqual(["node_modules"]);
+		expect(readdirSync(join(outside, "build/server/node_modules"))).toStrictEqual(["evil"]);
 	});
 
 	it("gives each package the version of a dependency that it installed", () => {

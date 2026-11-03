@@ -252,8 +252,10 @@ function standalone(): Plugin {
 	// Why: the bundle and an external package must share one copy of a package, such as `react`.
 	const shared = new Set<string>();
 	const natives = new Map<string, boolean>();
+	// Why: many packages share one dependency, and each search reads its whole directory.
+	const scans = new Map<string, boolean>();
 	const isNative = (directory: string): boolean => {
-		const native = natives.get(directory) ?? isNativePackage(directory);
+		const native = natives.get(directory) ?? isNativePackage(directory, scans);
 		natives.set(directory, native);
 		return native;
 	};
@@ -282,16 +284,24 @@ function standalone(): Plugin {
 			externals.clear();
 			shared.clear();
 			natives.clear();
+			scans.clear();
 			const { resolve: resolveOptions, build, root } = this.environment.config;
 			const kept = [
 				...(resolveOptions.external === true ? [] : resolveOptions.external),
 				...[build.rolldownOptions.external].flat(),
 			];
-			const queue = kept.flatMap((id) =>
-				typeof id === "string" && BARE_IMPORT.test(id)
-					? [{ name: packageName(id), from: root }]
-					: [],
+			const names = kept.flatMap((id) =>
+				typeof id === "string" && BARE_IMPORT.test(id) ? [packageName(id)] : [],
 			);
+			// Why with no import: the app can read a file of a package at run time, such as through
+			// `require.resolve`.
+			for (const name of names) {
+				const directory = findPackage(name, root);
+				if (directory != null) {
+					externals.set(name, directory);
+				}
+			}
+			const queue = names.map((name) => ({ name, from: root }));
 			// Why each level: a peer can have peers, such as `react` for `react-router`.
 			for (const { name, from } of queue) {
 				const directory = shared.has(name) ? undefined : findPackage(name, from);

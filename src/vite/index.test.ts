@@ -762,6 +762,24 @@ describe("appServer in a server build", () => {
 		expect(values).toStrictEqual(["outside"]);
 	});
 
+	it("copies a package in `ssr.external` that the app reads at run time with no import", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { readFileSync } from "node:fs";',
+					'import { createRequire } from "node:module";',
+					"const require = createRequire(import.meta.url);",
+					'export const values = [readFileSync(require.resolve("fonts/mono.woff"), "utf8")];',
+				].join("\n"),
+				"node_modules/fonts/package.json": JSON.stringify({ name: "fonts" }),
+				"node_modules/fonts/mono.woff": "font",
+			},
+			{ ssr: { external: ["fonts"] } },
+		);
+
+		expect(values).toStrictEqual(["font"]);
+	});
+
 	it("copies the native package that Vite resolves, such as for `resolve.dedupe`", async () => {
 		const nativePackage = (directory: string, version: string) => ({
 			...commonJsPackage(
