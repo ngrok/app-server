@@ -20,7 +20,14 @@ import { contentType } from "../core/static-files.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
-import { copyPackages, findPackage, isNativePackage, packageName } from "./standalone.js";
+import {
+	copyPackages,
+	dependencyNames,
+	findPackage,
+	isNativePackage,
+	packageDirectoryOf,
+	packageName,
+} from "./standalone.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
 export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";
@@ -218,15 +225,18 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
 
 /**
  * Makes the server build run with no install. The build bundles each
- * dependency, except the packages that the app keeps in `ssr.external` and
- * each native package (see `isNativePackage`). Those stay external, so the
- * plugin copies each one, whole, with its dependencies, into `node_modules` in
- * the server build. It also writes a `package.json` there, so Node, Bun, and
- * Deno load the build as ES modules and find that `node_modules`.
+ * dependency, except the packages that the app keeps external (`ssr.external`
+ * or the bundler's `external`), each native package (see `isNativePackage`),
+ * and each peer dependency of a package in `ssr.external`. Those stay
+ * external, so the plugin copies each one, whole, with its dependencies, into
+ * `node_modules` in the server build. It also writes a `package.json` there, so
+ * Node, Bun, and Deno load the build as ES modules and find that `node_modules`.
  */
 function standalone(): Plugin {
 	// Why a value for each name: two copies of one external package cannot share one `node_modules`.
 	const externals = new Map<string, string | undefined>();
+	// Why: the bundle and an external package must share one copy of each peer, such as `react`.
+	const peers = new Set<string>();
 	const natives = new Map<string, boolean>();
 	const isNative = (directory: string): boolean => {
 		const native = natives.get(directory) ?? isNativePackage(directory);
@@ -238,18 +248,34 @@ function standalone(): Plugin {
 		// Why `pre`: Vite's resolver runs before a plugin with no `enforce`, so that plugin cannot keep
 		// a native package out of the bundle.
 		enforce: "pre",
-		config: (config, { command }) =>
+		config: (config, { command }) => {
+			const ssr = config.environments?.[SERVER_ENVIRONMENT]?.resolve;
 			// Why a build only: in development, Vite loads each dependency from `node_modules`. Why not
-			// with the app's value: Vite merges `true` over a list, so the list then has no effect.
-			command === "build" &&
-			config.ssr?.noExternal == null &&
-			config.environments?.[SERVER_ENVIRONMENT]?.resolve?.noExternal == null
+			// with the app's value: Vite merges `true` over a list, and `noExternal: true` wins over
+			// `external: true`, so the app's value then has no effect.
+			return command === "build" &&
+				config.ssr?.noExternal == null &&
+				ssr?.noExternal == null &&
+				config.ssr?.external !== true &&
+				ssr?.external !== true
 				? { ssr: { noExternal: true } }
-				: undefined,
+				: undefined;
+		},
 		buildStart() {
-			if (isServerBuild(this.environment)) {
-				externals.clear();
-				natives.clear();
+			if (!isServerBuild(this.environment)) {
+				return;
+			}
+			externals.clear();
+			peers.clear();
+			natives.clear();
+			const { external } = this.environment.config.resolve;
+			for (const name of external === true ? [] : external) {
+				const directory = findPackage(name, this.environment.config.root);
+				for (const peer of directory == null
+					? []
+					: dependencyNames(directory, ["peerDependencies"])) {
+					peers.add(peer);
+				}
 			}
 		},
 		resolveId: {
@@ -265,13 +291,17 @@ function standalone(): Plugin {
 					return resolved;
 				}
 				const name = packageName(source);
-				const directory = findPackage(
-					name,
-					importer != null && isAbsolute(importer)
-						? dirname(importer)
-						: this.environment.config.root,
-				);
-				if (bundled && (directory == null || !isNative(directory))) {
+				// Why the resolved file first: Vite can pick another copy than Node, such as for
+				// `resolve.dedupe`.
+				const directory =
+					(bundled ? packageDirectoryOf(resolved.id, name) : undefined) ??
+					findPackage(
+						name,
+						importer != null && isAbsolute(importer)
+							? dirname(importer)
+							: this.environment.config.root,
+					);
+				if (bundled && !peers.has(name) && (directory == null || !isNative(directory))) {
 					return resolved;
 				}
 				const known = externals.get(name);
@@ -284,9 +314,21 @@ function standalone(): Plugin {
 				return bundled ? { id: source, external: true } : resolved;
 			},
 		},
-		writeBundle() {
+		writeBundle(_options, bundle) {
 			if (!isServerBuild(this.environment)) {
 				return;
+			}
+			const { root } = this.environment.config;
+			// Why: the bundler does not call `resolveId` for a package in its own `external` option.
+			for (const output of Object.values(bundle)) {
+				for (const id of output.type === "chunk"
+					? [...output.imports, ...output.dynamicImports]
+					: []) {
+					const name = packageName(id);
+					if (BARE_IMPORT.test(id) && !isBuiltin(id) && !(id in bundle) && !externals.has(name)) {
+						externals.set(name, findPackage(name, root));
+					}
+				}
 			}
 			const directory = outDir(this.environment.getTopLevelConfig(), SERVER_ENVIRONMENT);
 			const found = new Map<string, string>();

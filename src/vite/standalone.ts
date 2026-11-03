@@ -1,8 +1,13 @@
 import { cpSync, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 
-/** The package names in the dependency `fields` of the `package.json` in `directory`. */
-function dependencyNames(directory: string, fields: readonly string[]): string[] {
+/**
+ * The package names in the dependency `fields` of the `package.json` in `directory`.
+ *
+ * @example
+ * dependencyNames("/app/node_modules/react-dom", ["peerDependencies"]); // => ["react"]
+ */
+export function dependencyNames(directory: string, fields: readonly string[]): string[] {
 	const manifest: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
 	const names = fields.flatMap((field) => {
 		const value: unknown =
@@ -41,6 +46,28 @@ export function findPackage(name: string, from: string): string | undefined {
 			return undefined;
 		}
 	}
+}
+
+/**
+ * The directory of package `name` that holds `file`: the nearest directory
+ * above `file` at `node_modules/<name>`. Else `undefined`, such as for a file
+ * of a linked workspace package.
+ *
+ * @example
+ * packageDirectoryOf("/app/node_modules/react/cjs/react.js", "react"); // => "/app/node_modules/react"
+ */
+export function packageDirectoryOf(file: string, name: string): string | undefined {
+	for (
+		let directory = dirname(file);
+		directory !== dirname(directory);
+		directory = dirname(directory)
+	) {
+		if (directory.endsWith(`${sep}${join("node_modules", name)}`)) {
+			// Why the real path: `findPackage` gives real paths, and the two must compare equal.
+			return realpathSync(directory);
+		}
+	}
+	return undefined;
 }
 
 /** Whether a `.node` file is in `directory`, outside its `node_modules`. */

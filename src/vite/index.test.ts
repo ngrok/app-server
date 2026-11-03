@@ -15,7 +15,7 @@ import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { build as viteBuild, preview, resolveConfig } from "vite";
-import type { Plugin, ViteBuilder } from "vite";
+import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
@@ -608,53 +608,30 @@ describe("appServer in a server build", () => {
 		}
 	}
 
-	it("bundles each dependency, and copies each native or external package next to the build", async () => {
+	/**
+	 * Builds `entry.js` of a project with `files` and the Vite `config`, copies
+	 * the build alone to a new directory, and gives the `values` export of the
+	 * copy, and the path of the copied server build.
+	 */
+	async function buildAlone(
+		files: Record<string, string>,
+		config: InlineConfig,
+	): Promise<{ values: unknown; server: string }> {
 		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-standalone-")));
 		const deployed = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-deployed-")));
 		onTestFinished(() => {
 			rmSync(project, { recursive: true, force: true });
 			rmSync(deployed, { recursive: true, force: true });
 		});
-		writeFiles(project, {
-			"package.json": JSON.stringify({ type: "module" }),
-			"entry.js": [
-				'import { pure } from "pure";',
-				'import { native } from "native";',
-				'import { kept } from "kept";',
-				"export const values = [pure, native, kept];",
-			].join("\n"),
-			"node_modules/pure/package.json": JSON.stringify({ name: "pure", main: "index.js" }),
-			"node_modules/pure/index.js": 'exports.pure = "pure";',
-			"node_modules/native/package.json": JSON.stringify({ name: "native", main: "index.js" }),
-			// Why `__dirname`: a native package loads its addon from a path next to its own code.
-			"node_modules/native/index.js": [
-				'const { readFileSync } = require("node:fs");',
-				'exports.native = readFileSync(__dirname + "/build/Release/native.node", "utf8");',
-			].join("\n"),
-			"node_modules/native/build/Release/native.node": "native",
-			"node_modules/kept/package.json": JSON.stringify({
-				name: "kept",
-				main: "index.js",
-				dependencies: { helper: "1.0.0" },
-			}),
-			"node_modules/kept/index.js": [
-				'const { readFileSync } = require("node:fs");',
-				'exports.kept = readFileSync(__dirname + "/word.txt", "utf8") + require("helper");',
-			].join("\n"),
-			"node_modules/kept/word.txt": "kept with ",
-			"node_modules/helper/package.json": JSON.stringify({ name: "helper", main: "index.js" }),
-			"node_modules/helper/index.js": 'module.exports = "helper";',
-		});
-
+		writeFiles(project, { "package.json": JSON.stringify({ type: "module" }), ...files });
 		await viteBuild({
 			root: project,
 			configFile: false,
 			logLevel: "silent",
 			plugins: [standalonePlugin()],
-			ssr: { external: ["kept"] },
-			build: { ssr: "entry.js", outDir: "build/server" },
+			...config,
+			build: { ssr: "entry.js", outDir: "build/server", ...config.build },
 		});
-
 		// Why a copy: no `node_modules` is above the temporary directory, so the build must hold each package.
 		cpSync(join(project, "build"), join(deployed, "build"), { recursive: true });
 		const url = pathToFileURL(join(deployed, "build/server/entry.js")).href;
@@ -663,14 +640,117 @@ describe("appServer in a server build", () => {
 			["--input-type=module", "-e", `console.log(JSON.stringify((await import("${url}")).values))`],
 			{ encoding: "utf8" },
 		);
+		return { values: JSON.parse(output), server: join(deployed, "build/server") };
+	}
 
-		expect(JSON.parse(output)).toStrictEqual(["pure", "native", "kept with helper"]);
-		expect(readFileSync(join(deployed, "build/server/entry.js"), "utf8")).toContain('"pure"');
-		expect(existsSync(join(deployed, "build/server/node_modules/pure"))).toBe(false);
+	/** A package in `node_modules` with `main` at `index.js`. */
+	const commonJsPackage = (
+		name: string,
+		source: string,
+		manifest: Record<string, unknown> = {},
+	): Record<string, string> => ({
+		[`node_modules/${name}/package.json`]: JSON.stringify({ name, main: "index.js", ...manifest }),
+		[`node_modules/${name}/index.js`]: source,
 	});
 
-	it("bundles each dependency in a build, unless the app sets its own `ssr.noExternal`", async () => {
-		const resolve = async (ssr: { noExternal?: string[] }, command: "build" | "serve") =>
+	it("bundles each dependency, and copies each native or external package next to the build", async () => {
+		const { values, server } = await buildAlone(
+			{
+				"entry.js": [
+					'import { pure } from "pure";',
+					'import { native } from "native";',
+					'import { kept } from "kept";',
+					"export const values = [pure, native, kept];",
+				].join("\n"),
+				...commonJsPackage("pure", 'exports.pure = "pure";'),
+				// Why `__dirname`: a native package loads its addon from a path next to its own code.
+				...commonJsPackage(
+					"native",
+					[
+						'const { readFileSync } = require("node:fs");',
+						'exports.native = readFileSync(__dirname + "/build/Release/native.node", "utf8");',
+					].join("\n"),
+				),
+				"node_modules/native/build/Release/native.node": "native",
+				...commonJsPackage(
+					"kept",
+					[
+						'const { readFileSync } = require("node:fs");',
+						'exports.kept = readFileSync(__dirname + "/word.txt", "utf8") + require("helper");',
+					].join("\n"),
+					{ dependencies: { helper: "1.0.0" } },
+				),
+				"node_modules/kept/word.txt": "kept with ",
+				...commonJsPackage("helper", 'module.exports = "helper";'),
+			},
+			{ ssr: { external: ["kept"] } },
+		);
+
+		expect(values).toStrictEqual(["pure", "native", "kept with helper"]);
+		expect(readFileSync(join(server, "entry.js"), "utf8")).toContain('"pure"');
+		expect(existsSync(join(server, "node_modules/pure"))).toBe(false);
+	});
+
+	it("gives the bundle and an external package one copy of each peer dependency", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": [
+					'import { token } from "shared";',
+					'import { sameToken } from "widget";',
+					"export const values = [sameToken(token)];",
+				].join("\n"),
+				...commonJsPackage("shared", "exports.token = {};"),
+				...commonJsPackage(
+					"widget",
+					'exports.sameToken = (token) => token === require("shared").token;',
+					{ peerDependencies: { shared: "1.0.0" } },
+				),
+			},
+			{ ssr: { external: ["widget"] } },
+		);
+
+		expect(values).toStrictEqual([true]);
+	});
+
+	it("copies a package that the bundler's own `external` option keeps external", async () => {
+		const { values } = await buildAlone(
+			{
+				"entry.js": 'import { word } from "outside";\nexport const values = [word];',
+				...commonJsPackage("outside", 'exports.word = "outside";'),
+			},
+			{ build: { rolldownOptions: { external: ["outside"] } } },
+		);
+
+		expect(values).toStrictEqual(["outside"]);
+	});
+
+	it("copies the native package that Vite resolves, such as for `resolve.dedupe`", async () => {
+		const nativePackage = (directory: string, version: string) => ({
+			...commonJsPackage(
+				directory,
+				`exports.version = require("node:fs").readFileSync(__dirname + "/addon.node", "utf8");`,
+				{ version },
+			),
+			[`node_modules/${directory}/addon.node`]: version,
+		});
+		const { values } = await buildAlone(
+			{
+				"entry.js": 'import { version } from "wrapper";\nexport const values = [version];',
+				...commonJsPackage("wrapper", 'exports.version = require("native").version;'),
+				...nativePackage("native", "2.0.0"),
+				...nativePackage("wrapper/node_modules/native", "1.0.0"),
+			},
+			{ resolve: { dedupe: ["native"] } },
+		);
+
+		expect(values).toStrictEqual(["2.0.0"]);
+	});
+
+	it("bundles each dependency in a build, unless the app sets its own `ssr.noExternal` or `ssr.external: true`", async () => {
+		const resolve = async (
+			ssr: { noExternal?: string[]; external?: true },
+			command: "build" | "serve",
+		) =>
 			(
 				await resolveConfig(
 					{ root, configFile: false, logLevel: "silent", plugins: [standalonePlugin()], ssr },
@@ -683,5 +763,6 @@ describe("appServer in a server build", () => {
 			"only-this",
 		]);
 		await expect(resolve({}, "serve")).resolves.toStrictEqual([]);
+		await expect(resolve({ external: true }, "build")).resolves.toStrictEqual([]);
 	});
 });

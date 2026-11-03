@@ -116,8 +116,8 @@ On Bun, run `bun build/server/app-server.js`, or `bun node_modules/@ngrok/app-se
 
 `vite build`, or `react-router build`, writes a server build that runs with no `npm install`. Copy the build directory alone, and run its server entry:
 
-- `appServer` bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal`.
-- Two kinds of package stay external: each package in the app's `ssr.external`, and each native package. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`.
+- `appServer` bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal` or sets `ssr.external: true`.
+- Some packages stay external: each package in the app's `ssr.external` or in the bundler's `external` option, each peer dependency of a package in `ssr.external`, and each native package. A peer, such as `react` for a component library, stays external so that the bundle and the external package use one copy. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`.
 - The build copies each external package, whole, with its installed dependencies, into `node_modules` in the server build. Each file stays where its package expects it, so CommonJS, a file read through `__dirname`, and a `.node` addon work.
 - The build writes a `package.json` with `"type": "module"` into the server build, so Node, Bun, and Deno load it as ES modules and find its `node_modules`.
 

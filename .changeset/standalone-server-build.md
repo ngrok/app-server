@@ -4,8 +4,8 @@
 
 A build with the `appServer` Vite plugin now runs with no install. Copy the build directory alone, and run `node build/server/app-server.js` (`dist/server/app-server.js` for TanStack Start), or the same file with `bun` or `deno run`. The README section "Deploy" has a Dockerfile.
 
-- The plugin bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal`.
-- Each package in `ssr.external` and each native package stay external. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`, such as `oxc-parser`. The build copies each external package, whole, with its installed dependencies, into `node_modules` in the server build.
+- The plugin bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal` or sets `ssr.external: true`.
+- Each package in `ssr.external` or in the bundler's `external` option, each peer dependency of a package in `ssr.external`, and each native package stay external. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`, such as `oxc-parser`. The build copies each external package, whole, with its installed dependencies, into `node_modules` in the server build.
 - The build writes a `package.json` with `"type": "module"` into the server build.
 - When a runtime runs `app-server.js` as its main module, the file starts the server, as `app-server serve` does. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value. `app-server serve` works as before.
 - If the build finds two copies of one external package, such as two versions, the build fails.
