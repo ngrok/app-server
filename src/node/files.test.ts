@@ -49,6 +49,60 @@ describe("nodeFiles", () => {
 		await expect(files.stat("/loop")).rejects.toMatchObject({ code: "ELOOP" });
 	});
 
+	it("answers from a snapshot that does not change when the files change", async () => {
+		const client = join(root, "snapshot");
+		mkdirSync(join(client, "docs"), { recursive: true });
+		writeFileSync(join(client, "docs/index.html"), "<h1>Docs</h1>");
+		writeFileSync(join(client, "gone.txt"), "gone");
+		symlinkSync("..", join(client, "docs/up"));
+		const files = await nodeFiles(client).snapshot?.();
+		rmSync(join(client, "gone.txt"));
+		writeFileSync(join(client, "late.txt"), "late");
+		const paths = [
+			"/",
+			"/docs/",
+			"/docs/index.html",
+			"/gone.txt",
+			"/late.txt",
+			"/gone.txt/child",
+			"/docs/index.html/",
+		];
+		const kinds = await Promise.all(paths.map(async (path) => (await files?.stat(path))?.kind));
+
+		expect(kinds).toStrictEqual([
+			"directory",
+			"directory",
+			"file",
+			"file",
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	it("lists the files of a directory under each symbolic link to it", async () => {
+		const client = join(root, "aliases");
+		mkdirSync(join(client, "real"), { recursive: true });
+		writeFileSync(join(client, "real/a.txt"), "a");
+		symlinkSync("real", join(client, "link"));
+		const files = await nodeFiles(client).snapshot?.();
+
+		await expect(files?.stat("/real/a.txt")).resolves.toMatchObject({ kind: "file" });
+		await expect(files?.stat("/link/a.txt")).resolves.toMatchObject({ kind: "file" });
+	});
+
+	it("refuses a snapshot when a file system error does not mean a missing file", async () => {
+		await expect(nodeFiles(join(root, "client")).snapshot?.()).rejects.toMatchObject({
+			code: "ELOOP",
+		});
+	});
+
+	it("gives an empty snapshot for a client build that does not exist", async () => {
+		const files = await nodeFiles(join(root, "missing")).snapshot?.();
+
+		await expect(files?.stat("/")).resolves.toBeUndefined();
+	});
+
 	// Why skip for root: root reads a file with no permissions.
 	it.skipIf(process.getuid?.() === 0)("throws at open for a file that it cannot read", async () => {
 		const files = nodeFiles(join(root, "client"));

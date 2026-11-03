@@ -1,4 +1,4 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withHeaderHook, writableHeaders } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
@@ -124,7 +124,7 @@ export function cspNonce({ policy }: CspNonceOptions): Plugin {
 				!headers.has("Content-Security-Policy") &&
 				(headers.get("Content-Type")?.startsWith("text/html") ?? false)
 			) {
-				context.header("Content-Security-Policy", oneLine(policy(nonce)));
+				writableHeaders(context).set("Content-Security-Policy", oneLine(policy(nonce)));
 			}
 		},
 	};

@@ -61,6 +61,19 @@ describe("streamingCompress", () => {
 		await expect(response.text()).resolves.toBe('{"ok":true}');
 	});
 
+	it("sends a body from a string under 1 KiB as it is, with no Content-Length to read", async () => {
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response("hello", { headers: { "Content-Type": "text/plain" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+		await expect(response.text()).resolves.toBe("hello");
+	});
+
 	it("adds Accept-Encoding to Vary once, and only on a type that it can gzip", async () => {
 		const responses: Record<string, () => Response> = {
 			"/image": () => new Response("png", { headers: { "Content-Type": "image/png" } }),

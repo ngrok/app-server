@@ -1,3 +1,4 @@
+import { replaceResponse, writableHeaders } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 // The Standard Schema interface (https://standardschema.dev), copied as its spec asks, so that
@@ -204,12 +205,16 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 				return;
 			}
 			if (response.body != null) {
-				context.res = new Response(injectBeforeHeadEnd(response.body, script), response);
+				replaceResponse(
+					context,
+					new Response(injectBeforeHeadEnd(response.body, script), response),
+				);
 			}
 			// Why for HEAD too: it gets the headers that GET gets. The script changes the length, and a
 			// rendered document's ETag does not cover the values, so a 304 could keep old ones.
-			context.header("Content-Length", undefined);
-			context.header("ETag", undefined);
+			const headers = writableHeaders(context);
+			headers.delete("Content-Length");
+			headers.delete("ETag");
 		},
 	};
 }

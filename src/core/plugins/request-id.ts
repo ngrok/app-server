@@ -1,4 +1,5 @@
 import { requestId as honoRequestId } from "hono/request-id";
+import { writableHeaders } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 /** Options for {@link requestId}. */
@@ -90,10 +91,9 @@ export function requestId({
 			}
 			await assign(context, next);
 			// Why set it again: a `Response` that the framework returns replaces the headers set before `next`.
-			// `context.header` also copies a response whose headers are immutable.
 			const id = context.get("requestId");
 			if (id != null) {
-				context.header(headerName, id);
+				writableHeaders(context).set(headerName, id);
 			}
 		},
 	};

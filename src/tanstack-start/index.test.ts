@@ -20,25 +20,6 @@ describe("runtime", () => {
 		});
 	});
 
-	it("accepts a Response of the original type after a listener replaces the global", async () => {
-		const OriginalResponse = Response;
-		vi.stubGlobal("Response", class extends OriginalResponse {});
-		try {
-			const framework = runtime(
-				{ default: { fetch: () => new OriginalResponse("from fetch") } },
-				{ mode: "production" },
-			);
-			const { request } = await testServer({ plugins: [], render: framework.fetch });
-
-			const response = await request("/");
-
-			expect(response.status).toBe(200);
-			await expect(response.text()).resolves.toBe("from fetch");
-		} finally {
-			vi.unstubAllGlobals();
-		}
-	});
-
 	it("marks Start's server function requests as data requests", () => {
 		const framework = runtime({ default: { fetch: () => new Response() } }, { mode: "production" });
 

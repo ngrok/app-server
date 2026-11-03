@@ -148,6 +148,23 @@ describe("createServer", () => {
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("leaves a response object that the app sends again unchanged", async () => {
+		const shared = new Response(null, { status: 204 });
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			routes: (app) => {
+				app.get("/empty", () => shared);
+			},
+		});
+
+		const first = await request("/empty", { headers: { "X-Request-Id": "first" } });
+		const second = await request("/empty", { headers: { "X-Request-Id": "second" } });
+
+		expect(first.headers.get("X-Request-Id")).toBe("first");
+		expect(second.headers.get("X-Request-Id")).toBe("second");
+		expect([...shared.headers.keys()]).toStrictEqual([]);
+	});
+
 	it("marks a rendered document private by default, but not a prerendered page", async () => {
 		const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-private-"));
 		onTestFinished(() => {
@@ -326,6 +343,30 @@ describe("createServer", () => {
 		request.destroy();
 
 		await expect.poll(() => cancel.mock.calls.length).toBe(1);
+		await server.shutdown();
+	});
+
+	it("keeps a `fetch()` result an `instanceof Response` in a route on the Node listener", async () => {
+		const server = await listening(async () => {
+			const fetched = await fetch("data:text/plain,upstream");
+			return new Response(String(fetched instanceof Response));
+		});
+
+		const response = await fetch(server.urls[0] ?? "");
+
+		await expect(response.text()).resolves.toBe("true");
+		await server.shutdown();
+	});
+
+	it("copies an incoming request with `new Request` in a route on the Node listener", async () => {
+		const server = await listening(async (request) => {
+			const copy = new Request(request, { method: "DELETE" });
+			return new Response(`${copy.method} ${new URL(copy.url).pathname}`);
+		});
+
+		const response = await fetch(new URL("/items", server.urls[0]));
+
+		await expect(response.text()).resolves.toBe("DELETE /items");
 		await server.shutdown();
 	});
 

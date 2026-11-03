@@ -4,6 +4,7 @@ import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { errorAttributes } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
+import { keptFiles } from "./static-files.js";
 import type {
 	AppServerEnv,
 	FrameworkRuntime,
@@ -103,9 +104,13 @@ export function createEntry({
 		start: async () => {
 			const runtime = framework("production");
 			const shared = await setupInfo(runtime);
-			const { prerendered, headers } = await readBuildManifest(shared.files);
+			const snapshot = await shared.files.snapshot?.();
+			// Why only with a snapshot: it promises that the client build does not change while the server runs.
+			const files = snapshot == null ? shared.files : keptFiles(snapshot);
+			const { prerendered, headers } = await readBuildManifest(files);
 			const info: SetupInfo = {
 				...shared,
+				files,
 				mode: "production",
 				prerenderedPaths: runtime.prerenderedPaths ?? prerendered,
 				capturedHeaders: new Map(Object.entries(headers)),

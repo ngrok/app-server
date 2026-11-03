@@ -4,7 +4,7 @@ import { errorAttributes, jsonSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
 import { listenerUrl } from "../node/runtimes/listen-options.js";
-import { cancelIfClosed } from "../node/runtimes/node.js";
+import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
 import { parsePort } from "../node/tcp.js";
 import { SERVER_ENTRY_ID } from "../vite/index.js";
 import { loadEntry } from "./load-entry.js";
@@ -47,35 +47,40 @@ export async function start(): Promise<void> {
 	const sink = jsonSink();
 	const apps = servedApps();
 
-	const listener = getRequestListener(async (request, { incoming, outgoing }) => {
-		try {
-			const response = await apps.serve(
-				await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
-				async (entry) =>
-					entry.fetchDev(
-						request,
-						{
-							remoteAddress: incoming.socket.remoteAddress,
-							// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
-							...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
-								? { incoming, outgoing }
-								: {}),
-						},
-						devServer,
-					),
-			);
-			return await cancelIfClosed(response, outgoing);
-		} catch (error) {
-			if (error instanceof Error) {
-				viteServer.ssrFixStacktrace(error);
+	const listener = keepGlobalResponse(() =>
+		getRequestListener(async (request, { incoming, outgoing }) => {
+			try {
+				const response = await apps.serve(
+					await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
+					async (entry) =>
+						entry.fetchDev(
+							request,
+							{
+								remoteAddress: incoming.socket.remoteAddress,
+								// Why the check: the listener is plain `node:http`, so these are always HTTP/1 objects.
+								...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
+									? { incoming, outgoing }
+									: {}),
+							},
+							devServer,
+						),
+				);
+				return await cancelIfClosed(response, outgoing);
+			} catch (error) {
+				if (error instanceof Error) {
+					viteServer.ssrFixStacktrace(error);
+				}
+				sink.log("error", "dev request failed", errorAttributes(error));
+				return new Response(
+					error instanceof Error ? (error.stack ?? error.message) : String(error),
+					{
+						status: 500,
+						headers: { "Content-Type": "text/plain; charset=utf-8" },
+					},
+				);
 			}
-			sink.log("error", "dev request failed", errorAttributes(error));
-			return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {
-				status: 500,
-				headers: { "Content-Type": "text/plain; charset=utf-8" },
-			});
-		}
-	});
+		}),
+	);
 	httpServer.on("request", (request, response) => {
 		void listener(request, response);
 	});
