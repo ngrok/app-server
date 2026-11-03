@@ -95,7 +95,7 @@ Run it:
 
 `appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. With no `app`, the server uses the default plugins.
 
-After the build and after the prerender pass, `appServer` writes a gzip copy (`<file>.gz`) next to each text file of 1 KiB or more in the client build, except HTML. `app-server serve` sends the copy to a client that accepts gzip, so it does not gzip the file for each request. The copies include the prerendered files, in any plugin order. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
+After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) next to each text file of 1 KiB or more in the client build, except HTML. `app-server serve` sends the copy to a client that accepts gzip, so it does not gzip the file for each request. The copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copy. The build does not change a `.gz` file of the app. The copies include the prerendered files, in any plugin order. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
@@ -260,7 +260,7 @@ export function getRouter() {
 
 After a deploy, an open tab still runs the old build. Two things can then go wrong:
 
-- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build, with their `.gz` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
+- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build, with their `.<file>.gz` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
 - **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
 
 `buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. For React Router, create the module once, and give its three hooks to the router:
@@ -617,7 +617,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side and the file name of the server entry.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.gz` copies count in that limit.
+- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners, request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` copies count in that limit.
 
 ## Options
 

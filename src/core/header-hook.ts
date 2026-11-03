@@ -2,11 +2,12 @@ import type { Context, Next } from "hono";
 import type { AppServerEnv, HeaderHook, ResponseHeaders } from "./types.js";
 
 /**
- * The responses that this request made, so a later write can change them in
- * place: the copies of {@link writableHeaders} and the responses of
- * {@link replaceResponse}.
+ * The response that each request made, so a later write can change it in
+ * place: a copy from {@link writableHeaders}, or a response from
+ * {@link replaceResponse}. Why by request: an app can send a response of an
+ * earlier request again, and this request must not change it.
  */
-const owned = new WeakSet<Response>();
+const owned = new WeakMap<Context<AppServerEnv>, Response>();
 
 /**
  * Makes `response` the response of the request. It must be a new object,
@@ -19,7 +20,7 @@ const owned = new WeakSet<Response>();
 export function replaceResponse(context: Context<AppServerEnv>, response: Response): void {
 	context.res = undefined;
 	context.res = response;
-	owned.add(response);
+	owned.set(context, response);
 }
 
 /**
@@ -31,7 +32,7 @@ export function replaceResponse(context: Context<AppServerEnv>, response: Respon
  * `context.header` copies the whole response on each call.
  */
 export function writableHeaders(context: Context<AppServerEnv>): Headers {
-	if (!owned.has(context.res)) {
+	if (owned.get(context) !== context.res) {
 		replaceResponse(context, new Response(context.res.body, context.res));
 	}
 	return context.res.headers;

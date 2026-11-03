@@ -335,6 +335,11 @@ async function chunks(url: string, headers: Record<string, string> = {}) {
 	return { response, first: parts[0] ?? "", body: parts.join("") };
 }
 
+/** The URL path of the gzip copy that the build writes for the file at `path`. */
+function gzipCopy(path: string): string {
+	return path.replace(/[^/]*$/u, (name) => `.${name}.gz`);
+}
+
 /** Checks what each framework app shares: a prerendered page and a resource with its build headers. */
 async function checkFrameworkShared(
 	base: string,
@@ -349,7 +354,7 @@ async function checkFrameworkShared(
 
 	const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)]
 		.map((match) => match.groups?.path ?? "")
-		.filter((path) => existsSync(join(clientDirectory, `${path}.gz`)));
+		.filter((path) => existsSync(join(clientDirectory, gzipCopy(path))));
 	const fromCopy = await Promise.all(
 		scripts.map(async (path) => {
 			const response = await request(new URL(path, base).href, { "Accept-Encoding": "gzip" });
@@ -357,7 +362,7 @@ async function checkFrameworkShared(
 			for await (const part of response) {
 				parts.push(Buffer.from(part as Uint8Array));
 			}
-			return Buffer.concat(parts).equals(readFileSync(join(clientDirectory, `${path}.gz`)));
+			return Buffer.concat(parts).equals(readFileSync(join(clientDirectory, gzipCopy(path))));
 		}),
 	);
 	assert.ok(

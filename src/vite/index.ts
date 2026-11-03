@@ -7,13 +7,13 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Plugin, PreviewServer, ResolvedConfig } from "vite";
 import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
-import { GZIP_SUFFIX, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
+import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
 import { contentType } from "../core/static-files.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
@@ -199,12 +199,13 @@ function capture(server: PreviewServer): void {
 }
 
 /**
- * Writes a gzip copy (`<file>.gz`) next to the file at `path` when the server
- * gzips the file: a compressible type that is not HTML, of 1 KiB or more,
- * whose copy is smaller. Else it removes an old copy, so a copy from an
+ * Writes a gzip copy (`.<file>.gz`) next to the file at `path` when the
+ * server gzips the file: a compressible type that is not HTML, of 1 KiB or
+ * more, whose copy is smaller. Else it removes an old copy, so a copy from an
  * earlier build never replaces a changed file.
  */
 function writeGzipCopy(path: string): void {
+	const copyPath = join(dirname(path), gzipCopyName(basename(path)));
 	const type = contentType(path, {});
 	const bytes =
 		isCompressible(type) &&
@@ -218,20 +219,20 @@ function writeGzipCopy(path: string): void {
 			? undefined
 			: gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION });
 	if (copy == null || bytes == null || copy.byteLength >= bytes.byteLength) {
-		rmSync(`${path}${GZIP_SUFFIX}`, { force: true });
+		rmSync(copyPath, { force: true });
 		return;
 	}
-	writeFileSync(`${path}${GZIP_SUFFIX}`, copy);
+	writeFileSync(copyPath, copy);
 }
 
-/** Runs {@link writeGzipCopy} for each file in the client build, except dotfiles and copies. */
+/** Runs {@link writeGzipCopy} for each file in the client build, except dotfiles such as the copies. */
 function writeGzipCopies(clientDirectory: string): void {
 	if (!existsSync(clientDirectory)) {
 		return;
 	}
 	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
 		// Why skip dotfiles: the server never sends one, such as `.app-server.json`.
-		if (entry.isFile() && !entry.name.startsWith(".") && !entry.name.endsWith(GZIP_SUFFIX)) {
+		if (entry.isFile() && !entry.name.startsWith(".")) {
 			writeGzipCopy(join(entry.parentPath, entry.name));
 		}
 	}
@@ -252,7 +253,7 @@ function writeGzipCopies(clientDirectory: string): void {
  *   the headers. A document's headers depend on its request, so they are not
  *   recorded.
  * - After the build and after the prerender pass, it writes a gzip copy
- *   (`<file>.gz`) next to each text file of 1 KiB or more in the client
+ *   (`.<file>.gz`) next to each text file of 1 KiB or more in the client
  *   build, except HTML. The static stages send the copy, so the server does
  *   not gzip these files for each request.
  *

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
@@ -420,7 +420,7 @@ describe("gzip copies from the build", () => {
 	for (const path of ["assets/copy-abc123.js", "copy.txt", "plain/index.html"]) {
 		mkdirSync(dirname(join(clientDirectory, path)), { recursive: true });
 		writeFileSync(join(clientDirectory, path), text);
-		writeFileSync(join(clientDirectory, `${path}.gz`), gzipSync(text));
+		writeFileSync(join(clientDirectory, dirname(path), `.${basename(path)}.gz`), gzipSync(text));
 	}
 
 	it("sends the gzip copy to a request that accepts gzip, with its length and no ranges", async () => {
@@ -459,6 +459,14 @@ describe("gzip copies from the build", () => {
 		await expect(head.text()).resolves.toBe("");
 		expect(notModified.status).toBe(304);
 		expect(notModified.headers.get("Vary")).toBe("Accept-Encoding");
+	});
+
+	it("gives the copy no URL of its own, so a skip rule for its file also blocks it", async () => {
+		const { request } = await staticServer({ skip: (path) => path === "/copy.txt" });
+
+		for (const path of ["/copy.txt", "/.copy.txt.gz", "/copy.txt.gz"]) {
+			await expect((await request(path, gzip)).text()).resolves.toBe("rendered");
+		}
 	});
 
 	it("never sends the copy of an HTML file, or for a response marked no-transform", async () => {

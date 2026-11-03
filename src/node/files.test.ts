@@ -64,6 +64,17 @@ describe("nodeFiles", () => {
 		expect(kinds).toStrictEqual(["directory", "directory", "file", "file", undefined, undefined]);
 	});
 
+	it("lists the files of a directory under each symbolic link to it", async () => {
+		const client = join(root, "aliases");
+		mkdirSync(join(client, "real"), { recursive: true });
+		writeFileSync(join(client, "real/a.txt"), "a");
+		symlinkSync("real", join(client, "link"));
+		const files = await nodeFiles(client).snapshot?.();
+
+		await expect(files?.stat("/real/a.txt")).resolves.toMatchObject({ kind: "file" });
+		await expect(files?.stat("/link/a.txt")).resolves.toMatchObject({ kind: "file" });
+	});
+
 	it("refuses a snapshot when a file system error does not mean a missing file", async () => {
 		await expect(nodeFiles(join(root, "client")).snapshot?.()).rejects.toMatchObject({
 			code: "ELOOP",

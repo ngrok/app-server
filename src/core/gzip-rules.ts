@@ -11,8 +11,21 @@ const COMPRESSIBLE =
  */
 export const MIN_GZIP_BYTES = 1024;
 
-/** The suffix of the gzip copy of a file that the build writes next to it. */
-export const GZIP_SUFFIX = ".gz";
+/**
+ * The name of the gzip copy of the file `name`, which the build writes next
+ * to it.
+ *
+ * Why a dotfile: the static stages never serve a dotfile, so the copy has no
+ * URL of its own. A request gets the copy only through the URL of its file,
+ * which `skip` and an auth check can block. The build also never replaces or
+ * removes a `.gz` file of the app.
+ *
+ * @example
+ * gzipCopyName("app-abc.js"); // => ".app-abc.js.gz"
+ */
+export function gzipCopyName(name: string): string {
+	return `.${name}.gz`;
+}
 
 /** Whether the server gzips a body of the content type `type`. */
 export function isCompressible(type: string): boolean {

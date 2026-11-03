@@ -147,19 +147,23 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		},
 		snapshot: async () => {
 			const entries = new Map<string, FileInfo>();
-			// Why the inodes: a symbolic link to a parent directory must not make the walk endless.
-			const walked = new Set<string>();
-			const walk = async (path: string, stats: Stats): Promise<void> => {
+			// Why the inodes of the parents: a symbolic link to a parent directory must not make the
+			// walk endless. A link to another directory, such as a sibling, still lists its files.
+			const walk = async (
+				path: string,
+				stats: Stats,
+				parents: ReadonlySet<string>,
+			): Promise<void> => {
 				const info = fileInfo(stats);
 				if (info == null) {
 					return;
 				}
 				entries.set(path, info);
 				const inode = `${stats.dev}:${stats.ino}`;
-				if (info.kind === "file" || walked.has(inode)) {
+				if (info.kind === "file" || parents.has(inode)) {
 					return;
 				}
-				walked.add(inode);
+				const inside = new Set(parents).add(inode);
 				const prefix = path === "/" ? "" : path;
 				const names = await readdir(filePath(path));
 				await Promise.all(
@@ -167,14 +171,14 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 						const childPath = `${prefix}/${name}`;
 						const childStats = await statOrMissing(filePath(childPath));
 						if (childStats != null) {
-							await walk(childPath, childStats);
+							await walk(childPath, childStats, inside);
 						}
 					}),
 				);
 			};
 			const rootStats = await statOrMissing(root);
 			if (rootStats != null) {
-				await walk("/", rootStats);
+				await walk("/", rootStats, new Set());
 			}
 			return {
 				// Why trim one `/`: `stat` finds `/docs/` at `/docs`.

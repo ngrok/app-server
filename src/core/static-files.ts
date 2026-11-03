@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
-import { acceptsGzip, forbidsTransform, GZIP_SUFFIX } from "./gzip-rules.js";
+import { acceptsGzip, forbidsTransform, gzipCopyName } from "./gzip-rules.js";
 import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
@@ -176,8 +176,10 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 		stat: files.stat,
 		open: async (path, range) => {
 			let bytes = kept.get(path);
+			const info = bytes == null ? await files.stat(path) : undefined;
+			// Why again: another request can start to read the file during the `stat`.
+			bytes ??= kept.get(path);
 			if (bytes == null) {
-				const info = await files.stat(path);
 				if (
 					info?.kind !== "file" ||
 					info.size > KEPT_FILE_BYTES ||
@@ -220,7 +222,7 @@ async function gzipCopy(
 	context: Context<AppServerEnv>,
 	{ files, path, headers }: { files: StaticFiles; path: string; headers: Headers },
 ): Promise<StaticFile | undefined> {
-	const copyPath = `${path}${GZIP_SUFFIX}`;
+	const copyPath = path.replace(/[^/]*$/u, gzipCopyName);
 	const info = await files.stat(copyPath);
 	if (info?.kind !== "file") {
 		return undefined;
@@ -265,7 +267,7 @@ export type StaticResponseOptions = {
  * full file. Why: the ETag is weak, and `If-Range` needs a strong match. An
  * HTML file gets no ranges.
  *
- * When the build wrote a gzip copy of the file (`<file>.gz`), the response
+ * When the build wrote a gzip copy of the file (`.<file>.gz`), the response
  * gets `Vary: Accept-Encoding`. A request that accepts gzip gets the copy with
  * `Content-Encoding: gzip`, and no range. An HTML file and a response marked
  * `no-transform` never get the copy.

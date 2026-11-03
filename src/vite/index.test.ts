@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { preview } from "vite";
 import type { Plugin, ViteBuilder } from "vite";
@@ -103,7 +103,7 @@ describe("appServer", () => {
 		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
 		await server.close();
 
-		expect(gunzipSync(readFileSync(join(root, "build/client/agents.txt.gz"))).toString()).toBe(
+		expect(gunzipSync(readFileSync(join(root, "build/client/.agents.txt.gz"))).toString()).toBe(
 			text,
 		);
 	});
@@ -234,9 +234,12 @@ describe("appServer", () => {
 			"index.html": `<p>${text}</p>`,
 			"small.txt": "small",
 			// Why: a copy from an earlier build of a file that is now too small.
-			"small.txt.gz": "stale",
+			".small.txt.gz": "stale",
 			"photo.png": text,
+			"release.tar": text,
 			"release.tar.gz": "archive",
+			"data.json": "{}",
+			"data.json.gz": "app data",
 			".app-server.json": JSON.stringify({ prerendered: [text] }),
 		};
 		for (const [path, content] of Object.entries(files)) {
@@ -260,13 +263,20 @@ describe("appServer", () => {
 			builder as unknown as ViteBuilder,
 		);
 
+		const copy = (path: string) => join(client, dirname(path), `.${basename(path)}.gz`);
 		for (const path of ["assets/app-abc.js", "docs/llms.txt"]) {
-			expect(gunzipSync(readFileSync(join(client, `${path}.gz`))).toString()).toBe(text);
+			expect(gunzipSync(readFileSync(copy(path))).toString()).toBe(text);
 		}
-		for (const path of ["index.html", "small.txt", "photo.png", ".app-server.json"]) {
-			expect(existsSync(join(client, `${path}.gz`))).toBe(false);
+		for (const path of [
+			"index.html",
+			"small.txt",
+			"photo.png",
+			"release.tar",
+			".app-server.json",
+		]) {
+			expect(existsSync(copy(path))).toBe(false);
 		}
 		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
-		expect(existsSync(join(client, "release.tar.gz.gz"))).toBe(false);
+		expect(readFileSync(join(client, "data.json.gz"), "utf8")).toBe("app data");
 	});
 });
