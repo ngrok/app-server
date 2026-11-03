@@ -16,6 +16,9 @@ import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { gzipCopyName, isCompressible, MIN_GZIP_BYTES } from "../core/gzip-rules.js";
 import { contentType } from "../core/static-files.js";
+import { node } from "../node/vite.js";
+import { reactRouterAdapter } from "../react-router/vite.js";
+import { tanstackStartAdapter } from "../tanstack-start/vite.js";
 
 /** The module ID of the server entry that {@link appServer} generates. */
 export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";
@@ -87,14 +90,54 @@ export type HostBuild = {
 
 /** Options for {@link appServer}. */
 export type AppServerOptions = {
-	framework: FrameworkBuild;
-	host: HostBuild;
+	/**
+	 * The framework adapter. When omitted, the plugin finds the React Router or
+	 * TanStack Start plugin in the Vite config. It throws when it finds neither
+	 * or both.
+	 */
+	framework?: FrameworkBuild;
+	/** The host adapter. Default `node()`. */
+	host?: HostBuild;
 	/**
 	 * The module whose default export is the app from `createServer`, relative
-	 * to the Vite root. When omitted, the server uses its default plugins.
+	 * to the Vite root. When omitted, the plugin uses `server.ts`, else
+	 * `server.js`, in the Vite root. When neither exists, the server uses its
+	 * default plugins.
 	 */
 	app?: string;
 };
+
+/** The built-in framework adapters, each with the name of the Vite plugin that marks its framework. */
+const FRAMEWORKS = [
+	// Why not the `react-router` plugin: React Router's child compiler drops that plugin and keeps
+	// this one, which serves the server module.
+	{ plugin: "react-router:virtual-modules", adapter: reactRouterAdapter },
+	{ plugin: "tanstack-react-start:config", adapter: tanstackStartAdapter },
+];
+
+/** The adapter of the one built-in framework whose plugin is in the Vite config. */
+function detectFramework(plugins: readonly Plugin[]): FrameworkBuild {
+	const names = new Set(plugins.map((plugin) => plugin.name));
+	const [found, ...others] = FRAMEWORKS.filter(({ plugin }) => names.has(plugin));
+	if (found == null) {
+		throw new Error(
+			"@ngrok/app-server found no React Router or TanStack Start plugin in the Vite config. Add the framework's plugin, or pass `framework` to `appServer`.",
+		);
+	}
+	if (others.length > 0) {
+		throw new Error(
+			"@ngrok/app-server found the React Router and the TanStack Start plugins in the Vite config. Pass `framework` to `appServer`.",
+		);
+	}
+	return found.adapter();
+}
+
+/** The absolute path of `server.ts` or `server.js` in `root`, else `undefined` for the default app. */
+function defaultApp(root: string): string | undefined {
+	return ["server.ts", "server.js"]
+		.map((name) => join(root, name))
+		.find((path) => existsSync(path));
+}
 
 /** What {@link serverEntrySource} needs. */
 type EntrySource = {
@@ -427,15 +470,14 @@ function writeGzipCopies(clientDirectory: string): void {
  *
  * @example
  * // vite.config.ts
- * export default defineConfig({
- * 	plugins: [
- * 		reactRouter(),
- * 		appServer({ framework: reactRouterAdapter(), host: node(), app: "./server.ts" }),
- * 	],
- * });
+ * export default defineConfig({ plugins: [reactRouter(), appServer()] });
  */
-export function appServer({ framework, host, app }: AppServerOptions): Plugin[] {
-	let config: ResolvedConfig | undefined;
+export function appServer(options: AppServerOptions = {}): Plugin[] {
+	const host = options.host ?? node();
+	// Why one value: `configResolved` sets all three, so no hook sees a config with no framework.
+	let resolved:
+		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
+		| undefined;
 	let clientBuild: ClientBuild | undefined;
 	const gzipCopies: Plugin = {
 		name: "@ngrok/app-server:gzip-copies",
@@ -455,9 +497,15 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 	};
 	const main: Plugin = {
 		name: "@ngrok/app-server",
-		configResolved: (resolved) => {
-			config = resolved;
-			framework.validate?.(resolved);
+		configResolved: (config) => {
+			const framework = options.framework ?? detectFramework(config.plugins);
+			framework.validate?.(config);
+			resolved = {
+				config,
+				framework,
+				appModule:
+					options.app == null ? defaultApp(config.root) : resolve(config.root, options.app),
+			};
 		},
 		buildStart() {
 			// Why a chunk and not an input: the framework's own entry stays the same, and its prerender
@@ -466,9 +514,9 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
 			}
 		},
-		writeBundle(options, bundle) {
+		writeBundle(output, bundle) {
 			if (this.environment.name === "client") {
-				const directory = options.dir ?? outDir(this.environment.config, "client");
+				const directory = output.dir ?? outDir(this.environment.config, "client");
 				const assetsDirectory = join(directory, this.environment.config.build.assetsDir);
 				clientBuild = {
 					bundleId: bundleBuildId(bundle),
@@ -483,19 +531,20 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 				});
 			}
 		},
-		renderStart(options) {
+		renderStart(output) {
 			// Why: the server entry uses `import.meta.url`, and the CLI loads it as an ES module.
-			if (this.environment.name === SERVER_ENVIRONMENT && options.format !== "es") {
+			if (this.environment.name === SERVER_ENVIRONMENT && output.format !== "es") {
 				throw new Error(
-					`@ngrok/app-server needs an ES module server build, and this build has the format "${options.format}".`,
+					`@ngrok/app-server needs an ES module server build, and this build has the format "${output.format}".`,
 				);
 			}
 		},
 		resolveId: (id) => (id === SERVER_ENTRY_ID ? RESOLVED_SERVER_ENTRY_ID : undefined),
 		load(id) {
-			if (id !== RESOLVED_SERVER_ENTRY_ID || config == null) {
+			if (id !== RESOLVED_SERVER_ENTRY_ID || resolved == null) {
 				return null;
 			}
+			const { config, framework, appModule } = resolved;
 			const clientDirectory = outDir(config, "client");
 			const serverDirectory = outDir(config, SERVER_ENVIRONMENT);
 			const fromClient = relative(clientDirectory, serverDirectory);
@@ -518,7 +567,7 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 			return serverEntrySource({
 				framework,
 				host,
-				appModule: app == null ? undefined : resolve(config.root, app),
+				appModule,
 				clientDirectory:
 					this.environment.mode === "build"
 						? `new URL(${JSON.stringify(`${fromEntry}/`)}, import.meta.url).href`
@@ -526,7 +575,7 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 			});
 		},
 		configurePreviewServer: (server) => {
-			if (framework.isPrerenderPass(server)) {
+			if (resolved?.framework.isPrerenderPass(server) === true) {
 				capture(server);
 			}
 		},

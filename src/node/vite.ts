@@ -1,11 +1,11 @@
 import type { HostBuild } from "../vite/index.js";
 
 /**
- * The build side of the node host: the server build gets
- * `server/app-server.js`, which `app-server serve` runs.
+ * The build side of the node host, the default host of `appServer`. The
+ * server build gets `server/app-server.js`, which `app-server serve` runs.
  *
  * @example
- * appServer({ framework: reactRouterAdapter(), host: node(), app: "./server.ts" });
+ * appServer({ host: node() });
  */
 export function node(): HostBuild {
 	return {
