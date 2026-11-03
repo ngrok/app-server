@@ -133,13 +133,14 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 			context.set("cspNonce", nonce);
 			await next();
 			const { headers } = context.res;
+			// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
+			const file = context.get("staticDocument");
 			if (
 				headers.has("Content-Security-Policy") ||
-				!(headers.get("Content-Type")?.startsWith("text/html") ?? false)
+				(file == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
 			) {
 				return;
 			}
-			const file = context.get("staticFile");
 			// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
 			const scriptSrc =
 				file == null

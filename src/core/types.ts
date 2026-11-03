@@ -158,10 +158,10 @@ export type AppServerEnv = {
 		/** The nonce for the request's inline scripts, set by the `contentSecurityPolicy` plugin. */
 		cspNonce?: string;
 		/**
-		 * The URL path of the client build file that the response sends, such as
-		 * `/about/index.html`. The static stages set it.
+		 * The URL path of the client build's HTML file that the response sends,
+		 * such as `/about/index.html`. The static stages set it, for a 304 too.
 		 */
-		staticFile?: string;
+		staticDocument?: string;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */

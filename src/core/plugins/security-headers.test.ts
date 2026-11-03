@@ -179,6 +179,25 @@ describe("contentSecurityPolicy", () => {
 		);
 	});
 
+	it("sets the policy on a 304 for a prerendered document, so a revalidated copy keeps the policy", async () => {
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({ headers: { "Content-Security-Policy": "frame-ancestors 'none'" } }),
+				csp,
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const etag = (await request("/about")).headers.get("ETag") ?? "";
+
+		const response = await request("/about", { headers: { "If-None-Match": etag } });
+
+		expect(response.status).toBe(304);
+		expect(response.headers.get("Content-Security-Policy")).toBe(
+			`script-src 'self' 'sha256-${sha256(THEME_SCRIPT)}', frame-ancestors 'none'`,
+		);
+	});
+
 	it("trusts no inline script of an HTML file that the build recorded no hashes for", async () => {
 		const { request } = await testServer({ plugins: [csp, prerendered()], clientDirectory });
 

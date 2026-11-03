@@ -142,23 +142,39 @@ function outDir(config: ResolvedConfig, environment: string): string {
 	);
 }
 
-/** A `<script>` element with no `src` attribute. The `text` group is its text. */
-const INLINE_SCRIPT = /<script\b(?![^>]*\ssrc\s*=)[^>]*>(?<text>[\s\S]*?)<\/script\s*>/giu;
+/**
+ * An HTML comment, or a `<script>` element. The `attributes` group is the
+ * script's attributes, and the `text` group is its text. Why the comment: a
+ * `<script>` tag in a comment starts no element.
+ */
+const COMMENT_OR_SCRIPT =
+	/<!--[\s\S]*?-->|<script(?=[\s/>])(?<attributes>(?:[^>"']|"[^"]*"|'[^']*')*)>(?<text>[\s\S]*?)<\/script(?=[\s/>])/giu;
+
+/** An attribute value, so that a `src=` in a value is not the `src` attribute. */
+const ATTRIBUTE_VALUE = /[=]\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gu;
+
+/** A `src` attribute, in attributes with no values. */
+const SRC_ATTRIBUTE = /(?:^|[\s/])src(?:[\s/=]|$)/iu;
 
 /**
- * The base64 SHA-256 of each inline script in `html`, once each, in document
- * order. Why each type: a hash of a data block, such as JSON, trusts no code,
- * and a scan that skips a type that runs breaks the page.
+ * The base64 SHA-256 of each inline script in `html`, once each, in
+ * document order. Why each type: a hash of a data block, such as JSON, trusts
+ * no code, and a scan that skips a type that runs breaks the page. Why LF:
+ * the browser changes each CRLF and CR to LF before it hashes a script.
  *
  * @example
  * inlineScriptHashes("<script>go()</script>"); // => ["…base64…"]
  */
 function inlineScriptHashes(html: string): string[] {
-	const hashes = Array.from(html.matchAll(INLINE_SCRIPT), (match) =>
-		createHash("sha256")
-			.update(match.groups?.text ?? "")
-			.digest("base64"),
-	);
+	const hashes: string[] = [];
+	for (const { groups } of html.replaceAll(/\r\n?/gu, "\n").matchAll(COMMENT_OR_SCRIPT)) {
+		if (
+			groups?.text != null &&
+			!SRC_ATTRIBUTE.test((groups.attributes ?? "").replaceAll(ATTRIBUTE_VALUE, "="))
+		) {
+			hashes.push(createHash("sha256").update(groups.text).digest("base64"));
+		}
+	}
 	return [...new Set(hashes)];
 }
 
@@ -166,7 +182,8 @@ function inlineScriptHashes(html: string): string[] {
 function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] {
 	const hashes: BuildManifest["scriptHashes"] = {};
 	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
-		if (entry.isFile() && entry.name.endsWith(".html")) {
+		// Why `contentType`: the static stages send each file of an HTML type, such as `.htm`, as a document.
+		if (entry.isFile() && contentType(entry.name, {}).startsWith("text/html")) {
 			const path = join(entry.parentPath, entry.name);
 			const urlPath = `/${relative(clientDirectory, path).split(sep).join("/")}`;
 			hashes[urlPath] = inlineScriptHashes(readFileSync(path, "utf8"));
@@ -175,6 +192,34 @@ function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] 
 	return Object.fromEntries(
 		Object.entries(hashes).toSorted(([first], [second]) => first.localeCompare(second)),
 	);
+}
+
+/** Writes `.app-server.json` into the client build. */
+function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): void {
+	writeFileSync(
+		join(clientDirectory, BUILD_MANIFEST_FILE),
+		`${JSON.stringify(manifest, null, "\t")}\n`,
+	);
+}
+
+/**
+ * Writes the script hashes of the client build ({@link scriptHashesOf}) into
+ * `.app-server.json`, and keeps the rest of the file. Why after the build
+ * too: a build with no prerender pass can have HTML files, such as
+ * `public/offline.html`.
+ */
+function recordScriptHashes(clientDirectory: string): void {
+	if (!existsSync(clientDirectory)) {
+		return;
+	}
+	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
+	const recorded: unknown = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+	writeBuildManifest(clientDirectory, {
+		prerendered: [],
+		headers: {},
+		...(typeof recorded === "object" && recorded != null ? recorded : {}),
+		scriptHashes: scriptHashesOf(clientDirectory),
+	});
 }
 
 /**
@@ -217,17 +262,13 @@ function capture(server: PreviewServer): void {
 	});
 	server.httpServer.once("close", () => {
 		mkdirSync(clientDirectory, { recursive: true });
-		const manifest: BuildManifest = {
+		writeBuildManifest(clientDirectory, {
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
 			),
 			scriptHashes: scriptHashesOf(clientDirectory),
-		};
-		writeFileSync(
-			join(clientDirectory, BUILD_MANIFEST_FILE),
-			`${JSON.stringify(manifest, null, "\t")}\n`,
-		);
+		});
 		// Why here too: the gzip step of `buildApp` runs before this pass when `appServer` comes
 		// before the framework's plugin. Why sync: Vite does not wait for this listener.
 		for (const path of paths) {
@@ -289,9 +330,10 @@ function writeGzipCopies(clientDirectory: string): void {
  *   and the headers of each prerendered file that is not an HTML document into
  *   `.app-server.json` in the client build. The `prerendered` plugin replays
  *   the headers. A document's headers depend on its request, so they are not
- *   recorded. It also records the hash of each inline script of each HTML
- *   file, for the `contentSecurityPolicy` plugin.
- * - After the build and after the prerender pass, it writes a gzip copy
+ *   recorded.
+ * - After the build and after the prerender pass, it records the hash of each
+ *   inline script of each HTML file in `.app-server.json`, for the
+ *   `contentSecurityPolicy` plugin. It also writes a gzip copy
  *   (`.<file>.gz`) next to each text file of 1 KiB or more in the client
  *   build, except HTML. The static stages send the copy, so the server does
  *   not gzip these files for each request.
@@ -314,7 +356,9 @@ export function appServer({ framework, host, app }: AppServerOptions): Plugin[] 
 		buildApp: {
 			order: "post",
 			handler: async (builder) => {
-				writeGzipCopies(outDir(builder.config, "client"));
+				const clientDirectory = outDir(builder.config, "client");
+				recordScriptHashes(clientDirectory);
+				writeGzipCopies(clientDirectory);
 			},
 		},
 	};

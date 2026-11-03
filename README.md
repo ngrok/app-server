@@ -229,7 +229,7 @@ defaultPlugins({
 - A rendered document gets `'nonce-…' 'strict-dynamic'`, with a new nonce for each request.
 - A prerendered document gets `'self'` and the hash of each of its inline scripts, such as `'self' 'sha256-…'`. The `appServer` Vite plugin records the hashes. The prerender writes one nonce into the file, and every visitor can read it, so a nonce protects nothing. A hash does not carry to the imports of an inline module script, so this list has no `'strict-dynamic'`.
 
-If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. Put the plugin in `beforeStatic`, so it sees the prerendered documents.
+If the build recorded no hashes for an HTML file, the list is only `'self'`, and the browser blocks the file's inline scripts. A 304 for a prerendered document gets the policy too, because a browser replaces the policy of its cached copy with the policy of the 304. Put the plugin in `beforeStatic`, so it sees the prerendered documents.
 
 ```ts
 createServer({
