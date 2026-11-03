@@ -7,6 +7,7 @@ import noBooleanPositionalParam from "./oxlint-rules/no-boolean-positional-param
 import noSleepInTests from "./oxlint-rules/no-sleep-in-tests.js";
 import preferFunctionDeclaration from "./oxlint-rules/prefer-function-declaration.js";
 import preferNullCheck from "./oxlint-rules/prefer-null-check.js";
+import preferUrlParse from "./oxlint-rules/prefer-url-parse.js";
 import requireSuppressionReason from "./oxlint-rules/require-suppression-reason.js";
 import testAssertions from "./oxlint-rules/test-assertions.js";
 
@@ -19,6 +20,7 @@ const plugin = {
 		...noSleepInTests,
 		...preferFunctionDeclaration,
 		...preferNullCheck,
+		...preferUrlParse,
 		...requireSuppressionReason,
 		...testAssertions,
 	},
