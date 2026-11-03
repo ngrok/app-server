@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { z } from "zod";
 import { createServer, serverInternals } from "../create-server.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
+import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
 import type { Plugin } from "../types.js";
@@ -448,6 +450,7 @@ describe("compressed copies from the build", () => {
 		const served: readonly (readonly [string, string])[] = [
 			["/assets/copy-abc123.js", text],
 			["/copy.txt", text],
+			["/plain", page],
 		];
 
 		for (const [path, content] of served) {
@@ -571,13 +574,28 @@ describe("compressed copies from the build", () => {
 		await expect(response.text()).resolves.toBe(text);
 	});
 
-	it("never sends a copy of an HTML file", async () => {
-		const { request } = await staticServer();
+	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {
+		const withValues = await testServer({
+			plugins: [
+				runtimeEnv(z.object({ PUBLIC_A: z.string() }), { source: { PUBLIC_A: "1" } }),
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const noValues = await testServer({
+			plugins: [
+				runtimeEnv(z.object({ SECRET: z.string() }), { source: { SECRET: "1" } }),
+				prerendered(),
+			],
+			clientDirectory,
+		});
 
-		const response = await request("/plain", withBrotli);
+		const injected = await withValues.request("/plain", withBrotli);
+		const copied = await noValues.request("/plain", withBrotli);
 
-		expect(response.headers.get("Content-Encoding")).toBeNull();
-		await expect(response.text()).resolves.toBe(page);
+		expect(injected.headers.get("Content-Encoding")).toBeNull();
+		await expect(injected.text()).resolves.toContain('<script id="app-server-public-env"');
+		expect(copied.headers.get("Content-Encoding")).toBe("br");
 	});
 });
 

@@ -96,7 +96,7 @@ Run it:
 
 `appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. The build also bundles the dependencies, so the build directory runs with no install. See [Deploy](#deploy).
 
-After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) and a brotli copy (`.<file>.br`) next to each text file of 1 kibibyte (KiB) or more in the client build, except HTML. It writes the gzip copy when it is smaller than the file, and the brotli copy when it is smaller than the gzip copy. `app-server serve` sends the copy that the client's `Accept-Encoding` prefers, brotli before gzip, so it does not compress the file for each request. Each copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copies. The build does not change a `.gz` or `.br` file of the app. The copies include the prerendered files, in any plugin order. The brotli copies use quality 9, not 11: on a docs build with 70 megabytes (MB) of text, quality 11 adds 46 s to the build, and quality 9 adds 0.6 s for copies that are 9% larger. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
+After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) and a brotli copy (`.<file>.br`) next to each text file of 1 kibibyte (KiB) or more in the client build, HTML pages included. It writes the gzip copy when it is smaller than the file, and the brotli copy when it is smaller than the gzip copy. `app-server serve` sends the copy that the client's `Accept-Encoding` prefers, brotli before gzip, so it does not compress the file for each request. Each copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copies. The build does not change a `.gz` or `.br` file of the app. The copies include the prerendered files, in any plugin order. The brotli copies use quality 9, not 11: on a docs build with 70 megabytes (MB) of text, quality 11 adds 46 s to the build, and quality 9 adds 0.6 s for copies that are 9% larger. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
@@ -161,7 +161,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 9. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 10. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
 11. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. HTML and a `no-transform` response never get a copy. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
+12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. A `no-transform` response never gets a copy, and an HTML page gets none when `runtimeEnv` adds values to it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
 13. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
@@ -197,6 +197,8 @@ const version: Plugin = {
 		}),
 };
 ```
+
+A `beforeStatic` plugin that changes the bytes of an HTML page, as `runtimeEnv` does, calls `c.set("rewritesHtml", true)` before its `next()`. The static stages then send the HTML file as it is on disk, not its compressed copy. Without it, a client that accepts gzip or brotli gets the copy, with a `Content-Encoding` that the plugin must not change.
 
 ## Protect pages
 
@@ -666,6 +668,8 @@ The values whose names start with `PUBLIC_` go into each HTML document at serve 
 ```ts
 const publicEnv = JSON.parse(document.getElementById("app-server-public-env")?.textContent ?? "{}");
 ```
+
+When there are public values, the server sends each prerendered page from its file, not from its compressed copy, because the values change the bytes of the page. `streamingCompress()` then gzips the page for each request.
 
 ## Long-lived responses
 

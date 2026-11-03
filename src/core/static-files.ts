@@ -250,11 +250,10 @@ async function preferredCopy(
 	{ files, path, headers }: { files: StaticFiles; path: string; headers: Headers },
 ): Promise<Copy | undefined> {
 	// Why not for an encoded file: the copy would encode it again, under one `Content-Encoding`.
-	// Why not for HTML: `runtimeEnv` adds a script to a page, so the bytes of the file are not the
-	// bytes of the page.
 	if (
 		headers.has("Content-Encoding") ||
-		(headers.get("Content-Type")?.startsWith("text/html") ?? false)
+		(context.get("rewritesHtml") === true &&
+			(headers.get("Content-Type")?.startsWith("text/html") ?? false))
 	) {
 		return undefined;
 	}
@@ -319,8 +318,8 @@ export type StaticResponseOptions = {
  * `.<file>.gz`), the response gets `Vary: Accept-Encoding`. A request gets
  * the copy that its `Accept-Encoding` prefers, brotli before gzip, with its
  * `Content-Encoding`, an ETag for that encoding, and no range. A response
- * marked `no-transform`, an HTML file, and a response that `headers` encode
- * never get a copy.
+ * marked `no-transform`, and a response that `headers` encode, never get a
+ * copy. An HTML file gets no copy when an earlier stage sets `rewritesHtml`.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");

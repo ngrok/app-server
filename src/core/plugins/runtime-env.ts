@@ -193,8 +193,13 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 		},
 		etagPart: () => parse().script,
 		middleware: async (context, next) => {
-			await next();
 			const { script } = parse();
+			// Why a request value, not an option: the static stages send the HTML file, not its compressed
+			// copy, only to a request that gets the script. An app with no public values keeps the copies.
+			if (script != null) {
+				context.set("rewritesHtml", true);
+			}
+			await next();
 			const response = context.res;
 			if (
 				script == null ||

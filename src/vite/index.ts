@@ -619,18 +619,20 @@ function capture(server: PreviewServer): void {
 const BROTLI_QUALITY = 9;
 
 /**
- * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of `file`
- * when the server compresses it: a compressible type that is
- * not HTML, of 1 KiB or more. It writes a copy only when it is smaller: the
- * gzip copy than the file, and the brotli copy than the gzip copy. Else it
- * removes an old copy, so a copy from an earlier build never replaces a
- * changed file.
+ * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of the file at
+ * `path` when the server compresses the file: a compressible type of 1 KiB
+ * or more. It writes a copy only when it is smaller: the gzip copy than the
+ * file, and the brotli copy than the gzip copy. Else it removes an old copy,
+ * so a copy from an earlier build never replaces a changed file. A directory
+ * gets the copies of its `index.html`, as the static stages serve it.
  */
-function writeCopies(file: string): void {
-	const type = contentType(file, {});
+function writeCopies(path: string): void {
+	const file =
+		statSync(path, { throwIfNoEntry: false })?.isDirectory() === true
+			? join(path, "index.html")
+			: path;
 	const bytes =
-		isCompressible(type) &&
-		!type.startsWith("text/html") &&
+		isCompressible(contentType(file, {})) &&
 		statSync(file, { throwIfNoEntry: false })?.isFile() === true
 			? readFileSync(file)
 			: undefined;
@@ -709,7 +711,7 @@ function writeAllCopies(clientDirectory: string): void {
  *   inline script of each HTML file in `.app-server.json`, for the
  *   `contentSecurityPolicy` plugin. It also writes a gzip copy (`.<file>.gz`)
  *   and a brotli copy (`.<file>.br`) next to each text file of 1 KiB or more
- *   in the client build, except HTML. The static stages send a copy, so the
+ *   in the client build, HTML included. The static stages send a copy, so the
  *   server does not compress these files for each request.
  *
  * @example

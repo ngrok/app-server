@@ -299,6 +299,8 @@ describe("appServer", () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		const text = "Prerendered text for an agent.\n".repeat(50);
 		writeFileSync(join(root, "build/client/agents.txt"), text);
+		mkdirSync(join(root, "build/client/page"), { recursive: true });
+		writeFileSync(join(root, "build/client/page/index.html"), `<p>${text}</p>`);
 		const server = await preview({
 			root,
 			configFile: false,
@@ -310,12 +312,16 @@ describe("appServer", () => {
 		});
 
 		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await (await fetch(new URL("/page", server.resolvedUrls?.local[0]))).text();
 		await server.close();
 
 		const client = join(root, "build/client");
 		expect(gunzipSync(readFileSync(join(client, ".agents.txt.gz"))).toString()).toBe(text);
 		expect(brotliDecompressSync(readFileSync(join(client, ".agents.txt.br"))).toString()).toBe(
 			text,
+		);
+		expect(brotliDecompressSync(readFileSync(join(client, "page/.index.html.br"))).toString()).toBe(
+			`<p>${text}</p>`,
 		);
 	});
 
@@ -539,7 +545,7 @@ describe("appServer", () => {
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');
 	});
 
-	it("writes a gzip and a brotli copy of each text file of 1 KiB or more after the build, except HTML", async () => {
+	it("writes a gzip and a brotli copy of each text file of 1 KiB or more after the build", async () => {
 		const client = join(root, "gzip-build");
 		const text = "export const value = 1;\n".repeat(100);
 		const files: Record<string, string | Uint8Array> = {
@@ -581,18 +587,12 @@ describe("appServer", () => {
 
 		const copy = (path: string, extension: string) =>
 			join(client, dirname(path), `.${basename(path)}.${extension}`);
-		for (const path of ["assets/app-abc.js", "docs/llms.txt"]) {
+		for (const path of ["assets/app-abc.js", "docs/llms.txt", "index.html"]) {
 			const content = files[path]?.toString();
 			expect(gunzipSync(readFileSync(copy(path, "gz"))).toString()).toBe(content);
 			expect(brotliDecompressSync(readFileSync(copy(path, "br"))).toString()).toBe(content);
 		}
-		for (const path of [
-			"index.html",
-			"small.txt",
-			"photo.png",
-			"release.tar",
-			".app-server.json",
-		]) {
+		for (const path of ["small.txt", "photo.png", "release.tar", ".app-server.json"]) {
 			expect([existsSync(copy(path, "gz")), existsSync(copy(path, "br"))]).toStrictEqual([
 				false,
 				false,

@@ -171,6 +171,13 @@ export type AppServerEnv = {
 		 * static stages add them to each file's ETag. The server sets this list.
 		 */
 		etagParts?: readonly string[];
+		/**
+		 * Whether a stage that the request passed changes the bytes of an HTML
+		 * body, as `runtimeEnv` does. The stage sets it before its `next()`.
+		 * The static stages then send an HTML file as it is on disk, not its
+		 * compressed copy, so the stage can change it.
+		 */
+		rewritesHtml?: boolean;
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
 		headerHooks?: readonly HeaderHook[];
 	};
