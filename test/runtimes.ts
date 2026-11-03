@@ -3,6 +3,7 @@
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -335,11 +336,34 @@ async function chunks(url: string, headers: Record<string, string> = {}) {
 }
 
 /** Checks what each framework app shares: a prerendered page and a resource with its build headers. */
-async function checkFrameworkShared(base: string, title: string): Promise<void> {
+async function checkFrameworkShared(
+	base: string,
+	title: string,
+	clientDirectory: string,
+): Promise<void> {
 	const page = await fetch(new URL("/", base));
 	assert.equal(page.status, 200);
-	assert.match(await page.text(), new RegExp(title, "u"), "the prerendered page answers");
+	const html = await page.text();
+	assert.match(html, new RegExp(title, "u"), "the prerendered page answers");
 	assert.match(page.headers.get("etag") ?? "", /^W\//u, "the prerendered page comes from its file");
+
+	const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)]
+		.map((match) => match.groups?.path ?? "")
+		.filter((path) => existsSync(join(clientDirectory, `${path}.gz`)));
+	const fromCopy = await Promise.all(
+		scripts.map(async (path) => {
+			const response = await request(new URL(path, base).href, { "Accept-Encoding": "gzip" });
+			const parts: Buffer[] = [];
+			for await (const part of response) {
+				parts.push(Buffer.from(part as Uint8Array));
+			}
+			return Buffer.concat(parts).equals(readFileSync(join(clientDirectory, `${path}.gz`)));
+		}),
+	);
+	assert.ok(
+		fromCopy.length > 0 && fromCopy.every(Boolean),
+		"each script with a gzip copy from the build sends that copy",
+	);
 
 	const hello = await fetch(new URL("/hello.txt", base));
 	assert.equal(await hello.text(), "hello");
@@ -367,7 +391,11 @@ async function checkReactRouter(runtime: string): Promise<void> {
 	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: reactRouterDirectory });
 	try {
 		const base = await url;
-		await checkFrameworkShared(base, "React Router home");
+		await checkFrameworkShared(
+			base,
+			"React Router home",
+			join(reactRouterDirectory, "build/client"),
+		);
 		const data = await fetch(new URL("/hello.txt.data", base));
 		assert.equal(
 			data.headers.get("content-type"),
@@ -387,7 +415,11 @@ async function checkTanstackStart(runtime: string): Promise<void> {
 	const { child, url } = startServer(runtime, [cliPath, "serve"], { cwd: tanstackStartDirectory });
 	try {
 		const base = await url;
-		await checkFrameworkShared(base, "TanStack Start home");
+		await checkFrameworkShared(
+			base,
+			"TanStack Start home",
+			join(tanstackStartDirectory, "dist/client"),
+		);
 
 		const home = await (await fetch(new URL("/", base))).text();
 		const serverFn = /id="server-fn" href="(?<path>[^"]+)"/u.exec(home)?.groups?.path ?? "";

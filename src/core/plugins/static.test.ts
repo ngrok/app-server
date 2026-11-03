@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, describe, expect, it } from "vitest";
 import { testServer } from "../../test-server.js";
 import { assets, prerendered } from "./static.js";
@@ -436,6 +437,68 @@ describe("assets", () => {
 		expect(response.status).toBe(404);
 		expect(response.headers.get("Cache-Control")).toBe("no-store");
 		await expect(response.text()).resolves.toBe("Not Found");
+	});
+});
+
+describe("gzip copies from the build", () => {
+	const text = "export const value = 1;\n".repeat(100);
+	const gzip = { headers: { "Accept-Encoding": "gzip, deflate, br" } };
+	for (const path of ["assets/copy-abc123.js", "copy.txt", "plain/index.html"]) {
+		mkdirSync(dirname(join(clientDirectory, path)), { recursive: true });
+		writeFileSync(join(clientDirectory, path), text);
+		writeFileSync(join(clientDirectory, `${path}.gz`), gzipSync(text));
+	}
+
+	it("sends the gzip copy to a request that accepts gzip, with its length and no ranges", async () => {
+		const { request } = await staticServer();
+
+		for (const path of ["/assets/copy-abc123.js", "/copy.txt"]) {
+			const response = await request(path, gzip);
+			const body = new Uint8Array(await response.arrayBuffer());
+
+			expect(response.headers.get("Content-Encoding")).toBe("gzip");
+			expect(response.headers.get("Content-Length")).toBe(String(body.byteLength));
+			expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+			expect(response.headers.get("Accept-Ranges")).toBeNull();
+			expect(gunzipSync(body).toString()).toBe(text);
+		}
+	});
+
+	it("sends the file with Vary: Accept-Encoding to a request that does not accept gzip", async () => {
+		const { request } = await staticServer();
+
+		const response = await request("/assets/copy-abc123.js");
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+		await expect(response.text()).resolves.toBe(text);
+	});
+
+	it("answers HEAD with the length of the copy, and keeps the Vary on a 304", async () => {
+		const { request } = await staticServer();
+		const etag = (await request("/copy.txt")).headers.get("ETag") ?? "";
+
+		const head = await request("/copy.txt", { method: "HEAD", ...gzip });
+		const notModified = await request("/copy.txt", { headers: { "If-None-Match": etag } });
+
+		expect(head.headers.get("Content-Length")).toBe(String(gzipSync(text).byteLength));
+		await expect(head.text()).resolves.toBe("");
+		expect(notModified.status).toBe(304);
+		expect(notModified.headers.get("Vary")).toBe("Accept-Encoding");
+	});
+
+	it("never sends the copy of an HTML file, or for a response marked no-transform", async () => {
+		const { request } = await staticServer({
+			headers: (path) => (path === "/copy.txt" ? { "Cache-Control": "no-transform" } : undefined),
+		});
+
+		const page = await request("/plain", gzip);
+		const marked = await request("/copy.txt", gzip);
+
+		expect(page.headers.get("Content-Encoding")).toBeNull();
+		await expect(page.text()).resolves.toBe(text);
+		expect(marked.headers.get("Content-Encoding")).toBeNull();
+		await expect(marked.text()).resolves.toBe(text);
 	});
 });
 

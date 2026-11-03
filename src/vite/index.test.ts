@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { preview } from "vite";
-import type { Plugin } from "vite";
+import type { Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
@@ -85,6 +86,28 @@ describe("appServer", () => {
 		});
 	});
 
+	it("writes the gzip copy of each prerendered file after the pass, before the framework's plugin too", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const text = "Prerendered text for an agent.\n".repeat(50);
+		writeFileSync(join(root, "build/client/agents.txt"), text);
+		const server = await preview({
+			root,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer({ framework: reactRouterAdapter(), host: node() }), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(gunzipSync(readFileSync(join(root, "build/client/agents.txt.gz"))).toString()).toBe(
+			text,
+		);
+	});
+
 	it("records nothing outside the framework's prerender pass", async () => {
 		const outside = mkdtempSync(join(tmpdir(), "app-server-vite-outside-"));
 		const server = await preview({
@@ -141,9 +164,9 @@ describe("appServer", () => {
 	});
 
 	it("fails the build for a server build inside the client build, so no one can fetch its code", () => {
-		const plugin = appServer({ framework: reactRouterAdapter(), host: node() });
-		const configResolved = plugin.configResolved;
-		const load = plugin.load;
+		const [plugin] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const configResolved = plugin?.configResolved;
+		const load = plugin?.load;
 		const build = (outDir: string) => ({ build: { outDir } });
 		Reflect.apply(
 			(typeof configResolved === "function" ? configResolved : configResolved?.handler) ??
@@ -177,8 +200,8 @@ describe("appServer", () => {
 	});
 
 	it("fails the build for a server build that is not an ES module", () => {
-		const plugin = appServer({ framework: reactRouterAdapter(), host: node() });
-		const renderStart = plugin.renderStart;
+		const [plugin] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const renderStart = plugin?.renderStart;
 		const handler = typeof renderStart === "function" ? renderStart : renderStart?.handler;
 
 		expect(() => {
@@ -200,5 +223,50 @@ describe("appServer", () => {
 				preview: { port: 0, host: "127.0.0.1" },
 			}),
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');
+	});
+
+	it("writes a gzip copy of each text file of 1 KiB or more after the build, except HTML", async () => {
+		const client = join(root, "gzip-build");
+		const text = "export const value = 1;\n".repeat(100);
+		const files: Record<string, string | Uint8Array> = {
+			"assets/app-abc.js": text,
+			"docs/llms.txt": text,
+			"index.html": `<p>${text}</p>`,
+			"small.txt": "small",
+			// Why: a copy from an earlier build of a file that is now too small.
+			"small.txt.gz": "stale",
+			"photo.png": text,
+			"release.tar.gz": "archive",
+			".app-server.json": JSON.stringify({ prerendered: [text] }),
+		};
+		for (const [path, content] of Object.entries(files)) {
+			mkdirSync(dirname(join(client, path)), { recursive: true });
+			writeFileSync(join(client, path), content);
+		}
+		const [, gzipCopies] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const hook = gzipCopies?.buildApp;
+		const builder = {
+			config: {
+				root,
+				build: { outDir: "build/client" },
+				environments: { client: { build: { outDir: "gzip-build" } } },
+			},
+		};
+
+		await (typeof hook === "object" ? hook.handler : hook)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			builder as unknown as ViteBuilder,
+		);
+
+		for (const path of ["assets/app-abc.js", "docs/llms.txt"]) {
+			expect(gunzipSync(readFileSync(join(client, `${path}.gz`))).toString()).toBe(text);
+		}
+		for (const path of ["index.html", "small.txt", "photo.png", ".app-server.json"]) {
+			expect(existsSync(join(client, `${path}.gz`))).toBe(false);
+		}
+		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
+		expect(existsSync(join(client, "release.tar.gz.gz"))).toBe(false);
 	});
 });

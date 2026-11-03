@@ -1,6 +1,8 @@
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
+import { acceptsGzip, forbidsTransform, GZIP_SUFFIX } from "./gzip-rules.js";
 import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
+import { withVary } from "./vary.js";
 
 /** A file under the client build that answers a request. */
 export type StaticFile = {
@@ -155,6 +157,41 @@ export function byteRange(header: string, size: number): ByteRange | "unsatisfia
 	return start >= size ? "unsatisfiable" : { start, end: Math.min(end, size - 1) };
 }
 
+/**
+ * The gzip copy of the file at `path` that the build wrote, when the request
+ * gets it. When the copy exists, it adds `Accept-Encoding` to the `Vary` in
+ * `headers`, also for a request that does not get it.
+ */
+async function gzipCopy(
+	context: Context<AppServerEnv>,
+	{ files, path, headers }: { files: StaticFiles; path: string; headers: Headers },
+): Promise<StaticFile | undefined> {
+	const copyPath = `${path}${GZIP_SUFFIX}`;
+	const info = await files.stat(copyPath);
+	if (info?.kind !== "file") {
+		return undefined;
+	}
+	const vary = withVary(headers.get("Vary"), "Accept-Encoding");
+	if (vary != null) {
+		headers.set("Vary", vary);
+	}
+	return acceptsGzip(context) && !forbidsTransform(headers.get("Cache-Control"))
+		? { path: copyPath, size: info.size, mtimeMs: info.mtimeMs }
+		: undefined;
+}
+
+/**
+ * All bytes of a file. Why the size as a range: the body then never has more
+ * bytes than its `Content-Length`, even when the file grew after `stat`, and
+ * a small file reads into a small buffer.
+ */
+async function wholeFile(
+	files: StaticFiles,
+	file: StaticFile,
+): Promise<ReadableStream<Uint8Array> | null> {
+	return file.size === 0 ? null : files.open(file.path, { start: 0, end: file.size - 1 });
+}
+
 /** What {@link staticResponse} needs besides the request. */
 export type StaticResponseOptions = {
 	files: StaticFiles;
@@ -174,6 +211,11 @@ export type StaticResponseOptions = {
  * full file. Why: the ETag is weak, and `If-Range` needs a strong match. An
  * HTML file gets no ranges.
  *
+ * When the build wrote a gzip copy of the file (`<file>.gz`), the response
+ * gets `Vary: Accept-Encoding`. A request that accepts gzip gets the copy with
+ * `Content-Encoding: gzip`, and no range. An HTML file and a response marked
+ * `no-transform` never get the copy.
+ *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
  * if (file != null) {
@@ -192,13 +234,25 @@ export async function staticResponse(
 	for (const [name, value] of Object.entries(headers)) {
 		responseHeaders.set(name, value);
 	}
+	// Why no ranges and no gzip copy for HTML: `runtimeEnv` adds a script to a page, so the bytes of
+	// the file are not the bytes of the page.
+	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
+	// Why before the 304: a 304 sends the `Vary` of its 200.
+	const copy = html
+		? undefined
+		: await gzipCopy(context, { files, path: file.path, headers: responseHeaders });
 	// Why the final header: `headers` can replace the ETag.
 	if (matchesEtag(context.req.header("If-None-Match"), responseHeaders.get("ETag") ?? etag)) {
 		responseHeaders.delete("Content-Type");
 		return new Response(null, { status: 304, headers: responseHeaders });
 	}
-	// Why no ranges for HTML: `runtimeEnv` adds a script to a page, so a range of the file is not a range of the page.
-	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
+	if (copy != null) {
+		// Why no ranges: a client asks for a range of the file, not of its gzip copy.
+		responseHeaders.set("Content-Encoding", "gzip");
+		responseHeaders.set("Content-Length", String(copy.size));
+		const body = context.req.method === "HEAD" ? null : await wholeFile(files, copy);
+		return new Response(body, { headers: responseHeaders });
+	}
 	if (!html) {
 		responseHeaders.set("Accept-Ranges", "bytes");
 	}
@@ -224,9 +278,5 @@ export async function staticResponse(
 			headers: responseHeaders,
 		});
 	}
-	// Why the size as a range: the body then never has more bytes than its `Content-Length`, even
-	// when the file grew after `stat`, and a small file reads into a small buffer.
-	const body =
-		file.size === 0 ? null : await files.open(file.path, { start: 0, end: file.size - 1 });
-	return new Response(body, { headers: responseHeaders });
+	return new Response(await wholeFile(files, file), { headers: responseHeaders });
 }
