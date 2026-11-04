@@ -79,10 +79,12 @@ export function accessLog({
 			}
 			// Why a catch: a log line must never change the response or stop its stream. The host can
 			// call `write` from an event of its socket, where a throw stops the process.
-			const write = ({ bytes, aborted }: SentBody) => {
-				const line = lineAttributes(context, { bytes, aborted, started });
+			const write = (sent: SentBody) => {
+				const line = lineAttributes(context, sent, started);
 				try {
-					context.get("logger").info("request", { ...line, ...attributes?.(context) });
+					context
+						.get("logger")
+						.info("request", attributes == null ? line : { ...line, ...attributes(context) });
 				} catch (error) {
 					try {
 						context.get("logger").error("access log attributes failed", {
@@ -153,12 +155,24 @@ export function accessLog({
 		},
 	};
 
+	/** `href` as {@link loggedUrl} logs it. */
+	function requestUrl(href: string): string {
+		const start = href.indexOf("/", href.indexOf("//") + 2);
+		// Why no parse for a path alone: a request URL is the `href` of a parsed URL, or one that the
+		// Node.js listener checked holds no character that a parse changes. So its path is the `pathname`.
+		if (start !== -1 && !href.includes("?", start) && !href.includes("#", start)) {
+			return href.slice(start);
+		}
+		return loggedUrl(new URL(href), { redact: redactQuery });
+	}
+
 	function lineAttributes(
 		context: Context<AppServerEnv>,
-		{ bytes, aborted, started }: { bytes: number; aborted: boolean; started: number },
+		{ bytes, aborted }: SentBody,
+		started: number,
 	): Record<string, unknown> {
-		return {
-			"http.url": loggedUrl(new URL(context.req.url), { redact: redactQuery }),
+		const line: Record<string, unknown> = {
+			"http.url": requestUrl(context.req.url),
 			"http.status_code": context.res.status,
 			"http.useragent": context.req.header("User-Agent"),
 			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
@@ -166,7 +180,10 @@ export function accessLog({
 			"network.bytes_written": bytes,
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),
-			...(aborted ? { "http.client_aborted": true } : {}),
 		};
+		if (aborted) {
+			line["http.client_aborted"] = true;
+		}
+		return line;
 	}
 }

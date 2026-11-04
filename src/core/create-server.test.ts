@@ -15,6 +15,7 @@ import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
 import { health } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
+import { requestId } from "./plugins/request-id.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
 import { tcp } from "../node/tcp.js";
 import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
@@ -560,6 +561,32 @@ describe("createServer", () => {
 		await server.shutdown();
 
 		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
+	});
+
+	it("gives each request a logger whose methods write a line when taken off it", async () => {
+		const { request, lines } = await testServer({
+			plugins: [requestId()],
+			render: async (_request, context) => {
+				const { info } = context.get("logger");
+				info("loading", { "app.step": 1 });
+				return new Response("ok");
+			},
+		});
+
+		await (await request("/", { headers: { "X-Request-Id": "abc-123" } })).text();
+
+		expect(lines).toStrictEqual([
+			{
+				level: "info",
+				message: "loading",
+				attributes: {
+					"http.request_id": "abc-123",
+					"http.method": "GET",
+					"http.url_details.path": "/",
+					"app.step": 1,
+				},
+			},
+		]);
 	});
 });
 

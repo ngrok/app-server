@@ -168,6 +168,48 @@ describe("accessLog", () => {
 
 		expect(lines[0]?.attributes["http.referer"]).toBe("https://example.com/verify?code=REDACTED");
 	});
+
+	it("puts the attributes of a request line in a fixed order", async () => {
+		const held = heldStream("shell");
+		const { request, lines } = await testServer({
+			plugins: [
+				requestId({ datadogTraceIds: true }),
+				accessLog({ attributes: () => ({ "usr.id": "user-1" }) }),
+			],
+			render: async (rendered) =>
+				new URL(rendered.url).pathname === "/held" ? held.response : new Response("ok"),
+		});
+		const headers = {
+			"X-Request-Id": "abc-123",
+			traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			"User-Agent": "agent",
+			Referer: "https://example.com/a",
+		};
+
+		await (await request("/page?code=1", { headers })).text();
+		await (await request("/held", { headers })).body?.cancel();
+
+		const keys = [
+			"http.request_id",
+			"http.method",
+			"http.url_details.path",
+			"trace_id",
+			"span_id",
+			"dd.trace_id",
+			"dd.span_id",
+			"http.url",
+			"http.status_code",
+			"http.useragent",
+			"http.referer",
+			"network.client.ip",
+			"network.bytes_written",
+			"duration",
+		];
+		expect(lines.map((line) => Object.keys(line.attributes))).toStrictEqual([
+			[...keys, "usr.id"],
+			[...keys, "http.client_aborted", "usr.id"],
+		]);
+	});
 });
 
 describe("accessLog on the Node.js listener", () => {
@@ -398,6 +440,42 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(head.status).toBe(200);
 		await expect(second.text()).resolves.toBe("rendered");
+	});
+
+	it("logs the path and query that a URL parse gives, for targets that a parse changes", async () => {
+		// Why these targets: the line takes the path of a URL with no query and no fragment as it is,
+		// so the listener must give each of these as a parsed URL.
+		const logged = {
+			"/a/../b": "/b",
+			'/a"b': "/a%22b",
+			"/a{b}": "/a%7Bb%7D",
+			"/%2e%2e/x": "/x",
+			"/a#frag": "/a",
+			"/a?": "/a",
+			"/a?x='y'#f": "/a?x=%27y%27",
+		};
+		const { url, requestLines } = await listening(
+			[accessLog({ redactQuery: false })],
+			async () => new Response("ok"),
+		);
+		const { port } = new URL(url);
+
+		for (const path of Object.keys(logged)) {
+			const response = await new Promise<IncomingMessage>((resolve, reject) => {
+				httpGet({ host: "127.0.0.1", port, path }, resolve).once("error", reject);
+			});
+			response.resume();
+			await new Promise((resolve) => {
+				response.once("end", resolve);
+			});
+		}
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(Object.keys(logged).length);
+		});
+
+		expect(requestLines().map((line) => line.attributes["http.url"])).toStrictEqual(
+			Object.values(logged),
+		);
 	});
 });
 
