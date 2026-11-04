@@ -743,6 +743,22 @@ describe("prerendered markdownTwins", () => {
 		}
 	});
 
+	it("gives twinOf the request, so a request with a query can skip the twin", async () => {
+		const { request } = await staticServer({
+			markdownTwins: {
+				twinOf: (path, context) =>
+					new URL(context.req.url).search === "" ? `${path}.md` : undefined,
+			},
+		});
+
+		const twin = await request("/components/button", markdown);
+		const query = await request("/components/button?q=filter", markdown);
+
+		await expect(twin.text()).resolves.toBe("# Button");
+		await expect(query.text()).resolves.toBe("<h1>Button</h1>");
+		expect(negotiation(query)).toStrictEqual({ vary: null, link: null });
+	});
+
 	it("runs rewrite only when the request does not get the twin", async () => {
 		const seen: string[] = [];
 		const { request } = await staticServer({
@@ -906,6 +922,23 @@ describe("prerendered markdownTwins in development", () => {
 			"GET /docs%5C..%5Cprivate",
 			"GET /page",
 		]);
+	});
+
+	it("gives twinOf the request, so a request with a query can skip the twin", async () => {
+		const { request, seen } = await devServer({
+			markdownTwins: {
+				twinOf: (path, context) =>
+					new URL(context.req.url).search === "" ? `${path}.md` : undefined,
+			},
+		});
+
+		await expect((await request("/docs/button", markdown)).text()).resolves.toBe(
+			"# /docs/button.md",
+		);
+		await expect((await request("/docs/button?q=filter", markdown)).text()).resolves.toBe(
+			"rendered",
+		);
+		expect(seen).toStrictEqual(["GET /docs/button.md", "GET /docs/button"]);
 	});
 
 	it("uses twinOf, and is off by default", async () => {
