@@ -18,11 +18,11 @@ export function requestContextValues(context: Context<AppServerEnv>): RequestCon
 }
 
 /** Runs `work` in `store` with `context` as the request that {@link requestContext} reads. */
-export async function withRequestContext(
+export async function withRequestContext<Result>(
 	store: RequestStore | undefined,
 	context: Context<AppServerEnv>,
-	work: () => Promise<void>,
-): Promise<void> {
+	work: () => Promise<Result>,
+): Promise<Result> {
 	if (store == null) {
 		return work();
 	}

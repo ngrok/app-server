@@ -828,6 +828,33 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 For other long work, stop on `shutdownSignal()`.
 
+## Testing
+
+`@ngrok/app-server/testing` runs an app in a test, with no build and no listener.
+
+`createTestServer({ app, files, framework })` starts the app in production mode over a client build of `files`. It records the hashes of the inline scripts of each HTML file, as the build does. `framework` answers each request that no stage answers. The default is a 404. Give each test server a new app, because an app runs the `setup` of its plugins one time. `close()` cancels each body that the test did not read, runs each plugin's `onShutdown`, and removes the files.
+
+```ts
+import { createTestServer } from "@ngrok/app-server/testing";
+
+const server = await createTestServer({
+	app: createServer({ plugins: defaultPlugins({ contentSecurityPolicy: { policy } }) }),
+	files: { "providers/index.html": "<!doctype html><script>…</script>" },
+	framework: async () => new Response("rendered", { headers: { "Content-Type": "text/html" } }),
+});
+const response = await server.request("/providers");
+response.headers.get("Content-Security-Policy"); // => "script-src 'self' 'sha256-…'"
+await server.close();
+```
+
+`withRequestContext(values, work)` runs `work` as in a server request, so `requestContext()` and `cspNonce()` give `values`. Use it to test a render with no mock. With no `logger`, the log lines go nowhere.
+
+```tsx
+import { withRequestContext } from "@ngrok/app-server/testing";
+
+const html = await withRequestContext({ cspNonce: "test-nonce" }, () => renderToString(<App />));
+```
+
 ## Adapters
 
 A framework adapter or a host adapter is two small objects. A third-party adapter uses the same contract.

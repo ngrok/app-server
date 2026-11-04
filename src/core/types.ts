@@ -254,7 +254,7 @@ export type HeaderHook = (headers: ResponseHeaders) => undefined;
 /** The request handler that a listener calls. */
 export type FetchHandler = (
 	request: Request,
-	bindings: ListenerBindings,
+	bindings?: ListenerBindings,
 ) => Response | Promise<Response>;
 
 /** What a plugin learns at startup, before the first request. */
