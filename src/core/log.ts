@@ -1,10 +1,46 @@
 import type { Context } from "hono";
 import type { AppServerEnv, LogSink, RequestLogger } from "./types.js";
 
+/** The stdout lines that wait for {@link flushLogs}. */
+let pending = "";
+/** Whether {@link flushLogs} runs on the process `exit` event. */
+let flushesOnExit = false;
+
+/**
+ * Writes the stdout lines of {@link jsonSink} that wait, in one write. Call it
+ * before the process exits.
+ */
+export function flushLogs(): void {
+	if (pending === "") {
+		return;
+	}
+	const lines = pending;
+	pending = "";
+	process.stdout.write(lines);
+}
+
+/**
+ * Adds `line` to the next stdout write. Why one write for each turn of the
+ * event loop: a write to a pipe, such as stdout in Docker, is a system call,
+ * and under load many requests end in one turn.
+ */
+function writeStdout(line: string): void {
+	if (pending === "") {
+		setImmediate(flushLogs);
+	}
+	if (!flushesOnExit) {
+		flushesOnExit = true;
+		// Why: a process that crashes or calls `process.exit()` before the next turn keeps its last lines.
+		process.on("exit", flushLogs);
+	}
+	pending += line;
+}
+
 /**
  * A log sink that writes one JSON object per line. Each line has `time`,
  * `level`, `message`, and the flat attributes, which Datadog reads as its
- * standard attributes.
+ * standard attributes. The default writes the lines of one event-loop turn
+ * to stdout at the end of the turn.
  *
  * @param write - Where each line goes. Defaults to stdout.
  *
@@ -12,11 +48,7 @@ import type { AppServerEnv, LogSink, RequestLogger } from "./types.js";
  * createServer({ logger: jsonSink() });
  * // {"time":"2026-10-28T12:00:00.000Z","level":"info","message":"request","http.status_code":200}
  */
-export function jsonSink(
-	write: (line: string) => void = (line) => {
-		process.stdout.write(line);
-	},
-): LogSink {
+export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	return {
 		log: (level, message, attributes) => {
 			write(

@@ -59,6 +59,41 @@ describe("handler", () => {
 		});
 	});
 
+	it("writes the log lines of a request before it returns", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		onTestFinished(() => {
+			write.mockRestore();
+		});
+		const app = createServer({ plugins: [] });
+		app.get("/hello", (context) => {
+			requestContext()?.logger.info("hello");
+			return context.text("hi");
+		});
+		const listener = handler(
+			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+		);
+		const written = Promise.withResolvers<string>();
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing).finally(() => {
+				written.resolve(write.mock.calls.join(""));
+			});
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(async () => {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					resolve();
+				});
+			});
+		});
+
+		await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/hello`);
+
+		await expect(written.promise).resolves.toContain('"message":"hello"');
+	});
+
 	it("renders with the framework when no route answers", async () => {
 		const base = await serve();
 

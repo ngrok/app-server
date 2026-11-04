@@ -1,4 +1,5 @@
 import { setTimeout } from "node:timers";
+import { flushLogs } from "../core/log.js";
 
 /** How long the exit waits for stdout and stderr. */
 const FLUSH_TIMEOUT_MS = 1_000;
@@ -12,6 +13,7 @@ const FLUSH_TIMEOUT_MS = 1_000;
  * `entry.server`, would otherwise keep the stopped process alive.
  */
 export function exitAfterFlush(): void {
+	flushLogs();
 	let pending = 2;
 	const done = () => {
 		pending -= 1;

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
+import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
 import { host as nodeHost } from "../node/index.js";
 import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
@@ -58,6 +59,9 @@ export const host: HostRuntime = {
  *   and replaces a value that the client sends.
  * - A response whose client went away gets its body canceled, so its
  *   producer stops.
+ * - The log lines of the request reach stdout before the handler returns.
+ *   Why: Vercel can freeze the function after the response, before the next
+ *   turn of the event loop writes them.
  *
  * @example
  * export default hostModule.handler(appServer);
@@ -65,7 +69,7 @@ export const host: HostRuntime = {
 export function handler(
 	entry: AppServerEntry,
 ): (incoming: IncomingMessage, outgoing: ServerResponse) => Promise<void> {
-	return keepGlobalResponse(() =>
+	const listener = keepGlobalResponse(() =>
 		getRequestListener(async (request, { incoming, outgoing }) => {
 			const realIp = incoming.headers["x-real-ip"];
 			const response = await entry.fetch(withForwardedProto(request), {
@@ -76,4 +80,11 @@ export function handler(
 			return cancelIfClosed(response, outgoing);
 		}),
 	);
+	return async (incoming, outgoing) => {
+		try {
+			await listener(incoming, outgoing);
+		} finally {
+			flushLogs();
+		}
+	};
 }
