@@ -381,7 +381,7 @@ createServer({
 });
 ```
 
-Give the nonce to the framework's render with `cspNonce()` from `@ngrok/app-server/client`. On the server, it gives the nonce of the request. In the browser, it reads the nonce from the document, so the hydration matches. It gives `undefined` when the page has no nonce.
+Give the nonce to the framework's render with `cspNonce()` from `@ngrok/app-server/client`. On the server, it gives the nonce of the request. In the browser, it reads the nonce from the document, so the hydration matches. It gives `undefined` when the page has no nonce. A bundler that resolves the `browser` export condition, such as Vite for the client build, gets a `cspNonce()` with no server code.
 
 In React Router, give it to the render in `app/entry.server.tsx`:
 

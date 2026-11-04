@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { contentSecurityPolicy } from "../core/plugins/security-headers.js";
 import { host } from "../node/index.js";
 import { testServer } from "../test-server.js";
+import { cspNonce as browserCspNonce } from "./browser.js";
 import { cspNonce } from "./csp-nonce.js";
 
 /** A server whose framework renders a page with the nonce of `cspNonce()`. */
@@ -43,10 +44,20 @@ describe("cspNonce", () => {
 
 		const nonce = cspNonce();
 		expect(nonce).toMatch(/^[\w+/]+=*$/u);
+		expect(browserCspNonce()).toBe(nonce);
 		expect(html).toContain(`nonce="${nonce}"`);
 		expect(response.headers.get("Content-Security-Policy")).toBe(
 			`script-src 'nonce-${nonce}' 'strict-dynamic'`,
 		);
+	});
+
+	it("exports the same names from the browser build", async () => {
+		const [browserEntry, serverEntry] = await Promise.all([
+			import("./browser.js"),
+			import("./index.js"),
+		]);
+
+		expect(Object.keys(browserEntry).toSorted()).toStrictEqual(Object.keys(serverEntry).toSorted());
 	});
 
 	it("gives undefined outside a request and in a document with no nonce", () => {
