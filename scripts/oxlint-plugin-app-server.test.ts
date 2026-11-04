@@ -71,6 +71,11 @@ describe.each([
 		],
 	},
 	{
+		rule: "no-context-var",
+		invalid: ["context.var.logger.info('loading');", "const { logger } = context.var;"],
+		valid: ["context.get('logger').info('loading');", "const value = record['var'];"],
+	},
+	{
 		rule: "prefer-url-parse",
 		invalid: [
 			"function f(value: string) { if (!URL.canParse(value)) { return null; } return new URL(value).protocol; }",

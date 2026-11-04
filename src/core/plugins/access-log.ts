@@ -76,9 +76,9 @@ export function accessLog({
 			const write = ({ bytes, aborted }: { bytes: number; aborted: boolean }) => {
 				const line = lineAttributes(context, { bytes, aborted, started });
 				try {
-					context.var.logger.info("request", { ...line, ...attributes?.(context) });
+					context.get("logger").info("request", { ...line, ...attributes?.(context) });
 				} catch (error) {
-					context.var.logger.error("access log attributes failed", {
+					context.get("logger").error("access log attributes failed", {
 						...line,
 						...errorAttributes(error),
 					});
@@ -142,7 +142,7 @@ export function accessLog({
 			"http.status_code": context.res.status,
 			"http.useragent": context.req.header("User-Agent"),
 			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
-			"network.client.ip": context.var.clientAddress,
+			"network.client.ip": context.get("clientAddress"),
 			"network.bytes_written": bytes,
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),

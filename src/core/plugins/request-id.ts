@@ -1,5 +1,4 @@
-import { requestId as honoRequestId } from "hono/request-id";
-import { writableHeaders } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import type { Plugin } from "../types.js";
 
 /** Options for {@link requestId}. */
@@ -13,6 +12,9 @@ export type RequestIdOptions = {
 	 */
 	datadogTraceIds?: boolean;
 };
+
+/** An incoming request ID that the plugin keeps: up to 255 word characters, `-`, and `=`. */
+const VALID_ID = /^[\w\-=]{1,255}$/u;
 
 /** A W3C `traceparent`: version, trace ID, parent ID, and flags, in lowercase hex. */
 const TRACEPARENT =
@@ -78,7 +80,6 @@ export function requestId({
 	headerName = "X-Request-Id",
 	datadogTraceIds = false,
 }: RequestIdOptions = {}): Plugin {
-	const assign = honoRequestId({ headerName });
 	return {
 		name: "request-id",
 		middleware: async (context, next) => {
@@ -89,12 +90,13 @@ export function requestId({
 					...traceAttributes(trace, { datadog: datadogTraceIds }),
 				});
 			}
-			await assign(context, next);
-			// Why set it again: a `Response` that the framework returns replaces the headers set before `next`.
-			const id = context.get("requestId");
-			if (id != null) {
-				writableHeaders(context).set(headerName, id);
-			}
+			const incoming = context.req.header(headerName);
+			const id = incoming != null && VALID_ID.test(incoming) ? incoming : crypto.randomUUID();
+			context.set("requestId", id);
+			// Why a header hook: a dev server middleware sends its own response, and runs the hooks first.
+			await withHeaderHook(context, next, (headers) => {
+				headers.set(headerName, id);
+			});
 		},
 	};
 }

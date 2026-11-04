@@ -3,6 +3,7 @@
 
 import descriptiveNames from "./oxlint-rules/descriptive-names.js";
 import multilineExports from "./oxlint-rules/multiline-exports.js";
+import noContextVar from "./oxlint-rules/no-context-var.js";
 import noBooleanPositionalParam from "./oxlint-rules/no-boolean-positional-param.js";
 import noSleepInTests from "./oxlint-rules/no-sleep-in-tests.js";
 import preferFunctionDeclaration from "./oxlint-rules/prefer-function-declaration.js";
@@ -17,6 +18,7 @@ const plugin = {
 		...descriptiveNames,
 		...multilineExports,
 		...noBooleanPositionalParam,
+		...noContextVar,
 		...noSleepInTests,
 		...preferFunctionDeclaration,
 		...preferNullCheck,

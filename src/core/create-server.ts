@@ -371,7 +371,7 @@ export function createServer({
 				return response;
 			}
 		}
-		context.var.logger.error("unhandled error", errorAttributes(error));
+		context.get("logger").error("unhandled error", errorAttributes(error));
 		return context.text("Internal Server Error", 500);
 	});
 

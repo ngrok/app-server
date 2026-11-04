@@ -86,7 +86,7 @@ export function health({
 				return probe("ok", 200);
 			}
 			if (path === readyPath) {
-				return (await isReady(context.var.logger)) ? probe("ok", 200) : probe("not ready", 503);
+				return (await isReady(context.get("logger"))) ? probe("ok", 200) : probe("not ready", 503);
 			}
 			return next();
 		},

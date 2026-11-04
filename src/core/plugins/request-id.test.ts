@@ -20,11 +20,22 @@ describe("requestId", () => {
 		expect(response.headers.get("X-Request-Id")).toMatch(/^[\da-f]{8}-[\da-f]{4}-/u);
 	});
 
+	it("keeps an incoming ID of up to 255 characters, and replaces a longer one", async () => {
+		const { request } = await testServer({ plugins: [requestId()] });
+		const longest = "a".repeat(255);
+
+		const kept = await request("/", { headers: { "X-Request-Id": longest } });
+		const replaced = await request("/", { headers: { "X-Request-Id": `${longest}a` } });
+
+		expect(kept.headers.get("X-Request-Id")).toBe(longest);
+		expect(replaced.headers.get("X-Request-Id")).toMatch(/^[\da-f]{8}-[\da-f]{4}-/u);
+	});
+
 	it("adds the trace IDs of a valid traceparent to each log line", async () => {
 		const { request, lines } = await testServer({
 			plugins: [requestId({ datadogTraceIds: true }), accessLog()],
 			render: async (_request, context) => {
-				context.var.logger.info("loading");
+				context.get("logger").info("loading");
 				return new Response("ok");
 			},
 		});
