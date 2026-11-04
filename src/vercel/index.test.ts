@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
 import { accessLog } from "../core/plugins/access-log.js";
+import { requestId } from "../core/plugins/request-id.js";
+import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestContext } from "../core/request-context.js";
+import type { Plugin } from "../core/types.js";
 import { heldStream, stubFramework } from "../test-server.js";
 import { handler, host } from "./index.js";
 
@@ -31,8 +34,8 @@ afterEach(async () => {
 });
 
 /** Serves `handler` for an app on `node:http`, as a Vercel Function does, and gives its URL. */
-async function serve(): Promise<string> {
-	const app = createServer({ plugins: [] });
+async function serve(plugins: Plugin[] = []): Promise<string> {
+	const app = createServer({ plugins });
 	app.get("/whoami", (context) =>
 		context.json({ url: context.req.url, client: requestContext()?.clientAddress }),
 	);
@@ -59,6 +62,15 @@ async function serve(): Promise<string> {
 }
 
 describe("handler", () => {
+	it("sends the headers of the header hooks with a HEAD response", async () => {
+		const base = await serve([requestId(), securityHeaders()]);
+
+		const response = await fetch(`${base}/whoami`, { method: "HEAD" });
+
+		expect(response.headers.has("X-Request-Id")).toBe(true);
+		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
 	it("takes the scheme and the client address from the headers that Vercel sets", async () => {
 		const base = await serve();
 

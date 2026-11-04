@@ -2,7 +2,8 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { readIfQueued } from "../core/compression.js";
 import type { ReadResult } from "../core/compression.js";
-import { headerIndex, headerList, ResponseEdge } from "../core/response-edge.js";
+import { headerIndex, headerList } from "../core/header-hook.js";
+import { ResponseEdge } from "../core/response-edge.js";
 import type { ListenerBindings } from "../core/types.js";
 import type { NodeBindings } from "./dev-server.js";
 import { waitsForZlib } from "./gzip.js";
@@ -211,7 +212,7 @@ async function writeResponse(
 		await writeBody(response, reader, {
 			outgoing,
 			edge,
-			head: edge.headersFor(response) ?? headerList(response),
+			head: edge.headersFor(response) ?? headerList(response.headers),
 		});
 	} catch (error) {
 		reader?.cancel(error).catch(() => {});

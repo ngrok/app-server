@@ -1,13 +1,7 @@
 import type { Context } from "hono";
-import { replaceResponse } from "./header-hook.js";
+import { headerList, listView, replaceResponse } from "./header-hook.js";
 import { errorAttributes } from "./log.js";
-import type {
-	AppServerEnv,
-	HeaderHook,
-	RequestLogger,
-	ResponseHeaders,
-	SentResponse,
-} from "./types.js";
+import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse } from "./types.js";
 
 function ignore(): void {}
 
@@ -18,6 +12,30 @@ function callReport(report: (sent: SentResponse) => void, sent: SentResponse): v
 	} catch {
 		// Why drop it: a listener calls a report from an event of its socket, where a throw stops the process.
 	}
+}
+
+/** `head` with the changes that `copy` made to the headers of `served`. */
+function withChanges(head: readonly string[], served: Headers, copy: Headers): string[] {
+	const changed = [...head];
+	const view = listView(changed);
+	for (const [name] of served) {
+		if (!copy.has(name)) {
+			view.delete(name);
+		}
+	}
+	const cookies = copy.getSetCookie();
+	if (cookies.join("\n") !== served.getSetCookie().join("\n")) {
+		view.delete("set-cookie");
+		for (const cookie of cookies) {
+			view.append("set-cookie", cookie);
+		}
+	}
+	for (const [name, value] of copy) {
+		if (name !== "set-cookie" && served.get(name) !== value) {
+			view.set(name, value);
+		}
+	}
+	return changed;
 }
 
 /**
@@ -67,12 +85,19 @@ export class ResponseEdge {
 
 	/**
 	 * The headers to write for `response`: lowercase names and their values in
-	 * turn, as Node's `writeHead` takes them. It gives `undefined` when the
-	 * server kept none for `response`, such as for a response that a wrapper
-	 * around the server made.
+	 * turn, as Node's `writeHead` takes them. For a copy of the response that
+	 * the server returned, they are the headers after the hooks with the
+	 * changes of the copy. Why a copy: Hono answers HEAD with a copy that has
+	 * no body, and a wrapper of the app's `fetch` can return one. It gives
+	 * `undefined` when the server kept no headers.
 	 */
 	public headersFor(response: Response): string[] | undefined {
-		return response === this.#response ? this.#headers : undefined;
+		const served = this.#response;
+		const headers = this.#headers;
+		if (served == null || headers == null || response === served) {
+			return headers;
+		}
+		return withChanges(headers, served.headers, response.headers);
 	}
 
 	/**
@@ -115,71 +140,6 @@ export class ResponseEdge {
 			callReport(report, this.#sent);
 		}
 	}
-}
-
-/** The index of the lowercase `name` in a flat `[name, value, …]` header list, or -1. */
-export function headerIndex(head: readonly string[], name: string): number {
-	for (let index = 0; index < head.length; index += 2) {
-		if (head[index] === name) {
-			return index;
-		}
-	}
-	return -1;
-}
-
-/** The flat `[name, value, …]` header list of `response`, with lowercase names. */
-export function headerList(response: Response): string[] {
-	const head: string[] = [];
-	for (const [name, value] of response.headers) {
-		head.push(name, value);
-	}
-	return head;
-}
-
-/**
- * A view of a flat `[name, value, …]` header list with lowercase names, for
- * the header hooks. It reads and changes the list as `Headers` does.
- */
-function listView(head: string[]): ResponseHeaders {
-	const remove = (name: string) => {
-		for (let index = head.length - 2; index >= 0; index -= 2) {
-			if (head[index] === name) {
-				head.splice(index, 2);
-			}
-		}
-	};
-	const get = (name: string) => {
-		const lower = name.toLowerCase();
-		let value: string | null = null;
-		for (let index = 0; index < head.length; index += 2) {
-			if (head[index] === lower) {
-				value = value == null ? (head[index + 1] ?? "") : `${value}, ${head[index + 1] ?? ""}`;
-			}
-		}
-		return value;
-	};
-	return {
-		get,
-		has: (name) => headerIndex(head, name.toLowerCase()) !== -1,
-		set: (name, value) => {
-			const lower = name.toLowerCase();
-			remove(lower);
-			head.push(lower, value);
-		},
-		append: (name, value) => {
-			const lower = name.toLowerCase();
-			const index = lower === "set-cookie" ? -1 : headerIndex(head, lower);
-			// Why join: `Headers` sends the values of a name on one line, except each `Set-Cookie`.
-			if (index === -1) {
-				head.push(lower, value);
-			} else {
-				head[index + 1] = `${head[index + 1] ?? ""}, ${value}`;
-			}
-		},
-		delete: (name) => {
-			remove(name.toLowerCase());
-		},
-	};
 }
 
 /**
@@ -330,14 +290,14 @@ export function finishResponse(
 	context: Context<AppServerEnv>,
 	{ hooks, reports, edge, fail }: Finish,
 ): void {
-	let head = headerList(context.res);
+	let head = headerList(context.res.headers);
 	let view = listView(head);
 	for (let index = hooks.length - 1; index >= 0; index -= 1) {
 		try {
 			hooks[index]?.(view);
 		} catch (error) {
 			useErrorResponse(context, fail, error);
-			head = headerList(context.res);
+			head = headerList(context.res.headers);
 			view = listView(head);
 		}
 	}

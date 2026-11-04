@@ -412,4 +412,53 @@ describe("the node response writer", () => {
 		expect(seen).toStrictEqual([new URL("/page", plain.url).href]);
 		expect(odd.statusCode).toBe(400);
 	});
+
+	it("sends the headers of the header hooks with a HEAD response, and with a copy that a wrapper returns", async () => {
+		const { url } = await serving({
+			routes: (app) => {
+				const dispatch = app.fetch;
+				app.fetch = async (request, ...rest) => {
+					const response = await dispatch(request, ...rest);
+					if (new URL(request.url).pathname !== "/wrapped") {
+						return response;
+					}
+					const copy = new Response(response.body, response);
+					copy.headers.set("X-Wrapped", "yes");
+					return copy;
+				};
+			},
+		});
+		const headersOf = async (path: string, method: string) => {
+			const response = await fetch(new URL(path, url), { method });
+			await response.text();
+			return {
+				id: response.headers.has("X-Request-Id"),
+				nosniff: response.headers.get("X-Content-Type-Options"),
+				cache: response.headers.get("Cache-Control"),
+				wrapped: response.headers.get("X-Wrapped"),
+			};
+		};
+		const hooked = { id: true, nosniff: "nosniff", cache: "private, no-cache" };
+
+		await expect(headersOf("/page", "HEAD")).resolves.toStrictEqual({ ...hooked, wrapped: null });
+		await expect(headersOf("/wrapped", "GET")).resolves.toStrictEqual({
+			...hooked,
+			wrapped: "yes",
+		});
+	});
+
+	it("logs a header hook that throws once on a page that it would gzip", async () => {
+		const { url, linesOf } = await serving({
+			plugins: [requestId(), accessLog(), streamingCompress(), throwsInHook],
+		});
+
+		const response = await get(url, { "Accept-Encoding": "gzip" });
+		await bodyOf(response);
+
+		expect(response.statusCode).toBe(500);
+		await vi.waitFor(() => {
+			expect(linesOf("request")).toHaveLength(1);
+		});
+		expect(linesOf("unhandled error")).toHaveLength(1);
+	});
 });

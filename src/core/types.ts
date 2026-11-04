@@ -235,8 +235,11 @@ export type ResponseHeaders = {
  * that sends its own response runs the hooks before it sends the head.
  *
  * The static stages and `streamingCompress` also run the hooks on a view of
- * the headers, to read the `Cache-Control` that leaves, so a hook can run
- * more than once for one request. A hook must only read and change headers.
+ * the headers, to read the `Cache-Control` that leaves. So a hook can run two
+ * or three times for one request: each run must give the same headers and do
+ * nothing else, such as log, count, or store a value. A view run can come
+ * before the code that a stage runs after its `next()`, and a throw in it
+ * changes nothing.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;

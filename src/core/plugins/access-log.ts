@@ -13,9 +13,10 @@ export type AccessLogOptions = {
 	 */
 	redactQuery?: boolean;
 	/**
-	 * More attributes for each request line, such as the app's user ID. On
-	 * Node.js and Vercel, `c.res` here does not have the changes of the header
-	 * hooks.
+	 * More attributes for each request line, such as the app's user ID. Read
+	 * the request and the context here, not `c.res`: on Node.js and Vercel it
+	 * does not have the changes of the header hooks, and on Bun it has no
+	 * headers, because Bun takes them when it sends the response.
 	 */
 	attributes?: (context: Context<AppServerEnv>) => Readonly<Record<string, unknown>>;
 	/**

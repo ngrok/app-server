@@ -67,11 +67,11 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
 
 /**
  * Runs `hook` on the response headers after the later stages. In an app
- * server, the hook changes the head once, where the response leaves, after
- * the code that each stage runs after its `next()`. So a stage can decide
- * after its `next()` what its hook does, and the response needs no copy. A
- * hook that throws gives a 500. See {@link HeaderHook} for the order of the
- * hooks and the views that also run them.
+ * server, the hook changes the head once, where the response leaves, so the
+ * response needs no copy. That run comes after the code that each stage runs
+ * after its `next()`, so a stage can decide there what its hook does. A hook
+ * that throws gives a 500. See {@link HeaderHook} for the order of the hooks
+ * and the views that also run them.
  *
  * @example
  * const frameOptions: Plugin = {
@@ -98,6 +98,71 @@ export async function withHeaderHook(
 	await next();
 }
 
+/** The index of the lowercase `name` in a flat `[name, value, …]` header list, or -1. */
+export function headerIndex(head: readonly string[], name: string): number {
+	for (let index = 0; index < head.length; index += 2) {
+		if (head[index] === name) {
+			return index;
+		}
+	}
+	return -1;
+}
+
+/** The flat `[name, value, …]` list of `headers`, with lowercase names. */
+export function headerList(headers: Headers): string[] {
+	const head: string[] = [];
+	for (const [name, value] of headers) {
+		head.push(name, value);
+	}
+	return head;
+}
+
+/**
+ * A view of a flat `[name, value, …]` header list with lowercase names, for
+ * the header hooks. It reads and changes the list as `Headers` does.
+ */
+export function listView(head: string[]): ResponseHeaders {
+	const remove = (name: string) => {
+		for (let index = head.length - 2; index >= 0; index -= 2) {
+			if (head[index] === name) {
+				head.splice(index, 2);
+			}
+		}
+	};
+	const get = (name: string) => {
+		const lower = name.toLowerCase();
+		let value: string | null = null;
+		for (let index = 0; index < head.length; index += 2) {
+			if (head[index] === lower) {
+				value = value == null ? (head[index + 1] ?? "") : `${value}, ${head[index + 1] ?? ""}`;
+			}
+		}
+		return value;
+	};
+	return {
+		get,
+		has: (name) => headerIndex(head, name.toLowerCase()) !== -1,
+		set: (name, value) => {
+			const lower = name.toLowerCase();
+			remove(lower);
+			head.push(lower, value);
+		},
+		append: (name, value) => {
+			const lower = name.toLowerCase();
+			const index = lower === "set-cookie" ? -1 : headerIndex(head, lower);
+			// Why join: `Headers` sends the values of a name on one line, except each `Set-Cookie`.
+			if (index === -1) {
+				head.push(lower, value);
+			} else {
+				head[index + 1] = `${head[index + 1] ?? ""}, ${value}`;
+			}
+		},
+		delete: (name) => {
+			remove(name.toLowerCase());
+		},
+	};
+}
+
 /**
  * A view of `headers` after the header hook of each stage that the request
  * passed, in the order that the server runs them. Why: a stage that picks a
@@ -110,29 +175,16 @@ export async function withHeaderHook(
  * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
  */
 export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers): ResponseHeaders {
-	const changes = new Map<string, string | null>();
-	const get = (name: string) => {
-		const lower = name.toLowerCase();
-		return changes.has(lower) ? (changes.get(lower) ?? null) : headers.get(lower);
-	};
-	const view: ResponseHeaders = {
-		get,
-		has: (name) => get(name) != null,
-		set: (name, value) => {
-			changes.set(name.toLowerCase(), value);
-		},
-		append: (name, value) => {
-			const current = get(name);
-			changes.set(name.toLowerCase(), current == null ? value : `${current}, ${value}`);
-		},
-		delete: (name) => {
-			changes.set(name.toLowerCase(), null);
-		},
-	};
+	const view = listView(headerList(headers));
 	const hooks = context.get("headerHooks") ?? [];
 	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
 	for (let index = hooks.length - 1; index >= 0; index -= 1) {
-		hooks[index]?.(view);
+		try {
+			hooks[index]?.(view);
+		} catch {
+			// Why drop it: the run where the response leaves answers the error, and logs it once. A hook
+			// can also need state that its stage sets after `next()`, which a view can come before.
+		}
 	}
 	return view;
 }
