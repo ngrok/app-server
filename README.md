@@ -162,7 +162,7 @@ After the build and after the prerender pass, `appServer` writes a gzip copy (`.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
-A React Router app with no Vite plugin also works: `app-server serve build/server/index.js` reads a plain React Router build and runs it with the CLI's copy, the node host, and the default plugins. In that build, a route that calls `shutdownSignal()`, `eventStream()`, or `requestContext()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
+A React Router app with no Vite plugin also works: `app-server serve build/server/index.js` reads a plain React Router build and runs it with the CLI's copy, the node host, and the default plugins. In that build, a route that calls `shutdownSignal()`, `eventStream()`, `requestContext()`, or `cspNonce()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
 
 ## Commands
 
@@ -381,21 +381,51 @@ createServer({
 });
 ```
 
-Give the nonce to the framework's render. `requestContext()?.cspNonce` has it. In React Router, do it in `app/entry.server.tsx`:
+Give the nonce to the framework's render with `cspNonce()` from `@ngrok/app-server/client`. On the server, it gives the nonce of the request. In the browser, it reads the nonce from the document, so the hydration matches. It gives `undefined` when the page has no nonce.
+
+In React Router, give it to the render in `app/entry.server.tsx`:
 
 ```tsx
-const nonce = requestContext()?.cspNonce;
+import { cspNonce } from "@ngrok/app-server/client";
+
+const nonce = cspNonce();
 const { pipe } = renderToPipeableStream(
 	<ServerRouter context={routerContext} url={request.url} nonce={nonce} />,
 	{ nonce /* , … */ },
 );
 ```
 
-In TanStack Start, give it to the router:
+`<HydratedRouter>` takes no nonce, so in the browser `<Links>`, `<ScrollRestoration>`, and `<Scripts>` render no nonce, and React warns that the hydration does not match. Give them the nonce in the root `Layout`. Give it also to each inline script of the app, such as a theme script:
+
+```tsx
+// app/root.tsx
+import { cspNonce } from "@ngrok/app-server/client";
+
+export function Layout({ children }: { children: React.ReactNode }) {
+	const nonce = cspNonce();
+	return (
+		<html lang="en">
+			<head>
+				<Meta />
+				<Links nonce={nonce} />
+			</head>
+			<body>
+				{children}
+				<ScrollRestoration nonce={nonce} />
+				<Scripts nonce={nonce} />
+			</body>
+		</html>
+	);
+}
+```
+
+In TanStack Start, give it to the router. `getRouter` runs on the server and in the browser:
 
 ```ts
+import { cspNonce } from "@ngrok/app-server/client";
+
 export function getRouter() {
-	return createRouter({ routeTree, ssr: { nonce: requestContext()?.cspNonce } });
+	return createRouter({ routeTree, ssr: { nonce: cspNonce() } });
 }
 ```
 
@@ -617,6 +647,17 @@ The default twin is the path with no trailing slash plus `.md`, and `/index.md` 
 prerendered({ markdownTwins: { twinOf: (path) => (path === "/" ? "/llms.md" : `${path}.md`) } });
 ```
 
+`twinOf` also gets the request's Hono context, the same as `rewrite`. If it gives `undefined`, the request gets no twin, `rewrite` runs, and the answer gets no `Vary: Accept` and no `Link`. For example, when the framework renders a page for each query, keep a request with a query off the prerendered twin:
+
+```ts
+prerendered({
+	markdownTwins: {
+		twinOf: (path, c) =>
+			new URL(c.req.url).search === "" ? `${path === "/" ? "/index" : path}.md` : undefined,
+	},
+});
+```
+
 The framework makes the twins. In React Router, one splat resource route can answer every twin. Prerender each twin URL, and point `twinOf` at the route. `markdownFor` stands for the app's own lookup:
 
 ```ts
@@ -642,7 +683,7 @@ createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: { twinOf 
 
 The same route answers the twins in development.
 
-For other negotiation, `rewrite` maps a request path to the file to serve. It does not run for a request that gets the twin. When its answer depends on a request header, add a `Vary` for that header in a plugin.
+For other negotiation, `rewrite` maps a request path to the file to serve. It does not run for a request that gets the twin. To keep a request off the twin, give `undefined` from `twinOf`. When its answer depends on a request header, add a `Vary` for that header in a plugin.
 
 ### A rendered page
 
