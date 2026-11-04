@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { constants, gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
@@ -53,6 +54,57 @@ describe("streamingCompress", () => {
 		expect(text(new Uint8Array([...first, ...second]))).toBe(
 			"<p>one</p><p>two</p><p>three</p><p>late</p>",
 		);
+	});
+
+	it("sends a page whose body has ended as one gzip chunk, with the gzip trailer", async () => {
+		const page = `<main>${"<p>row</p>".repeat(300)}</main>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							for (const part of [page.slice(0, 1500), page.slice(1500)]) {
+								controller.enqueue(new TextEncoder().encode(part));
+							}
+							controller.close();
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		const after = await reader?.read();
+
+		expect(gunzipSync(first).toString()).toBe(page);
+		expect(after?.done).toBe(true);
+	});
+
+	it("sends the gzip of a large chunk in pieces while zlib still compresses it", async () => {
+		const chunk = randomBytes(256 * 1024);
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(chunk);
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		await reader?.cancel();
+
+		expect(first.byteLength).toBeGreaterThan(0);
+		expect(first.byteLength).toBeLessThanOrEqual(constants.Z_DEFAULT_CHUNK);
 	});
 
 	it("drops a Content-Length and an Accept-Ranges that the gzip body would break", async () => {
