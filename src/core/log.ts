@@ -1,10 +1,27 @@
 import type { Context } from "hono";
 import type { AppServerEnv, LogSink, RequestLogger } from "./types.js";
 
-/** The stdout lines that wait for {@link flushLogs}. */
+/** The standard output (stdout) lines that wait for {@link flushLogs}. */
 let pending = "";
-/** Whether {@link flushLogs} runs on the process `exit` event. */
-let flushesOnExit = false;
+/** Whether the process emits `exit`. Then no turn of the event loop follows, so each line goes to stdout at once. */
+let exiting = false;
+
+/** The libuv handle of stdout on Node.js. Bun and Deno have none. */
+type StdoutHandle = { _handle?: { setBlocking?: (blocking: boolean) => number } };
+
+// Why: a process that crashes or calls `process.exit()` before the next turn keeps its last lines.
+process.on("exit", () => {
+	exiting = true;
+	// Why block: the exit drops a write that waits for a full pipe. On POSIX, a write to a file or
+	// a terminal already blocks.
+	// oxlint-disable-next-line no-underscore-dangle -- Node.js has no public way to block stdout.
+	(process.stdout as NodeJS.WriteStream & StdoutHandle)._handle?.setBlocking?.(true);
+	// Why one write for each line: Bun cannot block. Between small writes, the reader can empty the pipe.
+	for (const line of pending.match(/[^\n]*\n/gu) ?? []) {
+		process.stdout.write(line);
+	}
+	pending = "";
+});
 
 /**
  * Writes the stdout lines of {@link jsonSink} that wait, in one write. Call it
@@ -25,13 +42,12 @@ export function flushLogs(): void {
  * and under load many requests end in one turn.
  */
 function writeStdout(line: string): void {
+	if (exiting) {
+		process.stdout.write(line);
+		return;
+	}
 	if (pending === "") {
 		setImmediate(flushLogs);
-	}
-	if (!flushesOnExit) {
-		flushesOnExit = true;
-		// Why: a process that crashes or calls `process.exit()` before the next turn keeps its last lines.
-		process.on("exit", flushLogs);
 	}
 	pending += line;
 }

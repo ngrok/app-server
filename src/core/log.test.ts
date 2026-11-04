@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { flushLogs, jsonSink } from "./log.js";
 
@@ -29,6 +32,25 @@ describe("jsonSink", () => {
 			{ time: expect.any(String), level: "warn", message: "second", "http.status_code": 500 },
 			"",
 		]);
+	});
+
+	it("writes each line to a pipe when the process exits before the next turn", () => {
+		// Why 1,000 lines: they hold more bytes than the 64 KiB of a pipe, so one write to it waits in a queue.
+		const script = `
+			import { jsonSink } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "log.ts")).href)};
+			const sink = jsonSink();
+			for (let line = 0; line < 1000; line += 1) sink.log("info", "line", { line });
+			process.on("exit", () => sink.log("info", "exiting", {}));
+			process.exit();
+		`;
+
+		const stdout = execFileSync(process.execPath, ["--input-type=module", "--eval", script], {
+			encoding: "utf8",
+		});
+
+		const lines = stdout.trimEnd().split("\n");
+		expect(lines).toHaveLength(1001);
+		expect(JSON.parse(lines.at(-1) ?? "")).toMatchObject({ message: "exiting" });
 	});
 
 	it("writes the waiting lines at once on flushLogs", () => {
