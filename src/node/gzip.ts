@@ -1,5 +1,20 @@
 import { constants, createGzip } from "node:zlib";
 
+/** For each stream from {@link gzipStream}: whether its next chunk waits only on zlib, not on its source. */
+const zlibWork = new WeakMap<ReadableStream<Uint8Array>, { busy: boolean }>();
+
+/**
+ * Whether the next chunk of `stream` waits only on zlib, because its source
+ * gave the bytes already. It gives `undefined` for a stream that is not from
+ * {@link gzipStream}.
+ *
+ * @example
+ * waitsForZlib(gzipStream(source)); // => false, until the first read gives zlib a chunk
+ */
+export function waitsForZlib(stream: ReadableStream<Uint8Array>): boolean | undefined {
+	return zlibWork.get(stream)?.busy;
+}
+
 /**
  * Gzips a byte stream. `Z_SYNC_FLUSH` makes each written chunk readable at
  * once. It reads the next source chunk only when the consumer pulls, so a slow
@@ -14,6 +29,7 @@ import { constants, createGzip } from "node:zlib";
 export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
 	const gzip = createGzip({ flush: constants.Z_SYNC_FLUSH });
 	const reader = source.getReader();
+	const work = { busy: false };
 	let ended = false;
 	const markEnded = () => {
 		ended = true;
@@ -33,7 +49,7 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 		held = [];
 		heldBytes = 0;
 	};
-	return new ReadableStream<Uint8Array>(
+	const stream = new ReadableStream<Uint8Array>(
 		{
 			start(controller) {
 				gzip.on("data", (chunk: Buffer) => {
@@ -45,10 +61,12 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 					}
 				});
 				gzip.on("end", () => {
+					work.busy = false;
 					enqueueHeld(controller);
 					controller.close();
 				});
 				gzip.on("error", (error) => {
+					work.busy = false;
 					controller.error(error);
 				});
 			},
@@ -60,6 +78,7 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 					while (!chunk.done && chunk.value.byteLength === 0) {
 						chunk = await reader.read();
 					}
+					work.busy = true;
 					if (chunk.done) {
 						gzip.end();
 						return;
@@ -78,10 +97,12 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 						gzip.end();
 						return;
 					}
+					work.busy = false;
 					// Why the output is here: zlib emits the output of a chunk before it calls the write
 					// callback, so this pull enqueues a chunk and the consumer's read does not wait.
 					enqueueHeld(controller);
 				} catch (error) {
+					work.busy = false;
 					gzip.destroy();
 					throw error;
 				}
@@ -95,4 +116,6 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 		// Why 0: the stream reads its source only when the consumer reads.
 		{ highWaterMark: 0 },
 	);
+	zlibWork.set(stream, work);
+	return stream;
 }

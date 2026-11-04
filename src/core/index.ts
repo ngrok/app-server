@@ -171,6 +171,7 @@ export type {
 	RequestContext,
 	RequestLogger,
 	RequestStore,
+	ResponseEdge,
 	ResponseHeaders,
 	SentBody,
 	ServerBindings,

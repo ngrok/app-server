@@ -1,4 +1,4 @@
-import { writableHeaders } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 
 /** The data check before `setup` runs. */
@@ -27,16 +27,15 @@ export function privateDocuments(): Plugin {
 		setup: (info) => {
 			({ isDataRequest } = info);
 		},
-		middleware: async (context, next) => {
-			await next();
-			const { headers } = context.res;
-			if (
-				!headers.has("Cache-Control") &&
-				((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
-					isDataRequest(context.req.path))
-			) {
-				writableHeaders(context).set("Cache-Control", "private, no-cache");
-			}
-		},
+		middleware: async (context, next) =>
+			withHeaderHook(context, next, (headers) => {
+				if (
+					!headers.has("Cache-Control") &&
+					((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
+						isDataRequest(context.req.path))
+				) {
+					headers.set("Cache-Control", "private, no-cache");
+				}
+			}),
 	};
 }

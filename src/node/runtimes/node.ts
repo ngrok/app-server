@@ -1,71 +1,25 @@
-import { IncomingMessage, ServerResponse } from "node:http";
-import { createAdaptorServer } from "@hono/node-server";
+import { createServer } from "node:http";
 import type { FetchHandler, StartedListener } from "../../core/types.js";
+import { requestListener } from "../response-writer.js";
 import { listenerUrl } from "./listen-options.js";
 import type { ListenOptions } from "./listen-options.js";
 
-/**
- * Cancels the body of a response whose socket closed first, and returns the
- * response. `@hono/node-server` drops such a body with no cancel, and its
- * producer runs on.
- */
-export async function cancelIfClosed(
-	response: Response,
-	outgoing: { destroyed: boolean },
-): Promise<Response> {
-	if (outgoing.destroyed) {
-		await response.body?.cancel();
-	}
-	return response;
-}
-
-/**
- * Runs `create`, which makes a listener of `@hono/node-server`, and keeps the
- * global `Response`. The listener makes its own `Request` class global.
- *
- * Why its `Request`: the listener gives each route a light request, and only
- * that class can copy it, such as `new Request(c.req.raw, init)` in Hono's
- * `methodOverride`. Why not its `Response`: a `fetch()` result must stay an
- * `instanceof Response`, as on Bun and Deno.
- *
- * @example
- * const listener = keepGlobalResponse(() => getRequestListener(app.fetch));
- */
-export function keepGlobalResponse<T>(create: () => T): T {
-	// Why the descriptor: on Deno, the listener leaves a `Response` that no one can assign.
-	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Response");
-	try {
-		return create();
-	} finally {
-		if (descriptor != null) {
-			Object.defineProperty(globalThis, "Response", descriptor);
-		}
-	}
-}
-
-/** Listens with `node:http` through `@hono/node-server`. */
+/** Listens with `node:http`, and writes each response with the node response writer. */
 export async function listen(
 	fetch: FetchHandler,
 	options: ListenOptions,
 ): Promise<StartedListener> {
-	const server = keepGlobalResponse(() =>
-		createAdaptorServer({
-			fetch: async (request, { incoming, outgoing }) => {
-				const response = await fetch(request, {
-					remoteAddress: incoming.socket.remoteAddress,
-					...(incoming instanceof IncomingMessage && outgoing instanceof ServerResponse
-						? { incoming, outgoing }
-						: {}),
-				});
-				return cancelIfClosed(response, outgoing);
-			},
-			serverOptions: {
-				keepAliveTimeout: options.idleTimeoutMs,
-				// Why above the keep-alive timeout: Node closes a socket that is between requests when its
-				// headers timer runs out first.
-				headersTimeout: options.idleTimeoutMs + 1_000,
-			},
-		}),
+	const listener = requestListener(fetch);
+	const server = createServer(
+		{
+			keepAliveTimeout: options.idleTimeoutMs,
+			// Why above the keep-alive timeout: Node closes a socket that is between requests when its
+			// headers timer runs out first.
+			headersTimeout: options.idleTimeoutMs + 1_000,
+		},
+		(incoming, outgoing) => {
+			void listener(incoming, outgoing);
+		},
 	);
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
@@ -81,9 +35,7 @@ export async function listen(
 		stop: async ({ deadlineMs }) =>
 			new Promise<void>((resolve, reject) => {
 				const deadline = setTimeout(() => {
-					if ("closeAllConnections" in server) {
-						server.closeAllConnections();
-					}
+					server.closeAllConnections();
 				}, deadlineMs);
 				server.close((error) => {
 					clearTimeout(deadline);
@@ -93,9 +45,7 @@ export async function listen(
 						reject(error);
 					}
 				});
-				if ("closeIdleConnections" in server) {
-					server.closeIdleConnections();
-				}
+				server.closeIdleConnections();
 			}),
 	};
 }

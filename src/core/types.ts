@@ -106,15 +106,37 @@ export type RequestStore = {
 	get: () => Context<AppServerEnv> | undefined;
 };
 
-/** What a host reports when a response ends or its client goes away. */
+/** What a listener reports when a response ends or its client goes away. */
 export type SentBody = {
 	/**
-	 * The bytes of the body that the host gave to its socket, after
+	 * The bytes of the body that the listener gave to its socket, after
 	 * compression. When `aborted` is true, the client can have got fewer.
 	 */
 	bytes: number;
 	/** Whether the body stopped before its end, such as when the client went away or the body failed. */
 	aborted: boolean;
+};
+
+/**
+ * What a listener that writes each response itself gives each request, as
+ * its `edge` binding. The server then leaves the header hooks to the head
+ * that the listener writes, so it copies no response for them, and the
+ * access log takes the body bytes from the listener.
+ */
+export type ResponseEdge = {
+	/**
+	 * Takes the header hooks of the request, in stage order. The listener runs
+	 * them on the head of the response that the server returns, in reverse
+	 * order, so the hook of an inner stage runs first. The server calls this
+	 * once, before it returns the response.
+	 */
+	useHeaderHooks: (hooks: readonly HeaderHook[]) => void;
+	/**
+	 * Calls `report` once: when the response ends, or when the client goes
+	 * away first. `report` can run before this returns. A throw from `report`
+	 * never reaches the listener.
+	 */
+	onSent: (report: (sent: SentBody) => void) => void;
 };
 
 /** How a long-lived host stops. A serverless host has none. */
@@ -144,16 +166,6 @@ export type HostRuntime = {
 	 * `streamingCompress` sends each response as it is.
 	 */
 	gzip?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
-	/**
-	 * Counts the body bytes that the host sends for the request of `bindings`
-	 * from now on. It calls `report` once: when the response ends, or when the
-	 * client goes away first. `report` can run before this returns. A throw
-	 * from `report` never reaches the host's event. It returns `false` when it
-	 * cannot count for that request, and then it never calls `report`.
-	 * Without it, the `accessLog` plugin counts the bytes in the pipeline,
-	 * with one more stream around each body.
-	 */
-	countSent?: (bindings: ListenerBindings, report: (sent: SentBody) => void) => boolean;
 	lifecycle?: Lifecycle;
 };
 
@@ -164,6 +176,11 @@ export type HostRuntime = {
 export type ListenerBindings = {
 	/** The client's IP address, when the runtime knows it. */
 	remoteAddress?: string | undefined;
+	/**
+	 * Given by a listener that writes each response itself, such as the node
+	 * listener. See {@link ResponseEdge}.
+	 */
+	edge?: ResponseEdge | undefined;
 	[binding: string]: unknown;
 };
 
@@ -224,10 +241,12 @@ export type ResponseHeaders = {
 
 /**
  * A change to the headers of a response, from a stage that runs before the
- * response. The stage runs it after the later stages, and a dev server
- * middleware that sends its own response runs it before it sends the head.
- * The static stages also run it on a copy of the headers, so it can run more
- * than once for one request.
+ * response. In an app server, it runs once where the response leaves, after
+ * the code that each stage runs after its `next()`: on the head that a
+ * listener with an `edge` writes, else on the response that the server
+ * returns. A dev server middleware that sends its own response runs it
+ * before it sends the head. The static stages also run it on a copy of the
+ * headers, so it can run more than once for one request.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;
@@ -260,8 +279,6 @@ export type SetupInfo = {
 	contentTypes: Readonly<Record<string, string>>;
 	/** The host's gzip stream, when it has one. */
 	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
-	/** The host's count of the body bytes that it sends, when it has one. */
-	countSent: HostRuntime["countSent"];
 	logger: LogSink;
 } & (
 	| {

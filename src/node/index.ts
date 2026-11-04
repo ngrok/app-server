@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "hono";
 import type { AppServerEnv, HostRuntime } from "../core/types.js";
-import { countSent } from "./count-sent.js";
 import { exitAfterFlush } from "./exit.js";
 import { nodeFiles } from "./files.js";
 import { gzipStream } from "./gzip.js";
@@ -52,9 +51,6 @@ export const host: HostRuntime = {
 		get: () => storage.getStore(),
 	},
 	gzip: gzipStream,
-	// Why not on Bun and Deno: their `node:http` does not always emit `close` or set `destroyed`, so
-	// a line can be lost. The access log then counts in the pipeline.
-	...("Bun" in globalThis || "Deno" in globalThis ? {} : { countSent }),
 	lifecycle: {
 		onStop: (stop) => {
 			for (const signal of ["SIGTERM", "SIGINT"] as const) {

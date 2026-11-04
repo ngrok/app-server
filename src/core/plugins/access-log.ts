@@ -1,7 +1,7 @@
 import type { Context } from "hono";
-import { replaceResponse, writableHeaders } from "../header-hook.js";
+import { replaceResponse, withHeaderHook } from "../header-hook.js";
 import { errorAttributes } from "../log.js";
-import type { AppServerEnv, Plugin, SentBody, SetupInfo } from "../types.js";
+import type { AppServerEnv, Plugin, SentBody } from "../types.js";
 
 /** Options for {@link accessLog}. */
 export type AccessLogOptions = {
@@ -49,8 +49,8 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
 /**
  * One log line per request, static hits included, with Datadog standard
  * attribute names. The line goes out when the response ends or the client
- * disconnects, so a streamed response logs its full duration and size. On a
- * host with `countSent`, such as the node host, the host counts the bytes.
+ * disconnects, so a streamed response logs its full duration and size. A
+ * listener with an `edge`, such as the node listener, counts the bytes.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
@@ -61,23 +61,22 @@ export function accessLog({
 	attributes,
 	serverTiming = false,
 }: AccessLogOptions = {}): Plugin {
-	let countSent: SetupInfo["countSent"];
 	return {
 		name: "access-log",
-		setup: (info) => {
-			({ countSent } = info);
-		},
 		middleware: async (context, next) => {
 			const started = performance.now();
-			await next();
-			if (
-				serverTiming &&
-				(context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false)
-			) {
-				const duration = (performance.now() - started).toFixed(1);
-				writableHeaders(context).append("Server-Timing", `app;dur=${duration}`);
-			}
-			// Why a catch: a log line must never change the response or stop its stream. The host can
+			// Why a hook: it runs when the head is ready, which is the time that the header gives.
+			await (serverTiming
+				? withHeaderHook(context, next, (headers) => {
+						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
+							headers.append(
+								"Server-Timing",
+								`app;dur=${(performance.now() - started).toFixed(1)}`,
+							);
+						}
+					})
+				: next());
+			// Why a catch: a log line must never change the response or stop its stream. The listener can
 			// call `write` from an event of its socket, where a throw stops the process.
 			const write = (sent: SentBody) => {
 				const line = lineAttributes(context, sent, started);
@@ -108,14 +107,10 @@ export function accessLog({
 				write({ bytes: Number(response.headers.get("Content-Length") ?? 0), aborted: false });
 				return;
 			}
-			// Why the host first: it counts each chunk as it sends it, so the body needs no stream around it.
-			const hostCounts = countSent?.(context.env, ({ bytes, aborted }) => {
-				// Why the length: a host can end a response as complete when its body fails before the
-				// host sends the head. Only a body shorter than its `Content-Length` shows that failure.
-				const length = Number(context.res.headers.get("Content-Length") ?? 0);
-				write({ bytes, aborted: aborted || bytes < length });
-			});
-			if (hostCounts === true) {
+			// Why the listener first: it counts each chunk as it writes it, so the body needs no stream around it.
+			const { edge } = context.env;
+			if (edge != null) {
+				edge.onSent(write);
 				return;
 			}
 			const reader = response.body.getReader();

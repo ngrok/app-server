@@ -45,29 +45,9 @@ export function writableHeaders(context: Context<AppServerEnv>): Headers {
 	return context.res.headers;
 }
 
-/**
- * Runs `hook` on the response headers after the later stages. A dev server
- * middleware that sends its own response runs it too, before it sends the
- * head, so each response gets the same headers in development and in
- * production.
- *
- * @example
- * const frameOptions: Plugin = {
- * 	name: "frame-options",
- * 	middleware: async (c, next) =>
- * 		withHeaderHook(c, next, (response) => {
- * 			response.set("X-Frame-Options", "DENY");
- * 		}),
- * };
- */
-export async function withHeaderHook(
-	context: Context<AppServerEnv>,
-	next: Next,
-	hook: HeaderHook,
-): Promise<void> {
-	context.set("headerHooks", [...(context.get("headerHooks") ?? []), hook]);
-	await next();
-	const headers: ResponseHeaders = {
+/** A view of the headers of `context.res` that copies the response at the first change. */
+function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
+	return {
 		get: (name) => context.res.headers.get(name),
 		has: (name) => context.res.headers.has(name),
 		set: (name, value) => {
@@ -83,36 +63,94 @@ export async function withHeaderHook(
 			}
 		},
 	};
-	hook(headers);
 }
 
 /**
- * A copy of `headers` after the header hook of each stage that the request
- * passed, in the order that production runs them. Why: a stage that picks a
+ * Runs `hook` on the response headers after the later stages. In an app
+ * server, the hook runs once where the response leaves, after the code that
+ * each stage runs after its `next()`: on the head that the listener writes,
+ * so the response needs no copy, else on the response that the server
+ * returns. So a stage can decide after its `next()` what its hook does. A
+ * dev server middleware that sends its own response runs the hook before it
+ * sends the head, so each response gets the same headers in development and
+ * in production.
+ *
+ * @example
+ * const frameOptions: Plugin = {
+ * 	name: "frame-options",
+ * 	middleware: async (c, next) =>
+ * 		withHeaderHook(c, next, (response) => {
+ * 			response.set("X-Frame-Options", "DENY");
+ * 		}),
+ * };
+ */
+export async function withHeaderHook(
+	context: Context<AppServerEnv>,
+	next: Next,
+	hook: HeaderHook,
+): Promise<void> {
+	const hooks = context.get("headerHooks");
+	// Why: outside an app server, such as in a plain Hono app, nothing runs the hook later.
+	if (hooks == null) {
+		await next();
+		hook(responseHeaders(context));
+		return;
+	}
+	context.set("headerHooks", [...hooks, hook]);
+	await next();
+}
+
+/**
+ * Runs `hooks` on the headers of `context.res`, in reverse order, so the hook
+ * of an inner stage runs first and an outer stage has the last word. The
+ * server calls it once, after every stage, when no listener takes the hooks.
+ * The first change copies the response.
+ */
+export function runHeaderHooks(context: Context<AppServerEnv>, hooks: readonly HeaderHook[]): void {
+	if (hooks.length === 0) {
+		return;
+	}
+	const headers = responseHeaders(context);
+	for (let index = hooks.length - 1; index >= 0; index -= 1) {
+		hooks[index]?.(headers);
+	}
+}
+
+/**
+ * A view of `headers` after the header hook of each stage that the request
+ * passed, in the order that the server runs them. Why: a stage that picks a
  * body by a header, such as `Cache-Control: no-transform`, must see the value
- * that an earlier stage sets after it. So a hook can run more than once.
+ * that a hook sets where the response leaves. So a hook can run more than
+ * once. Why a view: the hooks change only the view, so `headers` needs no
+ * copy.
  *
  * @example
  * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
  */
-export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers): Headers {
-	const copy = new Headers(headers);
+export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers): ResponseHeaders {
+	const changes = new Map<string, string | null>();
+	const get = (name: string) => {
+		const lower = name.toLowerCase();
+		return changes.has(lower) ? (changes.get(lower) ?? null) : headers.get(lower);
+	};
 	const view: ResponseHeaders = {
-		get: (name) => copy.get(name),
-		has: (name) => copy.has(name),
+		get,
+		has: (name) => get(name) != null,
 		set: (name, value) => {
-			copy.set(name, value);
+			changes.set(name.toLowerCase(), value);
 		},
 		append: (name, value) => {
-			copy.append(name, value);
+			const current = get(name);
+			changes.set(name.toLowerCase(), current == null ? value : `${current}, ${value}`);
 		},
 		delete: (name) => {
-			copy.delete(name);
+			changes.set(name.toLowerCase(), null);
 		},
 	};
+	const hooks = context.get("headerHooks") ?? [];
 	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
-	for (const hook of (context.get("headerHooks") ?? []).toReversed()) {
-		hook(view);
+	for (let index = hooks.length - 1; index >= 0; index -= 1) {
+		hooks[index]?.(view);
 	}
-	return copy;
+	return view;
 }

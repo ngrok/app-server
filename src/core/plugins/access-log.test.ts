@@ -298,7 +298,11 @@ describe("accessLog on the Node.js listener", () => {
 		});
 	});
 
-	it("marks the line when a body ends before its Content-Length", async () => {
+	it("closes the connection and marks the line when a body ends before its Content-Length", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		onTestFinished(() => {
+			vi.restoreAllMocks();
+		});
 		const { url, requestLines } = await listening(
 			[accessLog()],
 			async () =>
@@ -307,15 +311,13 @@ describe("accessLog on the Node.js listener", () => {
 				}),
 		);
 
-		const response = await getRaw(new URL("/image.png", url).href);
+		await expect(getRaw(new URL("/image.png", url).href)).rejects.toThrow("socket hang up");
 		await vi.waitFor(() => {
 			expect(requestLines()).toHaveLength(1);
 		});
-		response.destroy();
 
-		expect(response.headers["content-length"]).toBe("10");
 		expect(requestLines()[0]?.attributes).toMatchObject({
-			"network.bytes_written": 5,
+			"network.bytes_written": 0,
 			"http.client_aborted": true,
 		});
 	});
@@ -340,7 +342,7 @@ describe("accessLog on the Node.js listener", () => {
 		});
 	});
 
-	it("logs a body that fails before the head goes out as the complete response the client got", async () => {
+	it("closes the connection and marks the line when a body fails before the head goes out", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		onTestFinished(() => {
 			vi.restoreAllMocks();
@@ -361,14 +363,15 @@ describe("accessLog on the Node.js listener", () => {
 				),
 		);
 
-		const response = await fetch(new URL("/fails-early", url));
-
-		await expect(response.text()).resolves.toBe("shell");
+		await expect(getRaw(new URL("/fails-early", url).href)).rejects.toThrow("socket hang up");
 		await vi.waitFor(() => {
 			expect(requestLines()).toHaveLength(1);
 		});
-		expect(requestLines()[0]?.attributes["network.bytes_written"]).toBe(5);
-		expect(requestLines()[0]?.attributes["http.client_aborted"]).toBeUndefined();
+
+		expect(requestLines()[0]?.attributes).toMatchObject({
+			"network.bytes_written": 0,
+			"http.client_aborted": true,
+		});
 	});
 
 	it("logs the response that an earlier plugin sends in place of the logged one", async () => {

@@ -100,7 +100,6 @@ export function createEntry({
 			isDataRequest: runtime.isDataRequest ?? (() => false),
 			contentTypes: runtime.contentTypes ?? {},
 			gzip: host.gzip,
-			countSent: host.countSent,
 			logger: internals.logger,
 		};
 	};

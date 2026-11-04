@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { runHeaderHooks } from "./header-hook.js";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
@@ -345,7 +346,16 @@ export function createServer({
 				: (forwardedClient(context.req.header("X-Forwarded-For"), trustedProxyHops) ??
 						remoteAddress),
 		);
+		// Why a list here: each stage's header hook then runs once, where the response leaves.
+		context.set("headerHooks", []);
 		await withRequestContext(requestStore, context, next);
+		const hooks = context.get("headerHooks") ?? [];
+		const { edge } = context.env;
+		if (edge == null) {
+			runHeaderHooks(context, hooks);
+		} else {
+			edge.useHeaderHooks(hooks);
+		}
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
