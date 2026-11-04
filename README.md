@@ -2,13 +2,75 @@
 
 A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) and [TanStack Start](https://tanstack.com/start) apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno, or as a Vercel Function.
 
-What it fixes in `@react-router/serve`:
+## Compared with `@react-router/serve`
+
+`@react-router/serve` 8.5.1 is Express 5 with `compression()`, `express.static` for the client build, and a `morgan` text log that comes after the static files. `app-server` serves the same build faster. It also does more work for each request.
+
+### Speed
+
+On the React Router fixture app of this repo, `app-server` answers more requests each second than `@react-router/serve` on each route:
+
+| Route                                               | `app-server` | `@react-router/serve` | Change |
+| --------------------------------------------------- | -----------: | --------------------: | -----: |
+| `/`, a prerendered page                             |       27,353 |                17,611 |   +55% |
+| `/ssr`, a rendered page                             |        5,648 |                 2,401 |   2.4× |
+| `/assets/*.js`, 233 kilobytes (KB), 68 KB as brotli |       22,491 |                 2,006 |    11× |
+| `/hello.txt`, a prerendered file of 5 bytes         |       29,131 |                22,278 |   +31% |
+
+The table gives requests per second for a client that sends `Accept-Encoding: gzip, deflate, br`, as a browser does. Most of the large gains come from compression. `compression()` compresses each response with brotli for each request, and `app-server` sends the copy that the build wrote.
+
+With no `Accept-Encoding`, the gains are +17% for `/`, +15% for `/ssr`, +31% for `/assets/*.js`, and +23% for `/hello.txt`. In these numbers, `app-server` also adds the security headers, a request ID, a JSON log line, and the build ID to each response.
+
+A CDN that keeps the `/assets/*` files makes the asset gain smaller for a visitor.
+
+How we measured:
+
+- Build the package with `pnpm run build`, then build `test/fixtures/react-router` with `react-router build`.
+- In that directory, run `node build/server/app-server.js` and `react-router-serve build/server/index.js`, with `NODE_ENV=production`. Each server is one process.
+- Send load to each route with `oha -z 5s -c 64`: 64 connections for 5 seconds. Use `--disable-compression` for the runs with no `Accept-Encoding`.
+- The table gives the median of 5 rounds. The two servers alternate in each round, and `app-server` got more requests each second in each round.
+- The versions are Node.js 26.13, `@react-router/serve` 8.5.1, Express 5.3.0, `compression` 1.8.2, and `oha` 1.16.0. The machine is one Apple M3 Max with macOS.
+
+### What it fixes
 
 - Each page has one URL. A page URL with the other trailing-slash form gets a 308 to it, for rendered and prerendered pages. A prerendered page answers at its own URL with a 200.
 - A prerendered resource route (`llms.txt`, `sitemap.xml`, a JSON API file) and each `.data` file keep the headers their loader sent: `Content-Type`, `Cache-Control`, CORS.
+- A static file gets the brotli or gzip copy that the build wrote. `compression()` compresses each response again for each request.
 - A streamed page under gzip reaches the client chunk by chunk.
 - Each request gets one JSON log line in your format, static files included, and an `X-Request-Id`.
-- Shutdown drains open requests with a deadline, and the keep-alive timeout outlasts the proxy's idle pool.
+- Shutdown drains open requests with a deadline, and the keep-alive timeout outlasts the proxy's idle pool. `@react-router/serve` closes the server on `SIGTERM`, with no deadline and no readiness probe.
+
+### What it adds
+
+For a marketing site:
+
+- [Redirects](#redirects) from a table, and [`noindex`](#preview-deploys) for preview deploys.
+- [Markdown twins](#content-negotiation) for agents, with `Vary: Accept` and a `Link` header.
+- [Security headers](#security-headers), and [a CSP for each document](#a-csp-for-each-document): script hashes for a prerendered page and a nonce for a rendered page.
+- ETags, 304s, and byte ranges for each static file, so Safari plays a `<video>` from the client build.
+- [One build for each environment](#environment): the `PUBLIC_` values go into each HTML document at serve time.
+
+For a web app:
+
+- [Deploys and open tabs](#deploys-and-open-tabs): after a deploy, the next navigation of an old tab loads its target as a document, so the old code never renders new data. The client module adds no request to a client navigation.
+- [Health checks](#health-checks) at `/livez` and `/readyz`, and a delay before the drain.
+- A [request body limit](#the-pipeline), and [`Cache-Control: private`](#the-pipeline) on each rendered page and data response with no `Cache-Control`, so a shared cache never keeps them for one user.
+- [Logs](#logs) with W3C and Datadog trace IDs, a logger in each loader, and the client address behind a proxy.
+- [Server-sent events](#long-lived-responses) that close at shutdown.
+- An auth check that also protects each prerendered file. See [Protect pages](#protect-pages).
+
+For each app:
+
+- One pipeline for development and production, with the same headers and the same CSP.
+- A [server build that runs with no install](#deploy), on Node.js, Bun, or Deno, or as a [Vercel Function](#deploy-to-vercel).
+
+### What changes for your app
+
+- The app needs Node.js 26+, Vite 8.3+, and React Router 8.5+. See [Requirements](#requirements).
+- The package has ES modules only.
+- A plugin is Hono middleware, not Express middleware.
+- With `defaultPlugins()`, a request body over 10 mebibytes (MiB) gets a 413, and a page URL with a trailing slash gets a 308. Change both with the options of `defaultPlugins()`.
+- The package does not support React Router `serverBundles`, and the app must serve at `/`. See [Limits](#limits).
 
 ## Requirements
 
