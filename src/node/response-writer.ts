@@ -335,6 +335,28 @@ export function keepGlobalResponse<T>(create: () => T): T {
 	}
 }
 
+/** A `Host` header that a URL keeps as it is: a name or an address, and an optional port. */
+const VALID_HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/iu;
+
+/**
+ * Gives `incoming` an absolute target with the scheme of its
+ * `X-Forwarded-Proto`. Why: `@hono/node-server` takes the scheme from the
+ * socket, which is plain HTTP behind a proxy that ends TLS. A target with the
+ * scheme gives the request its URL when it is made, so the server copies no
+ * request to change it. `incoming.url` is then the absolute URL.
+ */
+function useForwardedProto(incoming: IncomingMessage): void {
+	const { host, "x-forwarded-proto": proto } = incoming.headers;
+	if (
+		(proto === "https" || proto === "http") &&
+		host != null &&
+		VALID_HOST.test(host) &&
+		incoming.url?.startsWith("/") === true
+	) {
+		incoming.url = `${proto}://${host}${incoming.url}`;
+	}
+}
+
 /**
  * Why not on Bun and Deno: their `node:http` does not always emit `close` or
  * set `destroyed`, so `@hono/node-server` writes the response there.
@@ -346,11 +368,29 @@ const writesResponses = !("Bun" in globalThis) && !("Deno" in globalThis);
  * `answer` makes the response, and the listener writes it. Each HTTP/1
  * request on Node.js gets an `edge` binding, so the server leaves its header
  * hooks to the head and the access log takes the bytes from the listener.
+ * With `trustForwardedProto`, each request takes its scheme from
+ * `X-Forwarded-Proto`, as the server option does.
  *
  * @example
  * http.createServer(requestListener(async (request, bindings) => app.fetch(request, bindings)));
  */
 export function requestListener(
+	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
+	{ trustForwardedProto = false }: { trustForwardedProto?: boolean } = {},
+): ReturnType<typeof getRequestListener> {
+	const listener = listenerOf(answer);
+	return trustForwardedProto
+		? async (incoming, outgoing) => {
+				if (incoming instanceof IncomingMessage) {
+					useForwardedProto(incoming);
+				}
+				return listener(incoming, outgoing);
+			}
+		: listener;
+}
+
+/** The listener of {@link requestListener}, with no scheme from `X-Forwarded-Proto`. */
+function listenerOf(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
 ): ReturnType<typeof getRequestListener> {
 	return keepGlobalResponse(() =>

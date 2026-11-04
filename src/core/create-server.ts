@@ -434,7 +434,7 @@ export function createServer({
 				return response;
 			};
 			const starts = await Promise.allSettled(
-				chosen.map(async (listener) => listener.start(fetch)),
+				chosen.map(async (listener) => listener.start(fetch, { trustForwardedProto })),
 			);
 			const started = starts.flatMap((start) =>
 				start.status === "fulfilled" ? [start.value] : [],

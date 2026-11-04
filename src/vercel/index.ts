@@ -49,9 +49,6 @@ export const host: HostRuntime = {
 	...(nodeHost.storage == null ? {} : { storage: nodeHost.storage }),
 };
 
-/** A `Host` header that a URL keeps as it is: a name or an address, and an optional port. */
-const VALID_HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/iu;
-
 /**
  * The function handler for the entry of a server build. The function file
  * that `vercel()` writes exports it.
@@ -71,26 +68,17 @@ const VALID_HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/iu;
 export function handler(
 	entry: AppServerEntry,
 ): (incoming: IncomingMessage, outgoing: ServerResponse) => Promise<void> {
-	const listener = requestListener(async (request, bindings) => {
-		const realIp = bindings.incoming?.headers["x-real-ip"];
-		return entry.fetch(withForwardedProto(request), {
-			...bindings,
-			...(typeof realIp === "string" ? { remoteAddress: realIp } : {}),
-		});
-	});
+	const listener = requestListener(
+		async (request, bindings) => {
+			const realIp = bindings.incoming?.headers["x-real-ip"];
+			return entry.fetch(withForwardedProto(request), {
+				...bindings,
+				...(typeof realIp === "string" ? { remoteAddress: realIp } : {}),
+			});
+		},
+		{ trustForwardedProto: true },
+	);
 	return async (incoming, outgoing) => {
-		const { host: authority, "x-forwarded-proto": proto } = incoming.headers;
-		// Why an absolute target: `@hono/node-server` takes the scheme from the socket, which is plain
-		// HTTP behind Vercel's proxy. A target with the forwarded scheme gives the request its URL at
-		// once, so `withForwardedProto` copies no request.
-		if (
-			(proto === "https" || proto === "http") &&
-			authority != null &&
-			VALID_HOST.test(authority) &&
-			incoming.url?.startsWith("/") === true
-		) {
-			incoming.url = `${proto}://${authority}${incoming.url}`;
-		}
 		try {
 			await listener(incoming, outgoing);
 			// Why wait: the access log writes its line when the response closes, after the listener returns.

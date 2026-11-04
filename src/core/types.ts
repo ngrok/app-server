@@ -351,5 +351,15 @@ export type StartedListener = {
 export type Listener = {
 	/** A name for logs. */
 	name: string;
-	start: (fetch: FetchHandler) => Promise<StartedListener>;
+	start: (fetch: FetchHandler, options: ListenerStartOptions) => Promise<StartedListener>;
+};
+
+/** What the server tells a listener when it starts it. */
+export type ListenerStartOptions = {
+	/**
+	 * The `trustForwardedProto` of the server. A listener that builds each
+	 * request itself can then take the scheme from `X-Forwarded-Proto` at once,
+	 * so the server copies no request to change it.
+	 */
+	trustForwardedProto: boolean;
 };

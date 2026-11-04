@@ -9,7 +9,7 @@ export async function listen(
 	fetch: FetchHandler,
 	options: ListenOptions,
 ): Promise<StartedListener> {
-	const listener = requestListener(fetch);
+	const listener = requestListener(fetch, { trustForwardedProto: options.trustForwardedProto });
 	const server = createServer(
 		{
 			keepAliveTimeout: options.idleTimeoutMs,

@@ -164,6 +164,7 @@ export type {
 	Lifecycle,
 	Listener,
 	ListenerBindings,
+	ListenerStartOptions,
 	LogLevel,
 	LogSink,
 	Mode,
