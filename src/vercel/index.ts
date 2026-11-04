@@ -4,6 +4,7 @@ import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
 import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
+import { countSent } from "../node/count-sent.js";
 import { host as nodeHost } from "../node/index.js";
 import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
 
@@ -48,6 +49,7 @@ export const host: HostRuntime = {
 		return Number.isFinite(builtAt) ? withModifiedTime(files, builtAt) : files;
 	},
 	...(nodeHost.storage == null ? {} : { storage: nodeHost.storage }),
+	countSent,
 };
 
 /**
@@ -83,6 +85,12 @@ export function handler(
 	return async (incoming, outgoing) => {
 		try {
 			await listener(incoming, outgoing);
+			// Why wait: the access log writes its line when the response closes, after the listener returns.
+			if (!outgoing.closed) {
+				await new Promise((resolve) => {
+					outgoing.once("close", resolve);
+				});
+			}
 		} finally {
 			flushLogs();
 			// Why wait: a full pipe keeps the rest of a write in a queue, and a frozen function does not send it.

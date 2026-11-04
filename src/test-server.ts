@@ -4,6 +4,7 @@ import { readBuildManifest } from "./core/build-manifest.js";
 import { createServer, serverInternals } from "./core/create-server.js";
 import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
 import type { FrameworkRuntime, LogLevel, LogSink, Plugin, SetupInfo } from "./core/types.js";
+import { countSent } from "./node/count-sent.js";
 import { nodeFiles } from "./node/files.js";
 import { gzipStream } from "./node/gzip.js";
 
@@ -70,6 +71,7 @@ export async function productionSetup({
 		isDataRequest: framework.isDataRequest ?? (() => false),
 		contentTypes: framework.contentTypes ?? {},
 		gzip: gzipStream,
+		countSent,
 		logger,
 	};
 }

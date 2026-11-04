@@ -172,6 +172,7 @@ export type {
 	RequestLogger,
 	RequestStore,
 	ResponseHeaders,
+	SentBody,
 	ServerBindings,
 	SetupInfo,
 	StartedListener,

@@ -106,6 +106,17 @@ export type RequestStore = {
 	get: () => Context<AppServerEnv> | undefined;
 };
 
+/** What a host reports when a response ends or its client goes away. */
+export type SentBody = {
+	/**
+	 * The bytes of the body that the host gave to its socket, after
+	 * compression. When `aborted` is true, the client can have got fewer.
+	 */
+	bytes: number;
+	/** Whether the body stopped before its end, such as when the client went away or the body failed. */
+	aborted: boolean;
+};
+
 /** How a long-lived host stops. A serverless host has none. */
 export type Lifecycle = {
 	/**
@@ -133,6 +144,16 @@ export type HostRuntime = {
 	 * `streamingCompress` sends each response as it is.
 	 */
 	gzip?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	/**
+	 * Counts the body bytes that the host sends for the request of `bindings`
+	 * from now on. It calls `report` once: when the response ends, or when the
+	 * client goes away first. `report` can run before this returns. A throw
+	 * from `report` never reaches the host's event. It returns `false` when it
+	 * cannot count for that request, and then it never calls `report`.
+	 * Without it, the `accessLog` plugin counts the bytes in the pipeline,
+	 * with one more stream around each body.
+	 */
+	countSent?: (bindings: ListenerBindings, report: (sent: SentBody) => void) => boolean;
 	lifecycle?: Lifecycle;
 };
 
@@ -239,6 +260,8 @@ export type SetupInfo = {
 	contentTypes: Readonly<Record<string, string>>;
 	/** The host's gzip stream, when it has one. */
 	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	/** The host's count of the body bytes that it sends, when it has one. */
+	countSent: HostRuntime["countSent"];
 	logger: LogSink;
 } & (
 	| {
