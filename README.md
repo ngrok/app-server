@@ -626,7 +626,7 @@ createServer({
 });
 ```
 
-The default is `jsonSink()`: one JSON object per line on stdout.
+The default is `jsonSink()`: one JSON object per line on standard output (stdout). It writes the lines of one event-loop turn in one write, at the end of the turn. Each line still reaches stdout before the process exits, and before the vercel handler returns.
 
 In server code, read the request ID and a logger whose lines carry it. `requestContext()` works with each framework. It gives `undefined` outside a server request, such as in a prerender pass:
 

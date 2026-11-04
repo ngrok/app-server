@@ -18,6 +18,7 @@
     "app-server/descriptive-names": "error",
     "app-server/multiline-exports": "error",
     "app-server/no-boolean-positional-param": "error",
+    "app-server/no-context-var": "error",
     "app-server/prefer-function-declaration": "error",
     "app-server/prefer-null-check": "error",
     "app-server/prefer-url-parse": "error",

@@ -11,7 +11,7 @@ const stores = new Set<RequestStore>();
 export function requestContextValues(context: Context<AppServerEnv>): RequestContext {
 	return {
 		requestId: context.get("requestId"),
-		logger: context.var.logger,
+		logger: context.get("logger"),
 		cspNonce: context.get("cspNonce"),
 		clientAddress: context.get("clientAddress"),
 	};
