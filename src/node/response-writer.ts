@@ -200,9 +200,11 @@ async function writeResponse(
 ): Promise<void> {
 	const { body } = response;
 	let { status } = response;
+	const sendsBody = outgoing.req.method !== "HEAD";
 	if (body == null && response.headers.has(ALREADY_SENT_HEADER)) {
 		// Why: the dev server stage answered through Node's response, and gave its status and length.
-		edge.bytes = Number(response.headers.get("content-length") ?? 0);
+		// Node sends no body for HEAD.
+		edge.bytes = sendsBody ? Number(response.headers.get("content-length") ?? 0) : 0;
 		edge.close(status, false, sentHead(outgoing));
 		return;
 	}
@@ -236,7 +238,9 @@ async function writeResponse(
 		head = ["content-type", DEFAULT_CONTENT_TYPE, "content-length", String(ERROR_BODY.byteLength)];
 		outgoing.writeHead(status, head);
 		outgoing.end(ERROR_BODY);
-		edge.bytes += ERROR_BODY.byteLength;
+		if (sendsBody) {
+			edge.bytes += ERROR_BODY.byteLength;
+		}
 	}
 }
 

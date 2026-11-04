@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { headerList, listView, replaceResponse } from "./header-hook.js";
+import { headerIndex, headerList, listView, replaceResponse } from "./header-hook.js";
 import { errorAttributes } from "./log.js";
 import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse } from "./types.js";
 
@@ -14,24 +14,62 @@ function callReport(report: (sent: SentResponse) => void, sent: SentResponse): v
 	}
 }
 
-/** `head` with the changes that `copy` made to the headers of `served`. */
-function withChanges(head: readonly string[], served: Headers, copy: Headers): string[] {
+/** The `Set-Cookie` values of a flat header list, one on each line. */
+function cookiesOf(head: readonly string[]): string {
+	let cookies = "";
+	for (let index = 0; index < head.length; index += 2) {
+		if (head[index] === "set-cookie") {
+			cookies += `${head[index + 1] ?? ""}\n`;
+		}
+	}
+	return cookies;
+}
+
+/** The value of the lowercase `name` in a flat header list with one entry for each name, or `undefined`. */
+function valueOf(head: readonly string[], name: string): string | undefined {
+	const index = headerIndex(head, name);
+	return index === -1 ? undefined : head[index + 1];
+}
+
+/** Whether two flat header lists are the same. */
+function sameHead(first: readonly string[], second: readonly string[]): boolean {
+	if (first.length !== second.length) {
+		return false;
+	}
+	for (let index = 0; index < first.length; index += 1) {
+		if (first[index] !== second[index]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/** `head` with the changes from `base` to `live`, two lists of the headers of the response before the hooks. */
+function withChanges(
+	head: readonly string[],
+	base: readonly string[],
+	live: readonly string[],
+): string[] {
 	const changed = [...head];
 	const view = listView(changed);
-	for (const [name] of served) {
-		if (!copy.has(name)) {
+	for (let index = 0; index < base.length; index += 2) {
+		const name = base[index] ?? "";
+		if (headerIndex(live, name) === -1) {
 			view.delete(name);
 		}
 	}
-	const cookies = copy.getSetCookie();
-	if (cookies.join("\n") !== served.getSetCookie().join("\n")) {
+	if (cookiesOf(base) !== cookiesOf(live)) {
 		view.delete("set-cookie");
-		for (const cookie of cookies) {
-			view.append("set-cookie", cookie);
+		for (let index = 0; index < live.length; index += 2) {
+			if (live[index] === "set-cookie") {
+				view.append("set-cookie", live[index + 1] ?? "");
+			}
 		}
 	}
-	for (const [name, value] of copy) {
-		if (name !== "set-cookie" && served.get(name) !== value) {
+	for (let index = 0; index < live.length; index += 2) {
+		const name = live[index] ?? "";
+		const value = live[index + 1] ?? "";
+		if (name !== "set-cookie" && valueOf(base, name) !== value) {
 			view.set(name, value);
 		}
 	}
@@ -58,7 +96,7 @@ export class ResponseEdge {
 	/** The body bytes that the listener gave to its socket. */
 	public bytes = 0;
 	#logger: RequestLogger | undefined = undefined;
-	#response: Response | undefined = undefined;
+	#base: readonly string[] | undefined = undefined;
 	#headers: string[] | undefined = undefined;
 	readonly #reports: ((sent: SentResponse) => void)[] = [];
 	#sent: SentResponse | undefined = undefined;
@@ -77,27 +115,31 @@ export class ResponseEdge {
 		return true;
 	}
 
-	/** Keeps the headers of `response` after each header hook. The server calls it. */
-	public useHeaders(response: Response, headers: string[]): void {
-		this.#response = response;
+	/**
+	 * Keeps `headers`, the headers of the response after each header hook, and
+	 * `base`, its headers before the hooks. The server calls it.
+	 */
+	public useHeaders(base: readonly string[], headers: string[]): void {
+		this.#base = base;
 		this.#headers = headers;
 	}
 
 	/**
 	 * The headers to write for `response`: lowercase names and their values in
-	 * turn, as Node's `writeHead` takes them. For a copy of the response that
-	 * the server returned, they are the headers after the hooks with the
-	 * changes of the copy. Why a copy: Hono answers HEAD with a copy that has
-	 * no body, and a wrapper of the app's `fetch` can return one. It gives
-	 * `undefined` when the server kept no headers.
+	 * turn, as Node's `writeHead` takes them. They are the headers after the
+	 * hooks, with each change that the headers of `response` have from the
+	 * response that the hooks ran on. Why: Hono answers HEAD with a copy that
+	 * has no body, and a wrapper of the app's `fetch` can change the headers or
+	 * return a copy. It gives `undefined` when the server kept no headers.
 	 */
 	public headersFor(response: Response): string[] | undefined {
-		const served = this.#response;
+		const base = this.#base;
 		const headers = this.#headers;
-		if (served == null || headers == null || response === served) {
+		if (base == null || headers == null) {
 			return headers;
 		}
-		return withChanges(headers, served.headers, response.headers);
+		const live = headerList(response.headers);
+		return sameHead(base, live) ? headers : withChanges(headers, base, live);
 	}
 
 	/**
@@ -251,77 +293,38 @@ type Finish = {
 	/** The edge that the request claimed, if any. */
 	edge: ResponseEdge | undefined;
 	/**
-	 * The response for an error that a header hook throws, as `onError` gives
-	 * it. It runs while `context.res` is cleared.
+	 * The response for an error that a header hook throws, as the app's
+	 * `onError` gives it. It runs while `context.res` is cleared.
 	 */
-	fail: (error: unknown, context: Context<AppServerEnv>) => Response;
+	fail: (error: unknown, context: Context<AppServerEnv>) => Response | Promise<Response>;
 };
 
 /**
  * Puts the response that `fail` gives for `error` in place of the response of
  * the request, and cancels the body that no one reads now.
  */
-function useErrorResponse(
+async function useErrorResponse(
 	context: Context<AppServerEnv>,
 	fail: Finish["fail"],
 	error: unknown,
-): void {
+): Promise<void> {
 	const { body } = context.res;
 	// Why clear first: Hono's `c.text` copies each header of the response that the context holds.
 	context.res = undefined;
-	context.res = fail(error, context);
+	context.res = await fail(error, context);
 	void body?.cancel().catch(ignore);
 }
 
 /**
- * Finishes the response of the request, after each stage. The server calls it
- * once.
- *
- * - It runs `hooks` on the head, in reverse order, so the hook of an inner
- *   stage runs first and an outer stage has the last word. When a hook
- *   throws, `fail` gives the response that takes the place of this one, and
- *   the hooks of the outer stages run on it, as when a stage throws.
- * - It gives `reports` the response, so each one runs when it ends.
- *
- * With `edge`, the head stays a list that the listener writes, so the server
- * copies no response. Else the server makes one new response with the head
- * and a body that counts its bytes.
+ * Gives `reports` the response of the request. With no edge, it makes one new
+ * response with `headers`, when the hooks made them, and a body that counts
+ * its bytes.
  */
-export function finishResponse(
+function reportResponse(
 	context: Context<AppServerEnv>,
-	{ hooks, reports, edge, fail }: Finish,
+	reports: Finish["reports"],
+	headers: Headers | undefined,
 ): void {
-	let head = headerList(context.res.headers);
-	let view = listView(head);
-	for (let index = hooks.length - 1; index >= 0; index -= 1) {
-		try {
-			hooks[index]?.(view);
-		} catch (error) {
-			useErrorResponse(context, fail, error);
-			head = headerList(context.res.headers);
-			view = listView(head);
-		}
-	}
-	if (edge != null) {
-		edge.useHeaders(context.res, head);
-		for (const report of reports) {
-			edge.onSent(report);
-		}
-		return;
-	}
-	let headers: Headers | undefined;
-	if (hooks.length > 0) {
-		try {
-			headers = new Headers();
-			for (let index = 0; index < head.length; index += 2) {
-				headers.append(head[index] ?? "", head[index + 1] ?? "");
-			}
-		} catch (error) {
-			// Why: a hook set a value that `Headers` rejects. The error response keeps its own headers.
-			useErrorResponse(context, fail, error);
-			headers = undefined;
-		}
-	}
 	const response = context.res;
 	const [only] = reports;
 	const report =
@@ -344,4 +347,92 @@ export function finishResponse(
 		statusText: response.statusText,
 		headers: headers ?? response.headers,
 	});
+}
+
+/** Puts the error response for `error` in place, then runs the hooks from `from` on it. */
+async function finishAfterError(
+	context: Context<AppServerEnv>,
+	finish: Finish,
+	{ error, from }: { error: unknown; from: number },
+): Promise<void> {
+	await useErrorResponse(context, finish.fail, error);
+	await finishFrom(context, finish, from);
+}
+
+/** Puts the error response for `error` in place, and gives it to the reports. */
+async function reportErrorResponse(
+	context: Context<AppServerEnv>,
+	finish: Finish,
+	error: unknown,
+): Promise<void> {
+	await useErrorResponse(context, finish.fail, error);
+	reportResponse(context, finish.reports, undefined);
+}
+
+/** {@link finishResponse} from the hook at `from`, down to the first one. */
+function finishFrom(
+	context: Context<AppServerEnv>,
+	finish: Finish,
+	from: number,
+): Promise<void> | undefined {
+	const { hooks, reports, edge } = finish;
+	const base = headerList(context.res.headers);
+	// Why a copy with an edge: the edge compares the response that the listener gets with `base`.
+	const head = edge == null ? base : [...base];
+	const view = listView(head);
+	for (let index = from; index >= 0; index -= 1) {
+		try {
+			hooks[index]?.(view);
+		} catch (error) {
+			return finishAfterError(context, finish, { error, from: index - 1 });
+		}
+	}
+	if (edge != null) {
+		edge.useHeaders(base, head);
+		for (const report of reports) {
+			edge.onSent(report);
+		}
+		return undefined;
+	}
+	if (hooks.length === 0) {
+		reportResponse(context, reports, undefined);
+		return undefined;
+	}
+	const headers = new Headers();
+	try {
+		for (let index = 0; index < head.length; index += 2) {
+			headers.append(head[index] ?? "", head[index + 1] ?? "");
+		}
+	} catch (error) {
+		// Why: a hook set a value that `Headers` rejects. The error response keeps its own headers.
+		return reportErrorResponse(context, finish, error);
+	}
+	reportResponse(context, reports, headers);
+	return undefined;
+}
+
+/**
+ * Finishes the response of the request, after each stage. The server calls it
+ * once, in the request's `requestContext()`.
+ *
+ * - It runs `hooks` on the head, in reverse order, so the hook of an inner
+ *   stage runs first and an outer stage has the last word. When a hook
+ *   throws, `fail` gives the response that takes the place of this one, and
+ *   the hooks of the outer stages run on it, as when a stage throws.
+ * - It gives `reports` the response, so each one runs when it ends.
+ *
+ * With `edge`, the head stays a list that the listener writes, so the server
+ * copies no response. Else the server makes one new response with the head
+ * and a body that counts its bytes. It gives a promise only when a hook
+ * throws, so a response with no error waits for no microtask.
+ *
+ * @example
+ * await next();
+ * await finishResponse(context, { hooks, reports, edge, fail: (error, c) => onError(error, c) });
+ */
+export function finishResponse(
+	context: Context<AppServerEnv>,
+	finish: Finish,
+): Promise<void> | undefined {
+	return finishFrom(context, finish, finish.hooks.length - 1);
 }

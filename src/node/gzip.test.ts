@@ -122,6 +122,33 @@ describe("gzipStream", () => {
 		expect(after.equals(before)).toBe(true);
 	});
 
+	it("sends the right bytes after a client leaves as zlib gives its stream back to the pool", async () => {
+		const gzip = await newGzipStream();
+		const alone = await bytes(gzip(queued(page)));
+		const reader = gzip(queued(page)).getReader();
+		// Why the prototype: the pool resets each stream that it takes back, through zlib's `reset`.
+		let zlib: { reset: () => void } = Object.getPrototypeOf(createDeflateRaw());
+		while (!Object.hasOwn(zlib, "reset")) {
+			zlib = Object.getPrototypeOf(zlib);
+		}
+		const { reset } = zlib;
+		const spy = vi.spyOn(zlib, "reset").mockImplementationOnce(function resetThenCancel(
+			this: unknown,
+		) {
+			reset.call(this);
+			// Why a microtask: it runs after the stream is in the pool, and before the read ends.
+			queueMicrotask(() => {
+				void reader.cancel();
+			});
+		});
+		await reader.read().catch(() => undefined);
+		spy.mockRestore();
+
+		const after = await bytes(gzip(queued(page)));
+
+		expect(after.equals(alone)).toBe(true);
+	});
+
 	it("sends the same bytes for a body after a longer body, whatever byte follows its end there", async () => {
 		// Why these bytes: the body ends with "XYZ" and holds "XYZW" before it, and no other bytes
 		// match. zlib hashes 4 bytes at the last 3, so it reads the byte after the end. A stream that

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
+import { withHeaderHook } from "../core/header-hook.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { securityHeaders } from "../core/plugins/security-headers.js";
@@ -69,6 +70,22 @@ describe("handler", () => {
 
 		expect(response.headers.has("X-Request-Id")).toBe(true);
 		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
+	it("runs each header hook in the request's context", async () => {
+		const echoesId: Plugin = {
+			name: "echoes-id",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+				}),
+		};
+		const url = await serve([requestId(), echoesId]);
+
+		const response = await fetch(`${url}/whoami`, { headers: { "X-Request-Id": "abc-123" } });
+		await response.text();
+
+		expect(response.headers.get("X-Context-Id")).toBe("abc-123");
 	});
 
 	it("takes the scheme and the client address from the headers that Vercel sets", async () => {

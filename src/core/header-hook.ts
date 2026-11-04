@@ -98,7 +98,12 @@ export async function withHeaderHook(
 	await next();
 }
 
-/** The index of the lowercase `name` in a flat `[name, value, …]` header list, or -1. */
+/**
+ * The index of the lowercase `name` in a flat `[name, value, …]` header list, or -1.
+ *
+ * @example
+ * headerIndex(["content-type", "text/html", "vary", "Accept"], "vary"); // => 2
+ */
 export function headerIndex(head: readonly string[], name: string): number {
 	for (let index = 0; index < head.length; index += 2) {
 		if (head[index] === name) {
@@ -108,7 +113,12 @@ export function headerIndex(head: readonly string[], name: string): number {
 	return -1;
 }
 
-/** The flat `[name, value, …]` list of `headers`, with lowercase names. */
+/**
+ * The flat `[name, value, …]` list of `headers`, with lowercase names.
+ *
+ * @example
+ * headerList(new Headers({ "Content-Type": "text/html" })); // => ["content-type", "text/html"]
+ */
 export function headerList(headers: Headers): string[] {
 	const head: string[] = [];
 	for (const [name, value] of headers) {

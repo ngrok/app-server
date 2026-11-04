@@ -317,6 +317,26 @@ describe("createServer", () => {
 		expect(lines[1]?.attributes).toMatchObject({ "http.status_code": 500 });
 	});
 
+	it("answers a header hook that throws with the app's onError, as a stage that throws", async () => {
+		const throwsInHook: Plugin = {
+			name: "throws-in-hook",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, () => {
+					throw new Error("hook failed");
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [throwsInHook],
+			routes: (app) => {
+				app.onError(async (error, context) => context.text(`custom: ${error.message}`, 503));
+			},
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([503, "custom: hook failed"]);
+	});
+
 	it("starts the tcp listener when a caller gives no start options", async () => {
 		const started = await tcp({ port: 0, host: "127.0.0.1" }).start(async () => new Response("ok"));
 		onTestFinished(async () => started.stop({ deadlineMs: 0 }));

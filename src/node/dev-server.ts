@@ -168,12 +168,15 @@ export function devServerStage(
 			// not run them again on the response below.
 			hooks.length = 0;
 			// Why a new response per request: the later stages set headers on it. The headers of
-			// `RESPONSE_ALREADY_SENT` tell `@hono/node-server` to send nothing. The status and length
-			// are the middleware's, for the access log.
+			// `RESPONSE_ALREADY_SENT` tell `@hono/node-server` to send nothing. The status and the
+			// headers are the ones that the middleware sent, for the access log.
 			const headers = new Headers(RESPONSE_ALREADY_SENT.headers);
-			const length = outgoing.getHeader("Content-Length");
-			if (length != null) {
-				headers.set("Content-Length", String(length));
+			for (const [name, value] of Object.entries(outgoing.getHeaders())) {
+				for (const each of Array.isArray(value) ? value : [value]) {
+					if (each != null) {
+						headers.append(name, String(each));
+					}
+				}
 			}
 			return new Response(null, { status: outgoing.statusCode, headers });
 		}

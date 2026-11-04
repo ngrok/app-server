@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { HTTPResponseError } from "hono/types";
+import type { ErrorHandler, HTTPResponseError } from "hono/types";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
@@ -54,11 +54,6 @@ function answerError(error: Error | HTTPResponseError, context: Context<AppServe
 	}
 	context.get("logger").error("unhandled error", errorAttributes(error));
 	return context.text("Internal Server Error", 500);
-}
-
-/** {@link answerError} for any thrown value. */
-function answerThrown(thrown: unknown, context: Context<AppServerEnv>): Response {
-	return answerError(asError(thrown), context);
 }
 
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
@@ -348,6 +343,16 @@ export function createServer({
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
 	const app = new Hono<AppServerEnv>();
+	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
+	let onError: ErrorHandler<AppServerEnv> = answerError;
+	const setOnError = app.onError.bind(app);
+	app.onError = (handler) => {
+		onError = handler;
+		return setOnError(handler);
+	};
+	app.onError(answerError);
+	const answerThrown = async (thrown: unknown, context: Context<AppServerEnv>) =>
+		onError(asError(thrown), context);
 	let requestStore: RequestStore | undefined;
 	if (trustForwardedProto) {
 		// Why wrap `fetch`: every plugin and route, not only the framework, must see the trusted scheme.
@@ -375,8 +380,14 @@ export function createServer({
 		// Why claim before the stages: a request that the app sends through itself again with `c.env`
 		// gets the same edge, and must change its own response.
 		const edge = given?.claim(requestLog) === true ? given : undefined;
-		await withRequestContext(requestStore, context, next);
-		finishResponse(context, { hooks, reports, edge, fail: answerThrown });
+		// Why finish in the request context: a header hook can read `requestContext()`.
+		await withRequestContext(requestStore, context, async () => {
+			await next();
+			const finishing = finishResponse(context, { hooks, reports, edge, fail: answerThrown });
+			if (finishing != null) {
+				await finishing;
+			}
+		});
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
@@ -404,7 +415,6 @@ export function createServer({
 			throw asError(error);
 		}
 	});
-	app.onError(answerError);
 
 	let prepared: Promise<void> | undefined;
 	let running: RunningServer | undefined;

@@ -26,8 +26,9 @@ middleware: async (c, next) =>
 ```
 
 - The hook of an inner stage runs first, so an outer stage has the last word.
-- The static stages and `streamingCompress()` also run the hooks on a view of the headers, to read the `Cache-Control` that leaves. So a hook runs two or three times for a response with gzip or a compressed copy, rendered pages included. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A `policy` of `contentSecurityPolicy()` and the `paths` of `buildId()` run in a hook too.
-- A hook that throws gives a 500, as a stage that throws does.
+- The static stages and `streamingCompress()` also run the hooks on a view of the headers, to read the `Cache-Control`, and for `streamingCompress()` the `Content-Encoding` and `Content-Range`, that leave. So a hook runs two or three times for a response with gzip or a compressed copy, rendered pages included. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A `policy` of `contentSecurityPolicy()` and the `paths` of `buildId()` run in a hook too.
+- A hook runs in the request's `requestContext()`. A hook that throws gets the answer of the app's `onError`, as a stage that throws does.
+- On Node.js and Vercel, a wrapper of the app's `fetch` gets the response before the hooks. A header that it sets or deletes goes out, but it does not see the headers that the hooks set.
 - `accessLog({ attributes })` gets what went out as its second argument: the status, the headers after the hooks, the bytes, and whether the body stopped early. Read a response header there, such as `attributes: (c, sent) => ({ cache: sent.headers.get("Cache-Control") })`, not from `c.res`, which can lack the changes of the hooks.
 
 For a listener adapter: a listener that writes each response itself can give each request an `edge` binding, a new `ResponseEdge`. The server keeps the headers after the hooks in the edge, and the access log takes its line from the report of the listener. See the README.

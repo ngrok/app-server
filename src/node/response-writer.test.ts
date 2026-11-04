@@ -447,6 +447,46 @@ describe("the node response writer", () => {
 		});
 	});
 
+	it("sends the headers that a wrapper of the app's fetch changes on the response that it returns", async () => {
+		const { url } = await serving({
+			routes: (app) => {
+				const dispatch = app.fetch;
+				app.fetch = async (request, ...rest) => {
+					const response = await dispatch(request, ...rest);
+					response.headers.set("Cache-Control", "no-store");
+					response.headers.append("Set-Cookie", "session=1");
+					return response;
+				};
+			},
+		});
+
+		const response = await fetch(url);
+		await response.text();
+
+		expect([
+			response.headers.get("Cache-Control"),
+			response.headers.getSetCookie(),
+			response.headers.has("X-Request-Id"),
+		]).toStrictEqual(["no-store", ["session=1"], true]);
+	});
+
+	it("logs no body bytes for the 500 of a HEAD request, because Node sends no body", async () => {
+		const { url, linesOf } = await serving({
+			plugins: [accessLog(), setsHeader("X-Hooked", "a\nb")],
+		});
+
+		const response = await fetch(url, { method: "HEAD" });
+
+		expect(response.status).toBe(500);
+		await vi.waitFor(() => {
+			expect(linesOf("request")).toHaveLength(1);
+		});
+		expect(linesOf("request")[0]?.attributes).toMatchObject({
+			"http.status_code": 500,
+			"network.bytes_written": 0,
+		});
+	});
+
 	it("logs a header hook that throws once on a page that it would gzip", async () => {
 		const { url, linesOf } = await serving({
 			plugins: [requestId(), accessLog(), streamingCompress(), throwsInHook],

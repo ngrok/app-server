@@ -175,11 +175,15 @@ async function write(stream: Gzip, chunk: Uint8Array): Promise<void> {
  * The gzip member of a body of one chunk, from a pooled raw deflate stream,
  * with the header and the trailer written here, so the body needs one zlib
  * call. `use` gets the stream while zlib compresses, so a cancel can destroy
- * it. Why only a body of one chunk: a reset keeps the old window, and a
- * second write reads its bytes as history. The output of one write is the
+ * it, and gets `undefined` before the stream goes back to the pool. Why only
+ * a body of one chunk: a reset keeps the old window, and a second write reads
+ * its bytes as history. The output of one write is the
  * same as from a new stream, so it does not depend on an earlier body.
  */
-async function gzipOnce(value: Uint8Array, use: (deflater: Deflater) => void): Promise<Buffer> {
+async function gzipOnce(
+	value: Uint8Array,
+	use: (deflater: Deflater | undefined) => void,
+): Promise<Buffer> {
 	const deflater = takeDeflater(value.byteLength);
 	use(deflater);
 	const parts: Buffer[] = [HEADER];
@@ -206,6 +210,8 @@ async function gzipOnce(value: Uint8Array, use: (deflater: Deflater) => void): P
 		throw error;
 	}
 	deflater.size = Math.max(deflater.size, value.byteLength);
+	// Why first: a cancel after this must not destroy a stream that the pool gives to another body.
+	use(undefined);
 	release(deflater);
 	const trailer = Buffer.allocUnsafe(8);
 	trailer.writeUInt32LE(crc32(value), 0);
@@ -303,7 +309,6 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 							const member = await gzipOnce(chunk.value, (deflater) => {
 								pooled = deflater;
 							});
-							pooled = undefined;
 							stream.busy = false;
 							controller.enqueue(member);
 							controller.close();

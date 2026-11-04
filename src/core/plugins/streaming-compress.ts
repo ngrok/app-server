@@ -171,21 +171,28 @@ export function streamingCompress(): Plugin {
 			}
 			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
 			// not gzip then needs no copy for it.
-			let varies = false;
+			let gzipping = false;
 			await withHeaderHook(context, next, (headers) => {
-				const vary = varies ? withVary(headers.get("Vary"), "Accept-Encoding") : undefined;
+				// Why: the bytes of a type that the plugin never gzips, such as an image, do not vary by
+				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
+				const type = headers.get("Content-Type");
+				const vary =
+					type == null || isCompressible(type)
+						? withVary(headers.get("Vary"), "Accept-Encoding")
+						: undefined;
 				if (vary != null) {
 					headers.set("Vary", vary);
+				}
+				// Why: the hook of an inner stage can set the length of the body before gzip.
+				if (gzipping) {
+					headers.delete("Content-Length");
 				}
 			});
 			const response = context.res;
 			const type = response.headers.get("Content-Type");
-			// Why: the bytes of a type that the plugin never gzips, such as an image, do not vary by
-			// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
 			if (type != null && !isCompressible(type)) {
 				return;
 			}
-			varies = true;
 			const length = response.headers.get("Content-Length");
 			const { body } = response;
 			if (
@@ -211,15 +218,17 @@ export function streamingCompress(): Plugin {
 				compress = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
-			// Why the hooks: a header hook of a later stage can set `no-transform`, and it runs only where
+			// Why the hooks: a header hook of a later stage can set these headers, and it runs only where
 			// the response leaves.
-			if (
-				compress &&
-				forbidsTransform(hookedHeaders(context, response.headers).get("Cache-Control"))
-			) {
-				compress = false;
+			if (compress) {
+				const hooked = hookedHeaders(context, response.headers);
+				compress =
+					!hooked.has("Content-Encoding") &&
+					!hooked.has("Content-Range") &&
+					!forbidsTransform(hooked.get("Cache-Control"));
 			}
 			if (compress) {
+				gzipping = true;
 				replaceResponse(context, gzipped(response, gzip(source), { hasLength: length != null }));
 			} else if (source !== body) {
 				replaceResponse(context, new Response(source, response));
