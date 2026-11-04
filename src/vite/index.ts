@@ -18,7 +18,7 @@ import type { BuildManifest } from "../core/build-manifest.js";
 import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
-import { inlineScriptHashes } from "../node/script-hashes.js";
+import { scriptHashesOf } from "../node/script-hashes.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
@@ -549,22 +549,6 @@ function withPeers(start: { name: string; from: string }[]): Set<string> {
 		}
 	}
 	return names;
-}
-
-/** The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path. */
-function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] {
-	const hashes: BuildManifest["scriptHashes"] = {};
-	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
-		// Why `contentType`: the static stages send each file of an HTML type, such as `.htm`, as a document.
-		if (entry.isFile() && contentType(entry.name, {}).startsWith("text/html")) {
-			const path = join(entry.parentPath, entry.name);
-			const urlPath = `/${relative(clientDirectory, path).split(sep).join("/")}`;
-			hashes[urlPath] = inlineScriptHashes(readFileSync(path, "utf8"));
-		}
-	}
-	return Object.fromEntries(
-		Object.entries(hashes).toSorted(([first], [second]) => first.localeCompare(second)),
-	);
 }
 
 /** Writes `.app-server.json` into the client build. */

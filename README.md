@@ -641,22 +641,15 @@ createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: true } })
 - In development, React Router gives only the twins in its `prerender` config, as the build does. TanStack Start finds its prerendered pages only during the build, so in development each twin route that answers markdown counts.
 - A plugin after `prerendered` does not see a twin, in development or in production, because a twin is a prerendered file. Put an auth check for a twin in `beforeStatic` or in the twin's route.
 
-The default twin is the path with no trailing slash plus `.md`, and `/index.md` for `/`. A different mapping goes in `twinOf`. Its path follows the same rules as a request path:
+The default twin is the path with no trailing slash plus `.md`, and `/index.md` for `/`. A request that `rewrite` changes gets no twin. `rewrite` sends that request to another file or to the framework, so it gets the same answer as a browser. For example, when `rewrite` sends `/?q=h100` to the framework, `/?q=h100` gets no twin, and `/gpu/h100` gets `/gpu/h100.md`.
+
+A different mapping goes in `twinOf`. Its path follows the same rules as a request path, and it can give a twin to a request that `rewrite` changes:
 
 ```ts
 prerendered({ markdownTwins: { twinOf: (path) => (path === "/" ? "/llms.md" : `${path}.md`) } });
 ```
 
-`twinOf` also gets the request's Hono context, the same as `rewrite`. If it gives `undefined`, the request gets no twin, `rewrite` runs, and the answer gets no `Vary: Accept` and no `Link`. For example, when the framework renders a page for each query, keep a request with a query off the prerendered twin:
-
-```ts
-prerendered({
-	markdownTwins: {
-		twinOf: (path, c) =>
-			new URL(c.req.url).search === "" ? `${path === "/" ? "/index" : path}.md` : undefined,
-	},
-});
-```
+`twinOf` also gets the request's Hono context, the same as `rewrite`. If it gives `undefined`, the request gets no twin, and the answer gets no `Vary: Accept` and no `Link`.
 
 The framework makes the twins. In React Router, one splat resource route can answer every twin. Prerender each twin URL, and point `twinOf` at the route. `markdownFor` stands for the app's own lookup:
 
@@ -683,7 +676,7 @@ createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: { twinOf 
 
 The same route answers the twins in development.
 
-For other negotiation, `rewrite` maps a request path to the file to serve. It does not run for a request that gets the twin. To keep a request off the twin, give `undefined` from `twinOf`. When its answer depends on a request header, add a `Vary` for that header in a plugin.
+For other negotiation, `rewrite` maps a request path to the file to serve. A request that gets the twin gets the twin's file. When its answer depends on a request header, add a `Vary` for that header in a plugin.
 
 ### A rendered page
 
@@ -834,6 +827,33 @@ export async function loader({ request }: Route.LoaderArgs) {
 ```
 
 For other long work, stop on `shutdownSignal()`.
+
+## Testing
+
+`@ngrok/app-server/testing` runs an app in a test, with no build and no listener.
+
+`createTestServer({ app, files, framework })` starts the app in production mode over a client build of `files`. It records the hashes of the inline scripts of each HTML file, as the build does. `framework` answers each request that no stage answers. The default is a 404. Give each test server a new app, because an app runs the `setup` of its plugins one time. `close()` cancels each body that the test did not read, runs each plugin's `onShutdown`, and removes the files.
+
+```ts
+import { createTestServer } from "@ngrok/app-server/testing";
+
+const server = await createTestServer({
+	app: createServer({ plugins: defaultPlugins({ contentSecurityPolicy: { policy } }) }),
+	files: { "providers/index.html": "<!doctype html><script>…</script>" },
+	framework: async () => new Response("rendered", { headers: { "Content-Type": "text/html" } }),
+});
+const response = await server.request("/providers");
+response.headers.get("Content-Security-Policy"); // => "script-src 'self' 'sha256-…'"
+await server.close();
+```
+
+`withRequestContext(values, work)` runs `work` as in a server request, so `requestContext()` and `cspNonce()` give `values`. Use it to test a render with no mock. With no `logger`, the log lines go nowhere.
+
+```tsx
+import { withRequestContext } from "@ngrok/app-server/testing";
+
+const html = await withRequestContext({ cspNonce: "test-nonce" }, () => renderToString(<App />));
+```
 
 ## Adapters
 

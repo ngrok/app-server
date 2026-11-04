@@ -29,6 +29,7 @@ export default defineConfig({
 		"react-router-vite": "./src/react-router/vite.ts",
 		"tanstack-start": "./src/tanstack-start/index.ts",
 		"tanstack-start-vite": "./src/tanstack-start/vite.ts",
+		testing: "./src/testing/index.ts",
 		vercel: "./src/vercel/index.ts",
 		"vercel-vite": "./src/vercel/vite.ts",
 		vite: "./src/vite/index.ts",

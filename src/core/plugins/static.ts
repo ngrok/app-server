@@ -68,6 +68,7 @@ export type PrerenderedOptions = {
 	 * returned path follows the rules of a request path: one URL for each
 	 * file, no dotfiles, and nothing outside the client build. When the
 	 * answer depends on a request header, add a `Vary` for it in a plugin.
+	 * With `markdownTwins: true`, a request that `rewrite` changes gets no twin.
 	 */
 	rewrite?: (path: string, context: Context<AppServerEnv>) => string;
 	/**
@@ -78,7 +79,7 @@ export type PrerenderedOptions = {
 	 * `rewrite`. It returns `undefined` for a request with no twin.
 	 *
 	 * - A request that prefers markdown gets the twin, with the twin's
-	 *   captured headers. `rewrite` does not run for it.
+	 *   captured headers.
 	 * - Each answer for a path with a twin gets `Vary: Accept`: the twin, the
 	 *   prerendered HTML, and the framework's answer. The server adds
 	 *   `Accept` to the `Vary` header and keeps the values in it.
@@ -96,8 +97,9 @@ export type PrerenderedOptions = {
 	 *   a prerendered file.
 	 *
 	 * `true` uses the default `twinOf`: the path with no trailing slash plus
-	 * `.md`, and `/index.md` for `/`. The returned path follows the rules of a
-	 * request path.
+	 * `.md`, and `/index.md` for `/`. A request that `rewrite` changes gets no
+	 * twin, so it gets the same page as a browser. The returned path follows
+	 * the rules of a request path.
 	 *
 	 * @example
 	 * prerendered({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
@@ -132,21 +134,36 @@ export type PrerenderedOptions = {
 /** Maps a request to the URL path of its markdown twin, or `undefined` when it has none. */
 type TwinOf = (path: string, context: Context<AppServerEnv>) => string | undefined;
 
+/**
+ * The twin of a request, from its path and the path that `rewrite` gives for
+ * it, or `undefined` when it has none.
+ */
+type FindTwinPath = (
+	path: string,
+	rewritten: string,
+	context: Context<AppServerEnv>,
+) => string | undefined;
+
 const REVALIDATE = "public, max-age=0, must-revalidate";
 const ONE_HOUR = "public, max-age=3600, stale-while-revalidate=86400";
 
-/** The default markdown twin of a page: `/docs/button.md` for `/docs/button`, and `/index.md` for `/`. */
-function defaultTwinOf(path: string): string {
-	return `${trimTrailingSlashes(path) || "/index"}.md`;
+/**
+ * The default markdown twin of a page: `/docs/button.md` for `/docs/button`,
+ * and `/index.md` for `/`. Why none for a rewritten request: `rewrite` sends
+ * it to another file or to the framework, so the page's twin does not match
+ * its answer.
+ */
+function defaultTwinOf(path: string, rewritten: string): string | undefined {
+	return rewritten === path ? `${trimTrailingSlashes(path) || "/index"}.md` : undefined;
 }
 
 /** The file of the markdown twin of the request, or `undefined` when the page has none. */
 async function findTwin(
 	files: StaticFiles,
 	context: Context<AppServerEnv>,
-	twinOf: TwinOf | undefined,
+	{ twinOf, rewritten }: { twinOf: FindTwinPath | undefined; rewritten: string },
 ): Promise<{ path: string; file: StaticFile } | undefined> {
-	const twinPath = twinOf?.(context.req.path, context);
+	const twinPath = twinOf?.(context.req.path, rewritten, context);
 	const file = twinPath == null ? undefined : await findStaticFile(files, twinPath);
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
@@ -187,8 +204,8 @@ function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
  * request on for the HTML.
  */
 function developmentTwins(
-	twinOf: TwinOf,
-	skip: PrerenderedOptions["skip"],
+	twinOf: FindTwinPath,
+	{ rewrite, skip }: Pick<PrerenderedOptions, "rewrite" | "skip">,
 	prerenderedPaths: ReadonlySet<string> | undefined,
 ): MiddlewareHandler<AppServerEnv> {
 	return async (context, next) => {
@@ -197,7 +214,7 @@ function developmentTwins(
 			(method === "GET" || method === "HEAD") &&
 			skip?.(path) !== true &&
 			prefersMarkdown(context.req.raw)
-				? twinOf(path, context)
+				? twinOf(path, rewrite?.(path, context) ?? path, context)
 				: undefined;
 		// Why both checks: production has no twin that the build does not prerender, or at a path that fails `isFilePath`.
 		if (
@@ -230,15 +247,18 @@ function developmentTwins(
 	};
 }
 
-/** The `twinOf` function that the `markdownTwins` option selects, or `undefined` when it is off. */
-function twinOfOption(markdownTwins: PrerenderedOptions["markdownTwins"]): TwinOf | undefined {
+/** The twin lookup that the `markdownTwins` option selects, or `undefined` when it is off. */
+function twinOfOption(
+	markdownTwins: PrerenderedOptions["markdownTwins"],
+): FindTwinPath | undefined {
 	if (markdownTwins === true) {
 		return defaultTwinOf;
 	}
 	if (markdownTwins == null || markdownTwins === false) {
 		return undefined;
 	}
-	return markdownTwins.twinOf;
+	const { twinOf } = markdownTwins;
+	return (path, _rewritten, context) => twinOf(path, context);
 }
 
 /**
@@ -269,7 +289,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				stage =
 					twinOf == null
 						? undefined
-						: developmentTwins(twinOf, options.skip, paths == null ? undefined : new Set(paths));
+						: developmentTwins(twinOf, options, paths == null ? undefined : new Set(paths));
 				return;
 			}
 			const { files, contentTypes, capturedHeaders } = info;
@@ -319,10 +339,10 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				if ((method !== "GET" && method !== "HEAD") || options.skip?.(context.req.path) === true) {
 					return next();
 				}
-				const twin = await findTwin(files, context, twinOf);
+				const rewritten = options.rewrite?.(context.req.path, context) ?? context.req.path;
+				const twin = await findTwin(files, context, { twinOf, rewritten });
 				const preferred = twin != null && prefersMarkdown(context.req.raw) ? twin : undefined;
-				const path =
-					preferred?.path ?? options.rewrite?.(context.req.path, context) ?? context.req.path;
+				const path = preferred?.path ?? rewritten;
 				const file = preferred?.file ?? (await findStaticFile(files, path));
 				if (file == null) {
 					await next();

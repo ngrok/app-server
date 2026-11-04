@@ -759,20 +759,29 @@ describe("prerendered markdownTwins", () => {
 		expect(negotiation(query)).toStrictEqual({ vary: null, link: null });
 	});
 
-	it("runs rewrite only when the request does not get the twin", async () => {
-		const seen: string[] = [];
+	it("gives no default twin to a request that rewrite changes", async () => {
 		const { request } = await staticServer({
 			markdownTwins: true,
-			rewrite: (path) => {
-				seen.push(path);
-				return path;
-			},
+			rewrite: (path, context) => (new URL(context.req.url).search === "" ? path : "/search"),
 		});
 
-		await request("/components/button", markdown);
-		await request("/components/button", browser);
+		const twin = await request("/components/button", markdown);
+		const query = await request("/components/button?q=filter", markdown);
 
-		expect(seen).toStrictEqual(["/components/button"]);
+		await expect(twin.text()).resolves.toBe("# Button");
+		await expect(query.text()).resolves.toBe("rendered");
+		expect(negotiation(query)).toStrictEqual({ vary: null, link: null });
+	});
+
+	it("gives the twin from twinOf to a request that rewrite changes", async () => {
+		const { request } = await staticServer({
+			markdownTwins: { twinOf: (path) => `${path}.md` },
+			rewrite: () => "/search",
+		});
+
+		const response = await request("/components/button", markdown);
+
+		await expect(response.text()).resolves.toBe("# Button");
 	});
 
 	it("is off by default", async () => {
@@ -935,6 +944,19 @@ describe("prerendered markdownTwins in development", () => {
 		await expect((await request("/docs/button", markdown)).text()).resolves.toBe(
 			"# /docs/button.md",
 		);
+		await expect((await request("/docs/button?q=filter", markdown)).text()).resolves.toBe(
+			"rendered",
+		);
+		expect(seen).toStrictEqual(["GET /docs/button.md", "GET /docs/button"]);
+	});
+
+	it("asks for no default twin for a request that rewrite changes", async () => {
+		const { request, seen } = await devServer({
+			markdownTwins: true,
+			rewrite: (path, context) => (new URL(context.req.url).search === "" ? path : "/search"),
+		});
+
+		await request("/docs/button", markdown);
 		await expect((await request("/docs/button?q=filter", markdown)).text()).resolves.toBe(
 			"rendered",
 		);

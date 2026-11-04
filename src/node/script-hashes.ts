@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+import type { BuildManifest } from "../core/build-manifest.js";
 import { contentType } from "../core/static-files.js";
 
 /**
@@ -69,4 +70,25 @@ export function publicScriptHashes(directory: string, path: string): string[] | 
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * The {@link inlineScriptHashes} of each HTML file in the client build, by its URL path.
+ *
+ * @example
+ * scriptHashesOf("/app/build/client"); // => { "/about/index.html": ["…base64…"] }
+ */
+export function scriptHashesOf(clientDirectory: string): BuildManifest["scriptHashes"] {
+	const hashes: BuildManifest["scriptHashes"] = {};
+	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
+		// Why `contentType`: the static stages send each file of an HTML type, such as `.htm`, as a document.
+		if (entry.isFile() && contentType(entry.name, {}).startsWith("text/html")) {
+			const path = join(entry.parentPath, entry.name);
+			const urlPath = `/${relative(clientDirectory, path).split(sep).join("/")}`;
+			hashes[urlPath] = inlineScriptHashes(readFileSync(path, "utf8"));
+		}
+	}
+	return Object.fromEntries(
+		Object.entries(hashes).toSorted(([first], [second]) => first.localeCompare(second)),
+	);
 }
