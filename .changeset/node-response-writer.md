@@ -28,6 +28,6 @@ middleware: async (c, next) =>
 - The hook of an inner stage runs first, so an outer stage has the last word.
 - The static stages and `streamingCompress()` also run the hooks on a view of the headers, to read the `Cache-Control` that leaves. So a hook runs two or three times for a response with gzip or a compressed copy, rendered pages included. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A `policy` of `contentSecurityPolicy()` and the `paths` of `buildId()` run in a hook too.
 - A hook that throws gives a 500, as a stage that throws does.
-- `c.res` in `accessLog({ attributes })` does not have the changes of the header hooks on Node.js and Vercel, and it has no headers on Bun.
+- `accessLog({ attributes })` gets what went out as its second argument: the status, the headers after the hooks, the bytes, and whether the body stopped early. Read a response header there, such as `attributes: (c, sent) => ({ cache: sent.headers.get("Cache-Control") })`, not from `c.res`, which can lack the changes of the hooks.
 
 For a listener adapter: a listener that writes each response itself can give each request an `edge` binding, a new `ResponseEdge`. The server keeps the headers after the hooks in the edge, and the access log takes its line from the report of the listener. See the README.

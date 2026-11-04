@@ -187,6 +187,15 @@ async function check(runtime: string): Promise<void> {
 			),
 			"the access log has the static hit",
 		);
+		assert.ok(
+			lines.some(
+				(line) =>
+					line.message === "request" &&
+					line["http.url"] === "/unknown" &&
+					line["sent.request_id"] === "abc-123",
+			),
+			"the access log's `attributes` gets the headers that went out",
+		);
 
 		assert.equal(await (await fetch(new URL("/linger", base))).text(), "lingering");
 

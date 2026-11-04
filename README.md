@@ -712,12 +712,17 @@ export async function loader({ context }: Route.LoaderArgs) {
 
 A request with a valid W3C `traceparent` header logs `trace_id` and `span_id` on each line. `requestId({ datadogTraceIds: true })` also logs `dd.trace_id` and `dd.span_id`, the lower 64 bits in decimal, so Datadog connects each line to its trace.
 
-`accessLog({ attributes })` adds the app's own attributes to each request line. Read the request and the context there, not `c.res`: on Node.js and Vercel it does not have the changes of the header hooks, and on Bun it has no headers, because Bun takes them when it sends the response. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
+`accessLog({ attributes })` adds the app's own attributes to each request line. The callback runs when the line goes out. It gets the context and what went out: `status`, `headers`, `bytes`, and `aborted`. Read a response header from `sent.headers`, not from `c.res`: `sent.headers` has the headers that went out on each runtime, after the header hooks, and `c.res` can lack them. On Node.js and Vercel, `sent.headers` also has the headers that the listener adds, such as `Content-Length`. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
 
 ```ts
 defaultPlugins({
 	requestId: { datadogTraceIds: true },
-	accessLog: { attributes: (c) => ({ "usr.id": c.get("userId") }) },
+	accessLog: {
+		attributes: (c, sent) => ({
+			"usr.id": c.get("userId"),
+			"http.response.cache_control": sent.headers.get("Cache-Control"),
+		}),
+	},
 });
 ```
 
@@ -797,7 +802,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output after the build, such as `.vercel/output`.
 - `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
-- `ResponseEdge` (from `@ngrok/app-server`): for a listener that writes each response itself. The listener makes one for each request and gives it as the `edge` binding. The server runs the header hooks on a list of the headers and keeps the list in the edge, so it copies no response for them. The listener writes `edge.headersFor(response)` in place of the headers of the response, adds each body byte to `edge.bytes`, gives an error that stops the response to `edge.fail`, and calls `edge.close(status, aborted)` once. The access log takes its line from that report. Only the first request that gets an edge uses it: a request that the app sends through itself again with `c.env` changes its own response. The node host's listener on Node.js and the vercel handler give one. Without it, as on Bun and Deno, the server makes one new response with the headers after the hooks and a body that counts its bytes.
+- `ResponseEdge` (from `@ngrok/app-server`): for a listener that writes each response itself. The listener makes one for each request and gives it as the `edge` binding. The server runs the header hooks on a list of the headers and keeps the list in the edge, so it copies no response for them. The listener writes `edge.headersFor(response)` in place of the headers of the response, adds each body byte to `edge.bytes`, gives an error that stops the response to `edge.fail`, and calls `edge.close(status, aborted, head)` once, with the status and the header list that it sent. The access log takes its line from that report. Only the first request that gets an edge uses it: a request that the app sends through itself again with `c.env` changes its own response. The node host's listener on Node.js and the vercel handler give one. Without it, as on Bun and Deno, the server makes one new response with the headers after the hooks and a body that counts its bytes.
 
 ## Options
 

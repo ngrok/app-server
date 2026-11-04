@@ -116,6 +116,13 @@ export type SentResponse = {
 	 */
 	status: number;
 	/**
+	 * The headers that went out with `status`, after each header hook. Read
+	 * them here, not from `c.res`, which can lack the changes of the hooks: on
+	 * Node.js and Vercel the hooks change the list that the listener writes,
+	 * and Bun empties the headers of a response that it sent.
+	 */
+	headers: Pick<ResponseHeaders, "get" | "has">;
+	/**
 	 * The body bytes that went out, after compression. When `aborted` is
 	 * true, the client can have got fewer.
 	 */

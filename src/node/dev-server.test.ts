@@ -114,7 +114,13 @@ describe("devServerStage", () => {
 	it("sends the request ID with the middleware's answer and logs its status and length", async () => {
 		const lines: LoggedLine[] = [];
 		const app = createServer({
-			plugins: [requestId(), accessLog(), assets()],
+			plugins: [
+				requestId(),
+				accessLog({
+					attributes: (_, sent) => ({ "test.request_id": sent.headers.get("X-Request-Id") }),
+				}),
+				assets(),
+			],
 			logger: {
 				log: (level, message, attributes) => {
 					lines.push({ level, message, attributes });
@@ -147,6 +153,7 @@ describe("devServerStage", () => {
 		expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
 			"http.status_code": 418,
 			"network.bytes_written": 6,
+			"test.request_id": "abc-123",
 		});
 	});
 

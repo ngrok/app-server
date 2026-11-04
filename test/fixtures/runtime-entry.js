@@ -26,7 +26,12 @@ const app = createServer({
 		process.stdout.write(line);
 	}),
 	listeners: [tcp({ port: 0, host: "127.0.0.1" })],
-	plugins: defaultPlugins({ bodyLimit: 1024 }),
+	plugins: defaultPlugins({
+		bodyLimit: 1024,
+		accessLog: {
+			attributes: (_, sent) => ({ "sent.request_id": sent.headers.get("X-Request-Id") }),
+		},
+	}),
 	shutdownDeadlineMs: 3_000,
 });
 app.get("/hold-status", (context) => context.text(String(holdCancelled)));

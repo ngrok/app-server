@@ -121,6 +121,19 @@ async function pump(
 	}
 }
 
+/** The headers that `outgoing` sent, as a flat list. Why: the dev server stage sends its own head. */
+function sentHead(outgoing: ServerResponse): string[] {
+	const head: string[] = [];
+	for (const [name, value] of Object.entries(outgoing.getHeaders())) {
+		for (const each of Array.isArray(value) ? value : [value]) {
+			if (each != null) {
+				head.push(name, String(each));
+			}
+		}
+	}
+	return head;
+}
+
 /** Writes the head and the body of `response`, with `head` in place of its headers. */
 async function writeBody(
 	response: Response,
@@ -190,11 +203,13 @@ async function writeResponse(
 	if (body == null && response.headers.has(ALREADY_SENT_HEADER)) {
 		// Why: the dev server stage answered through Node's response, and gave its status and length.
 		edge.bytes = Number(response.headers.get("content-length") ?? 0);
-		edge.close(status, false);
+		edge.close(status, false, sentHead(outgoing));
 		return;
 	}
+	// Why one list: `writeBody` adds the headers that it sets, so the report gets the head that went out.
+	let head = edge.headersFor(response) ?? headerList(response.headers);
 	if (outgoing.destroyed) {
-		edge.close(status, true);
+		edge.close(status, true, head);
 		await body?.cancel().catch(() => {});
 		return;
 	}
@@ -202,18 +217,14 @@ async function writeResponse(
 	// Why one listener: it reports what went out and stops the body that the client no longer reads.
 	// Why `on`: a response emits `close` once, and `once` adds a wrapper for each request.
 	outgoing.on("close", () => {
-		edge.close(status, !outgoing.writableFinished);
+		edge.close(status, !outgoing.writableFinished, head);
 		reader?.cancel().catch(() => {});
 	});
 	try {
 		reader = body?.getReader();
 		// Why strict: Node then throws for a body that is longer or shorter than its `Content-Length`.
 		outgoing.strictContentLength = true;
-		await writeBody(response, reader, {
-			outgoing,
-			edge,
-			head: edge.headersFor(response) ?? headerList(response.headers),
-		});
+		await writeBody(response, reader, { outgoing, edge, head });
 	} catch (error) {
 		reader?.cancel(error).catch(() => {});
 		edge.fail(error);
@@ -222,12 +233,8 @@ async function writeResponse(
 			return;
 		}
 		status = 500;
-		outgoing.writeHead(status, [
-			"content-type",
-			DEFAULT_CONTENT_TYPE,
-			"content-length",
-			String(ERROR_BODY.byteLength),
-		]);
+		head = ["content-type", DEFAULT_CONTENT_TYPE, "content-length", String(ERROR_BODY.byteLength)];
+		outgoing.writeHead(status, head);
 		outgoing.end(ERROR_BODY);
 		edge.bytes += ERROR_BODY.byteLength;
 	}
@@ -354,8 +361,8 @@ function listenerOf(
 			try {
 				response = await answer(request, { remoteAddress, incoming, outgoing, edge });
 			} catch (error) {
-				// Why 500: `@hono/node-server` answers a failed request with one.
-				edge.close(500, false);
+				// Why 500 with no headers: `@hono/node-server` answers a failed request with one.
+				edge.close(500, false, []);
 				throw error;
 			}
 			await writeResponse(response, outgoing, edge);

@@ -128,14 +128,15 @@ export class ResponseEdge {
 	}
 
 	/**
-	 * Reports what went out, once: the status that the listener sent, the
-	 * bytes, and whether the body stopped before its end.
+	 * Reports what went out, once: the status and the headers that the
+	 * listener sent, the bytes, and whether the body stopped before its end.
+	 * `head` is the flat list that the listener gave `writeHead`.
 	 */
-	public close(status: number, aborted: boolean): void {
+	public close(status: number, aborted: boolean, head: string[]): void {
 		if (this.#sent != null) {
 			return;
 		}
-		this.#sent = { status, bytes: this.bytes, aborted };
+		this.#sent = { status, headers: listView(head), bytes: this.bytes, aborted };
 		for (const report of this.#reports) {
 			callReport(report, this.#sent);
 		}
@@ -185,37 +186,37 @@ function countedBody(
 }
 
 /**
- * The body of `response` with a count for `report`, or `undefined` when
+ * The body of `context.res` with a count for `report`, or `undefined` when
  * `report` ran at once: a HEAD response and a response with no body send no
- * body bytes.
+ * body bytes. `headers` are the headers that go out with the response.
  */
 function reportedBody(
 	context: Context<AppServerEnv>,
-	response: Response,
+	headers: Headers,
 	report: (sent: SentResponse) => void,
 ): ReadableStream<Uint8Array> | undefined {
-	const { status, body } = response;
+	const { status, body } = context.res;
 	// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
 	if (context.req.method === "HEAD") {
-		callReport(report, { status, bytes: 0, aborted: false });
+		callReport(report, { status, headers, bytes: 0, aborted: false });
 		return undefined;
 	}
 	// Why `Content-Length`: a stage that answers through Node's response, such as Vite in
 	// development, gives a response with no body and the length it sent.
 	if (body == null) {
-		const length = Number(response.headers.get("Content-Length") ?? 0);
-		callReport(report, { status, bytes: length, aborted: false });
+		const length = Number(headers.get("Content-Length") ?? 0);
+		callReport(report, { status, headers, bytes: length, aborted: false });
 		return undefined;
 	}
 	return countedBody(body, (bytes, aborted) => {
-		callReport(report, { status, bytes, aborted });
+		callReport(report, { status, headers, bytes, aborted });
 	});
 }
 
 /**
  * Calls `report` once, when the response of the request ends or its client
- * goes away: with the status that went out, the body bytes, and whether the
- * body stopped before its end. In an app server, it reports the response that
+ * goes away: with the status and the headers that went out, the body bytes,
+ * and whether the body stopped before its end. In an app server, it reports the response that
  * the server returns, after each stage and header hook. A listener with an
  * `edge` counts the bytes as it writes them; else the server counts them with
  * a stream around the body.
@@ -237,7 +238,7 @@ export function onResponseSent(
 	}
 	// Why now: outside an app server, nothing reports later, so this counts the response as it is.
 	const response = context.res;
-	const body = reportedBody(context, response, report);
+	const body = reportedBody(context, response.headers, report);
 	if (body != null) {
 		replaceResponse(context, new Response(body, response));
 	}
@@ -331,7 +332,9 @@ export function finishResponse(
 					}
 				}
 			: only;
-	const body = report == null ? undefined : reportedBody(context, response, report);
+	// Why keep `headers`: Bun empties the headers of the response that it sends, but not this object.
+	const body =
+		report == null ? undefined : reportedBody(context, headers ?? response.headers, report);
 	if (headers == null && body == null) {
 		return;
 	}

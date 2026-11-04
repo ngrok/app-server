@@ -4,12 +4,22 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { tcp } from "../../node/tcp.js";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
+import { withHeaderHook } from "../header-hook.js";
 import type { FrameworkRuntime, LogSink, Plugin } from "../types.js";
 import { accessLog, loggedUrl } from "./access-log.js";
 import { requestId } from "./request-id.js";
 import { streamingCompress } from "./streaming-compress.js";
 
 const encoder = new TextEncoder();
+
+/** A stage whose header hook sets `Cache-Control: no-store`. */
+const noStore: Plugin = {
+	name: "no-store",
+	middleware: async (context, next) =>
+		withHeaderHook(context, next, (headers) => {
+			headers.set("Cache-Control", "no-store");
+		}),
+};
 
 /** Serves `plugins` on a Node.js listener, as production does, and gives its URL and log lines. */
 async function listening(plugins: Plugin[], render: FrameworkRuntime["fetch"]) {
@@ -133,6 +143,27 @@ describe("accessLog", () => {
 
 		expect(lines[0]?.attributes).toMatchObject({ "usr.id": "user-1" });
 		expect(response.headers.get("Server-Timing")).toMatch(/^app;dur=\d+\.\d$/u);
+	});
+
+	it("gives the attributes the headers that went out, with the changes of the header hooks", async () => {
+		const { request, lines } = await testServer({
+			plugins: [
+				accessLog({
+					attributes: (_, sent) => ({
+						"test.headers": [sent.headers.get("Cache-Control"), sent.headers.get("Content-Type")],
+					}),
+				}),
+				noStore,
+			],
+		});
+
+		await (await request("/")).text();
+		await request("/", { method: "HEAD" });
+
+		expect(lines.map((line) => line.attributes["test.headers"])).toStrictEqual([
+			["no-store", "text/html; charset=utf-8"],
+			["no-store", "text/html; charset=utf-8"],
+		]);
 	});
 
 	it("keeps the response and logs one error line when the attributes callback throws", async () => {
@@ -423,6 +454,44 @@ describe("accessLog on the Node.js listener", () => {
 			"http.request_id": "abc-123",
 			"error.message": "render failed",
 		});
+	});
+
+	it("gives the attributes the head that went out, also for HEAD and for the 500 of the listener", async () => {
+		const { url, requestLines } = await listening(
+			[
+				accessLog({
+					attributes: (_, sent) => ({
+						"test.headers": ["Cache-Control", "Content-Type", "Content-Length"].map((name) =>
+							sent.headers.get(name),
+						),
+					}),
+				}),
+				noStore,
+			],
+			async (request) =>
+				new URL(request.url).pathname === "/fails"
+					? new Response(
+							new ReadableStream<Uint8Array>({
+								pull(controller) {
+									controller.error(new Error("render failed"));
+								},
+							}),
+						)
+					: new Response("rendered"),
+		);
+
+		await (await fetch(new URL("/page", url))).text();
+		await fetch(new URL("/page", url), { method: "HEAD" });
+		await (await fetch(new URL("/fails", url))).text();
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(3);
+		});
+
+		expect(requestLines().map((line) => line.attributes["test.headers"])).toStrictEqual([
+			["no-store", "text/plain;charset=UTF-8", "8"],
+			["no-store", "text/plain;charset=UTF-8", null],
+			[null, "text/plain; charset=UTF-8", "21"],
+		]);
 	});
 
 	it("logs the response that an earlier plugin sends in place of the logged one", async () => {

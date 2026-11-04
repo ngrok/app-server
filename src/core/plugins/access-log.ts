@@ -13,12 +13,15 @@ export type AccessLogOptions = {
 	 */
 	redactQuery?: boolean;
 	/**
-	 * More attributes for each request line, such as the app's user ID. Read
-	 * the request and the context here, not `c.res`: on Node.js and Vercel it
-	 * does not have the changes of the header hooks, and on Bun it has no
-	 * headers, because Bun takes them when it sends the response.
+	 * More attributes for each request line, such as the app's user ID. It
+	 * runs when the line goes out, with what went out. Read a response header
+	 * from `sent.headers`, not from `c.res`, which can lack the changes of the
+	 * header hooks.
 	 */
-	attributes?: (context: Context<AppServerEnv>) => Readonly<Record<string, unknown>>;
+	attributes?: (
+		context: Context<AppServerEnv>,
+		sent: SentResponse,
+	) => Readonly<Record<string, unknown>>;
 	/**
 	 * Set `Server-Timing: app;dur=<ms>` on each HTML document: the time until
 	 * the response headers were ready. The browser's DevTools show it.
@@ -90,7 +93,7 @@ export function accessLog({
 				try {
 					context
 						.get("logger")
-						.info("request", attributes == null ? line : { ...line, ...attributes(context) });
+						.info("request", attributes == null ? line : { ...line, ...attributes(context, sent) });
 				} catch (error) {
 					try {
 						context.get("logger").error("access log attributes failed", {
