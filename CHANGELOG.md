@@ -1,5 +1,31 @@
 # @ngrok/app-server
 
+## 0.3.1
+
+### Patch Changes
+
+- [#34](https://github.com/ngrok/app-server/pull/34) [`3221e97`](https://github.com/ngrok/app-server/commit/3221e97a9461ecc4b5b9f82f7f8d7620e3a8be20) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Add `cspNonce()` to `@ngrok/app-server/client`. It gives the CSP nonce of the request on the server, and reads it from the document in the browser, so the hydration matches. React Router's `<HydratedRouter>` takes no nonce, so a page with a CSP nonce got a hydration warning in development. Give `cspNonce()` to `<Links>`, `<ScrollRestoration>`, and `<Scripts>` in the root `Layout`:
+  
+  ```tsx
+  const nonce = cspNonce();
+  <Links nonce={nonce} />
+  <ScrollRestoration nonce={nonce} />
+  <Scripts nonce={nonce} />
+  ```
+  
+  In TanStack Start, use `createRouter({ routeTree, ssr: { nonce: cspNonce() } })`.
+
+- [#34](https://github.com/ngrok/app-server/pull/34) [`3221e97`](https://github.com/ngrok/app-server/commit/3221e97a9461ecc4b5b9f82f7f8d7620e3a8be20) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `markdownTwins.twinOf` gets the request's Hono context as its second argument, the same as `rewrite` and `headers`. If `twinOf` gives `undefined`, the request gets no twin, and `rewrite` runs. Use it to keep a request off the prerendered twin, such as a request with a query that the framework renders:
+  
+  ```ts
+  prerendered({
+  	markdownTwins: {
+  		twinOf: (path, c) =>
+  			new URL(c.req.url).search === "" ? `${path === "/" ? "/index" : path}.md` : undefined,
+  	},
+  });
+  ```
+
 ## 0.3.0
 
 ### Minor Changes
