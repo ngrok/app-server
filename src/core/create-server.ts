@@ -276,17 +276,13 @@ export function withForwardedProto(request: Request): Request {
 }
 
 /**
- * Runs `step`, and rethrows a thrown value that is not an `Error` as one.
- * Hono sends only an `Error` to `onError`, and rethrows any other value.
+ * A thrown value as an `Error`. Hono sends only an `Error` to `onError`, and
+ * rethrows any other value.
  */
-async function asError<Result>(step: () => Promise<Result>): Promise<Result> {
-	try {
-		return await step();
-	} catch (error) {
-		throw error instanceof Error
-			? error
-			: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
-	}
+function asError(error: unknown): Error {
+	return error instanceof Error
+		? error
+		: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
 }
 
 /** Whether `work` settles before `ms` pass. */
@@ -369,10 +365,20 @@ export function createServer({
 			if (part != null) {
 				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
 			}
-			return asError(async () => (middleware == null ? next() : middleware(context, next)));
+			try {
+				return await (middleware == null ? next() : middleware(context, next));
+			} catch (error) {
+				throw asError(error);
+			}
 		});
 	}
-	app.use(async (_, next) => asError(next));
+	app.use(async (_, next) => {
+		try {
+			await next();
+		} catch (error) {
+			throw asError(error);
+		}
+	});
 	app.onError((error, context) => {
 		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
 		if ("getResponse" in error && typeof error.getResponse === "function") {

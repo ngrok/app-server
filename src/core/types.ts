@@ -226,7 +226,7 @@ export type AppServerEnv = {
 		 */
 		rewritesHtml?: boolean;
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
-		headerHooks?: readonly HeaderHook[];
+		headerHooks?: HeaderHook[];
 	};
 };
 

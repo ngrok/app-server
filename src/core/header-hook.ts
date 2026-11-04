@@ -96,7 +96,7 @@ export async function withHeaderHook(
 		hook(responseHeaders(context));
 		return;
 	}
-	context.set("headerHooks", [...hooks, hook]);
+	hooks.push(hook);
 	await next();
 }
 

@@ -265,7 +265,8 @@ async function writeResponse(
 	}
 	const reader = body?.getReader();
 	// Why one listener: it reports the bytes and stops the body that the client no longer reads.
-	outgoing.once("close", () => {
+	// Why `on`: a response emits `close` once, and `once` adds a wrapper for each request.
+	outgoing.on("close", () => {
 		edge.close(!outgoing.writableFinished);
 		reader?.cancel().catch(() => {});
 	});
