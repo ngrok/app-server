@@ -90,7 +90,8 @@ export type ContentSecurityPolicyOptions = {
 	/**
 	 * The `Content-Security-Policy` of an HTML document. `scriptSrc` is the
 	 * source list that trusts the document's scripts. Put it in `script-src`.
-	 * `context` is the request, so the policy can change by path.
+	 * `context` is the request, so the policy can change by path. It runs in a
+	 * header hook, so it can run more than once for one request.
 	 */
 	policy: (scriptSrc: string, context: Context<AppServerEnv>) => string;
 };

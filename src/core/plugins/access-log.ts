@@ -1,7 +1,8 @@
 import type { Context } from "hono";
-import { replaceResponse, writableHeaders } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import { errorAttributes } from "../log.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import { onResponseSent } from "../response-edge.js";
+import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 
 /** Options for {@link accessLog}. */
 export type AccessLogOptions = {
@@ -11,8 +12,16 @@ export type AccessLogOptions = {
 	 * @default true
 	 */
 	redactQuery?: boolean;
-	/** More attributes for each request line, such as the app's user ID. */
-	attributes?: (context: Context<AppServerEnv>) => Readonly<Record<string, unknown>>;
+	/**
+	 * More attributes for each request line, such as the app's user ID. It
+	 * runs when the line goes out, with what went out. Read a response header
+	 * from `sent.headers`, not from `c.res`, which can lack the changes of the
+	 * header hooks.
+	 */
+	attributes?: (
+		context: Context<AppServerEnv>,
+		sent: SentResponse,
+	) => Readonly<Record<string, unknown>>;
 	/**
 	 * Set `Server-Timing: app;dur=<ms>` on each HTML document: the time until
 	 * the response headers were ready. The browser's DevTools show it.
@@ -48,8 +57,10 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
 
 /**
  * One log line per request, static hits included, with Datadog standard
- * attribute names. The line goes out when the body ends or the client
- * disconnects, so a streamed response logs its full duration and size.
+ * attribute names. The line goes out when the response ends or the client
+ * disconnects, so a streamed response logs its full duration and size. It
+ * logs the response that leaves the server, after each stage. A listener
+ * with an `edge`, such as the node listener, counts the bytes.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
@@ -64,89 +75,68 @@ export function accessLog({
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
-			await next();
-			if (
-				serverTiming &&
-				(context.res.headers.get("Content-Type")?.startsWith("text/html") ?? false)
-			) {
-				const duration = (performance.now() - started).toFixed(1);
-				writableHeaders(context).append("Server-Timing", `app;dur=${duration}`);
-			}
-			// Why a catch: a log line must never change the response or stop its stream.
-			const write = ({ bytes, aborted }: { bytes: number; aborted: boolean }) => {
-				const line = lineAttributes(context, { bytes, aborted, started });
+			// Why a hook: it runs when the head is ready, which is the time that the header gives.
+			await (serverTiming
+				? withHeaderHook(context, next, (headers) => {
+						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
+							headers.append(
+								"Server-Timing",
+								`app;dur=${(performance.now() - started).toFixed(1)}`,
+							);
+						}
+					})
+				: next());
+			// Why a catch: a log line must never change the response or stop its stream. The listener can
+			// call the report from an event of its socket, where a throw stops the process.
+			onResponseSent(context, (sent) => {
+				const line = lineAttributes(context, sent, started);
 				try {
-					context.get("logger").info("request", { ...line, ...attributes?.(context) });
+					context
+						.get("logger")
+						.info("request", attributes == null ? line : { ...line, ...attributes(context, sent) });
 				} catch (error) {
-					context.get("logger").error("access log attributes failed", {
-						...line,
-						...errorAttributes(error),
-					});
+					try {
+						context.get("logger").error("access log attributes failed", {
+							...line,
+							...errorAttributes(error),
+						});
+					} catch {
+						// Why drop it: the sink failed twice, so no line can go out.
+					}
 				}
-			};
-			const response = context.res;
-			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
-			if (context.req.method === "HEAD") {
-				write({ bytes: 0, aborted: false });
-				return;
-			}
-			// Why `Content-Length`: a stage that answers through Node's response, such as Vite in
-			// development, gives a response with no body and the length it sent.
-			if (response.body == null) {
-				write({ bytes: Number(response.headers.get("Content-Length") ?? 0), aborted: false });
-				return;
-			}
-			const reader = response.body.getReader();
-			let bytes = 0;
-			const counted = new ReadableStream<Uint8Array>(
-				{
-					async pull(controller) {
-						let result: ReadableStreamReadResult<Uint8Array>;
-						try {
-							result = await reader.read();
-						} catch (error) {
-							// Why here: `cancel` does not run for a stream that failed.
-							write({ bytes, aborted: true });
-							throw error;
-						}
-						const { done, value } = result;
-						if (done) {
-							controller.close();
-							write({ bytes, aborted: false });
-							return;
-						}
-						bytes += value.byteLength;
-						controller.enqueue(value);
-					},
-					async cancel(reason) {
-						try {
-							write({ bytes, aborted: true });
-						} finally {
-							await reader.cancel(reason);
-						}
-					},
-				},
-				// Why 0: a pass-through stream must not read ahead of the client.
-				{ highWaterMark: 0 },
-			);
-			replaceResponse(context, new Response(counted, response));
+			});
 		},
 	};
 
+	/** `href` as {@link loggedUrl} logs it. */
+	function requestUrl(href: string): string {
+		const start = href.indexOf("/", href.indexOf("//") + 2);
+		// Why no parse for a path alone: a request URL is the `href` of a parsed URL, or one that the
+		// Node.js listener checked holds no character that a parse changes. So its path is the `pathname`.
+		if (start !== -1 && !href.includes("?", start) && !href.includes("#", start)) {
+			return href.slice(start);
+		}
+		return loggedUrl(new URL(href), { redact: redactQuery });
+	}
+
 	function lineAttributes(
 		context: Context<AppServerEnv>,
-		{ bytes, aborted, started }: { bytes: number; aborted: boolean; started: number },
+		{ status, bytes, aborted }: SentResponse,
+		started: number,
 	): Record<string, unknown> {
-		return {
-			"http.url": loggedUrl(new URL(context.req.url), { redact: redactQuery }),
-			"http.status_code": context.res.status,
+		const line: Record<string, unknown> = {
+			"http.url": requestUrl(context.req.url),
+			"http.status_code": status,
 			"http.useragent": context.req.header("User-Agent"),
 			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
 			"network.client.ip": context.get("clientAddress"),
 			"network.bytes_written": bytes,
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),
-			...(aborted ? { "http.client_aborted": true } : {}),
 		};
+		if (aborted) {
+			line["http.client_aborted"] = true;
+		}
+		return line;
 	}
 }

@@ -5,6 +5,8 @@ export type ListenOptions = {
 	hostname: string | undefined;
 	/** How long an idle keep-alive connection stays open. */
 	idleTimeoutMs: number;
+	/** The `trustForwardedProto` of the server. */
+	trustForwardedProto: boolean;
 };
 
 /**

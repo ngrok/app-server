@@ -61,4 +61,46 @@ describe("jsonSink", () => {
 
 		expect(write).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"message":"stopped"'));
 	});
+
+	it("writes the time, the level, the message, and then each attribute in its order", () => {
+		vi.useFakeTimers({ now: Date.UTC(2026, 10, 3, 12, 0, 0, 0), toFake: ["Date"] });
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
+		const lines: string[] = [];
+		const sink = jsonSink((line) => {
+			lines.push(line);
+		});
+
+		sink.log("warn", "slow", { "http.status_code": 200, duration: 5, "http.useragent": undefined });
+
+		expect(lines).toStrictEqual([
+			'{"time":"2026-11-03T12:00:00.000Z","level":"warn","message":"slow","http.status_code":200,"duration":5}\n',
+		]);
+	});
+
+	it("gives each line the time of its own millisecond", () => {
+		vi.useFakeTimers({ now: Date.UTC(2026, 10, 3, 12, 0, 0, 0), toFake: ["Date"] });
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
+		const times: unknown[] = [];
+		const sink = jsonSink((line) => {
+			times.push((JSON.parse(line) as { time: unknown }).time);
+		});
+
+		sink.log("info", "first", {});
+		sink.log("info", "same millisecond", {});
+		vi.setSystemTime(Date.UTC(2026, 10, 3, 12, 0, 0, 1));
+		sink.log("info", "next millisecond", {});
+		vi.setSystemTime(Date.UTC(2026, 10, 3, 11, 59, 59, 999));
+		sink.log("info", "clock set back", {});
+
+		expect(times).toStrictEqual([
+			"2026-11-03T12:00:00.000Z",
+			"2026-11-03T12:00:00.000Z",
+			"2026-11-03T12:00:00.001Z",
+			"2026-11-03T11:59:59.999Z",
+		]);
+	});
 });

@@ -67,11 +67,35 @@ function writeStdout(line: string): void {
 export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	return {
 		log: (level, message, attributes) => {
-			write(
-				`${JSON.stringify({ time: new Date().toISOString(), level, message, ...attributes })}\n`,
-			);
+			write(`${JSON.stringify({ time: isoNow(), level, message, ...attributes })}\n`);
 		},
 	};
+}
+
+/** The millisecond of the last `time`, and its ISO string. */
+let lastMs = Number.NaN;
+let lastTime = "";
+/** The second of `secondPrefix`, and its ISO string up to the milliseconds, such as `2026-11-03T12:00:00.`. */
+let lastSecond = Number.NaN;
+let secondPrefix = "";
+
+/**
+ * The time now, as `new Date().toISOString()` gives it. Why keep the last
+ * time: under load, many lines share a millisecond. Why keep the prefix of
+ * the second: `toISOString()` costs more than the rest of a line.
+ */
+function isoNow(): string {
+	const now = Date.now();
+	if (now !== lastMs) {
+		lastMs = now;
+		const second = Math.floor(now / 1000);
+		if (second !== lastSecond) {
+			lastSecond = second;
+			secondPrefix = new Date(now).toISOString().slice(0, -4);
+		}
+		lastTime = `${secondPrefix}${String(now - second * 1000).padStart(3, "0")}Z`;
+	}
+	return lastTime;
 }
 
 /** Flat `error.*` attributes for a thrown value. */
@@ -82,26 +106,42 @@ export function errorAttributes(error: unknown): Record<string, unknown> {
 	return { "error.message": String(error) };
 }
 
-/** A logger that writes to `sink`, with the attributes from `base` first on each line. */
+type Attributes = Readonly<Record<string, unknown>>;
+
+/**
+ * A logger that writes to `sink`. `withBase` gives the attributes of each
+ * line as a new object, from the attributes that the caller gives.
+ */
 export function sinkLogger(
 	sink: LogSink,
-	base: () => Readonly<Record<string, unknown>> = () => ({}),
+	withBase: (attributes: Attributes) => Attributes = (attributes) => ({ ...attributes }),
 ): RequestLogger {
-	const line =
-		(level: "debug" | "info" | "warn" | "error") =>
-		(message: string, attributes: Readonly<Record<string, unknown>> = {}) => {
-			sink.log(level, message, { ...base(), ...attributes });
-		};
-	return { debug: line("debug"), info: line("info"), warn: line("warn"), error: line("error") };
+	// Why four functions in one scope: a function that makes each one adds a scope for each, on each request.
+	return {
+		debug: (message, attributes = {}) => {
+			sink.log("debug", message, withBase(attributes));
+		},
+		info: (message, attributes = {}) => {
+			sink.log("info", message, withBase(attributes));
+		},
+		warn: (message, attributes = {}) => {
+			sink.log("warn", message, withBase(attributes));
+		},
+		error: (message, attributes = {}) => {
+			sink.log("error", message, withBase(attributes));
+		},
+	};
 }
 
 /** A logger whose lines carry the request's ID, method, path, and `logAttributes`. */
 export function requestLogger(sink: LogSink, context: Context<AppServerEnv>): RequestLogger {
-	// Why read at call time: the `requestId` plugin runs after this logger is made.
-	return sinkLogger(sink, () => ({
+	// Why read at call time: the `requestId` plugin runs after this logger is made. Why one object:
+	// a base object and then a merge copy each attribute two times.
+	return sinkLogger(sink, (attributes) => ({
 		"http.request_id": context.get("requestId"),
 		"http.method": context.req.method,
 		"http.url_details.path": context.req.path,
 		...context.get("logAttributes"),
+		...attributes,
 	}));
 }

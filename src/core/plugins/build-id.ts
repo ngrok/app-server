@@ -29,7 +29,8 @@ export type BuildIdOptions = {
 	 * in the requests that it already sends. They get no build header, because
 	 * the header marks the router's own responses. A response that a cache can
 	 * use again without the server gets no build, so a cached copy never
-	 * reports an old build.
+	 * reports an old build. It runs in a header hook, so it can run more than
+	 * once for one request.
 	 *
 	 * @example
 	 * buildId({ paths: (path) => path.startsWith("/api/") });

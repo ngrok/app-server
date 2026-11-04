@@ -43,11 +43,12 @@ export function tcp({
 }: TcpOptions = {}): Listener {
 	return {
 		name: "tcp",
-		start: async (fetch) => {
+		start: async (fetch, { trustForwardedProto = false } = {}) => {
 			const options = {
 				port: port ?? (process.env.PORT == null ? 3000 : parsePort(process.env.PORT)),
 				hostname: host ?? (process.env.HOST || undefined),
 				idleTimeoutMs,
+				trustForwardedProto,
 			};
 			if ("Bun" in globalThis) {
 				return (await import("./runtimes/bun.js")).listen(fetch, options);

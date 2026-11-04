@@ -10,11 +10,13 @@ import { z } from "zod";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
+import { withHeaderHook } from "./header-hook.js";
 import { renewShutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
 import { health } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
+import { requestId } from "./plugins/request-id.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
 import { tcp } from "../node/tcp.js";
 import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
@@ -281,6 +283,68 @@ describe("createServer", () => {
 			]);
 		},
 	);
+
+	it("answers a request that comes with no bindings, such as from `app.request`", async () => {
+		const app = createServer({ plugins: defaultPlugins(), logger: { log: () => {} } });
+		app.get("/api/status", (c) => c.json({ ok: true }));
+
+		const response = await app.request("/api/status", { headers: { "X-Request-Id": "abc-123" } });
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toStrictEqual({ ok: true });
+		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
+	it("answers 500 when a header hook throws, runs the outer hooks, and writes the access line", async () => {
+		const throwsInHook: Plugin = {
+			name: "throws-in-hook",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, () => {
+					throw new Error("hook failed");
+				}),
+		};
+		const { request, lines } = await testServer({
+			plugins: [requestId(), accessLog(), throwsInHook],
+		});
+
+		const response = await request("/", { headers: { "X-Request-Id": "abc-123" } });
+		await response.text();
+
+		expect(response.status).toBe(500);
+		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+		expect(lines.map(({ message }) => message)).toStrictEqual(["unhandled error", "request"]);
+		expect(lines[1]?.attributes).toMatchObject({ "http.status_code": 500 });
+	});
+
+	it("answers a header hook that throws with the app's onError, as a stage that throws", async () => {
+		const throwsInHook: Plugin = {
+			name: "throws-in-hook",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, () => {
+					throw new Error("hook failed");
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [throwsInHook],
+			routes: (app) => {
+				app.onError(async (error, context) => context.text(`custom: ${error.message}`, 503));
+			},
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([503, "custom: hook failed"]);
+	});
+
+	it("starts the tcp listener when a caller gives no start options", async () => {
+		const started = await tcp({ port: 0, host: "127.0.0.1" }).start(async () => new Response("ok"));
+		onTestFinished(async () => started.stop({ deadlineMs: 0 }));
+
+		const response = await fetch(started.url);
+
+		await expect(response.text()).resolves.toBe("ok");
+	});
 
 	it("writes the access line when a later plugin throws a value that is not an Error", async () => {
 		const thrower: Plugin = {
@@ -560,6 +624,32 @@ describe("createServer", () => {
 		await server.shutdown();
 
 		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
+	});
+
+	it("gives each request a logger whose methods write a line when taken off it", async () => {
+		const { request, lines } = await testServer({
+			plugins: [requestId()],
+			render: async (_request, context) => {
+				const { info } = context.get("logger");
+				info("loading", { "app.step": 1 });
+				return new Response("ok");
+			},
+		});
+
+		await (await request("/", { headers: { "X-Request-Id": "abc-123" } })).text();
+
+		expect(lines).toStrictEqual([
+			{
+				level: "info",
+				message: "loading",
+				attributes: {
+					"http.request_id": "abc-123",
+					"http.method": "GET",
+					"http.url_details.path": "/",
+					"app.step": 1,
+				},
+			},
+		]);
 	});
 });
 

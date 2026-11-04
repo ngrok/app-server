@@ -1,11 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { getRequestListener } from "@hono/node-server";
 import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
 import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
 import { host as nodeHost } from "../node/index.js";
-import { cancelIfClosed, keepGlobalResponse } from "../node/runtimes/node.js";
+import { requestListener } from "../node/response-writer.js";
 
 /**
  * `files` that give each file and directory the modification time
@@ -57,8 +56,8 @@ export const host: HostRuntime = {
  * - The scheme comes from `X-Forwarded-Proto`, and the client address from
  *   `X-Real-IP`. Why trust them: Vercel sets both headers on each request,
  *   and replaces a value that the client sends.
- * - A response whose client went away gets its body canceled, so its
- *   producer stops.
+ * - The node response writer sends each response, as the node host's
+ *   listener does.
  * - The log lines of the request reach stdout before the handler returns.
  *   Why: Vercel can freeze the function after the response, before the next
  *   turn of the event loop writes them.
@@ -69,20 +68,25 @@ export const host: HostRuntime = {
 export function handler(
 	entry: AppServerEntry,
 ): (incoming: IncomingMessage, outgoing: ServerResponse) => Promise<void> {
-	const listener = keepGlobalResponse(() =>
-		getRequestListener(async (request, { incoming, outgoing }) => {
-			const realIp = incoming.headers["x-real-ip"];
-			const response = await entry.fetch(withForwardedProto(request), {
-				remoteAddress: typeof realIp === "string" ? realIp : incoming.socket.remoteAddress,
-				incoming,
-				outgoing,
+	const listener = requestListener(
+		async (request, bindings) => {
+			const realIp = bindings.incoming?.headers["x-real-ip"];
+			return entry.fetch(withForwardedProto(request), {
+				...bindings,
+				...(typeof realIp === "string" ? { remoteAddress: realIp } : {}),
 			});
-			return cancelIfClosed(response, outgoing);
-		}),
+		},
+		{ trustForwardedProto: true },
 	);
 	return async (incoming, outgoing) => {
 		try {
 			await listener(incoming, outgoing);
+			// Why wait: the access log writes its line when the response closes, after the listener returns.
+			if (!outgoing.closed) {
+				await new Promise((resolve) => {
+					outgoing.once("close", resolve);
+				});
+			}
 		} finally {
 			flushLogs();
 			// Why wait: a full pipe keeps the rest of a write in a queue, and a frozen function does not send it.

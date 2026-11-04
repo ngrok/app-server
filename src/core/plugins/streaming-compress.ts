@@ -3,12 +3,12 @@ import {
 	isCompressible,
 	MIN_COMPRESS_BYTES,
 	preferredEncoding,
+	readIfQueued,
 } from "../compression.js";
-import { replaceResponse, writableHeaders } from "../header-hook.js";
+import type { ReadResult } from "../compression.js";
+import { hookedHeaders, replaceResponse, withHeaderHook } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 import { withVary } from "../vary.js";
-
-type ReadResult = ReadableStreamReadResult<Uint8Array>;
 
 /** The chunks that a body has queued, and the read that is still open, if any. */
 type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult> | undefined };
@@ -19,17 +19,6 @@ type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult
  * the client by this size, the default read-ahead of a Node.js stream.
  */
 export const MAX_JOINED_BYTES = 16 * 1024;
-
-/** The next result if `reader` has it queued, or the read that is still open. */
-async function readIfQueued(
-	reader: ReadableStreamDefaultReader<Uint8Array>,
-): Promise<{ result: ReadResult } | { pending: Promise<ReadResult> }> {
-	const pending = reader.read();
-	// Why: a client that leaves before the body is read must not cause an unhandled rejection.
-	pending.catch(() => {});
-	const result = await Promise.race([pending, Promise.resolve().then(async () => undefined)]);
-	return result == null ? { pending } : { result };
-}
 
 /**
  * Reads at most two chunks that `reader` has queued, and never waits for
@@ -136,6 +125,27 @@ function replay(
 }
 
 /**
+ * `response` with the gzip `body` and its headers. Why not in a header hook:
+ * the body and its headers go together, also to the code that an outer stage
+ * runs after its `next()`.
+ */
+function gzipped(
+	response: Response,
+	body: ReadableStream<Uint8Array>,
+	{ hasLength }: { hasLength: boolean },
+): Response {
+	const replacement = new Response(body, response);
+	replacement.headers.set("Content-Encoding", "gzip");
+	// Why the flag: a delete costs as much as a set, and a streamed page has no length.
+	if (hasLength) {
+		replacement.headers.delete("Content-Length");
+	}
+	// Why: a range of the gzip bytes cannot be served, because each response compresses again.
+	replacement.headers.delete("Accept-Ranges");
+	return replacement;
+}
+
+/**
  * Gzips text responses and flushes after each chunk, so a streamed page shell
  * or a server-sent event reaches the client at once. Chunks that the body has
  * queued together are one chunk, up to 16 KiB. `hono/compress` holds a
@@ -156,18 +166,33 @@ export function streamingCompress(): Plugin {
 			({ gzip } = info);
 		},
 		middleware: async (context, next) => {
-			await next();
 			if (gzip == null) {
-				return;
+				return next();
 			}
+			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
+			// not gzip then needs no copy for it.
+			let gzipping = false;
+			await withHeaderHook(context, next, (headers) => {
+				// Why: the bytes of a type that the plugin never gzips, such as an image, do not vary by
+				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
+				const type = headers.get("Content-Type");
+				const vary =
+					type == null || isCompressible(type)
+						? withVary(headers.get("Vary"), "Accept-Encoding")
+						: undefined;
+				if (vary != null) {
+					headers.set("Vary", vary);
+				}
+				// Why: the hook of an inner stage can set the length of the body before gzip.
+				if (gzipping) {
+					headers.delete("Content-Length");
+				}
+			});
 			const response = context.res;
 			const type = response.headers.get("Content-Type");
-			// Why: the bytes of a type that the plugin never gzips, such as an image, do not vary by
-			// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
 			if (type != null && !isCompressible(type)) {
 				return;
 			}
-			const vary = withVary(response.headers.get("Vary"), "Accept-Encoding");
 			const length = response.headers.get("Content-Length");
 			const { body } = response;
 			if (
@@ -181,32 +206,32 @@ export function streamingCompress(): Plugin {
 				response.headers.has("Content-Range") ||
 				forbidsTransform(response.headers.get("Cache-Control"))
 			) {
-				if (vary != null) {
-					writableHeaders(context).set("Vary", vary);
-				}
 				return;
 			}
 			let source: ReadableStream<Uint8Array> = body;
-			let gzipped = true;
+			let compress = true;
 			if (length == null) {
 				const reader = body.getReader();
 				const queued = await readQueued(reader);
 				const size = queued.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
 				// Why: gzip makes a small body larger, and a body from a string has no `Content-Length`.
-				gzipped = !queued.done || size >= MIN_COMPRESS_BYTES;
+				compress = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
-			// Why one copy: the new body needs a new response, and its headers change in place.
-			const replacement = new Response(gzipped ? gzip(source) : source, response);
-			replaceResponse(context, replacement);
-			if (vary != null) {
-				replacement.headers.set("Vary", vary);
+			// Why the hooks: a header hook of a later stage can set these headers, and it runs only where
+			// the response leaves.
+			if (compress) {
+				const hooked = hookedHeaders(context, response.headers);
+				compress =
+					!hooked.has("Content-Encoding") &&
+					!hooked.has("Content-Range") &&
+					!forbidsTransform(hooked.get("Cache-Control"));
 			}
-			if (gzipped) {
-				replacement.headers.set("Content-Encoding", "gzip");
-				replacement.headers.delete("Content-Length");
-				// Why: a range of the gzip bytes cannot be served, because each response compresses again.
-				replacement.headers.delete("Accept-Ranges");
+			if (compress) {
+				gzipping = true;
+				replaceResponse(context, gzipped(response, gzip(source), { hasLength: length != null }));
+			} else if (source !== body) {
+				replaceResponse(context, new Response(source, response));
 			}
 		},
 	};

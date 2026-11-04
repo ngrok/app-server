@@ -2,13 +2,75 @@
 
 A composable [Hono](https://hono.dev) app server for [React Router](https://reactrouter.com) and [TanStack Start](https://tanstack.com/start) apps. It replaces `@react-router/serve`, and it runs the same request pipeline in development and production, on Node, Bun, and Deno, or as a Vercel Function.
 
-What it fixes in `@react-router/serve`:
+## Compared with `@react-router/serve`
+
+`@react-router/serve` 8.5.1 is Express 5 with `compression()`, `express.static` for the client build, and a `morgan` text log that comes after the static files. `app-server` serves the same build faster. It also does more work for each request.
+
+### Speed
+
+On the React Router fixture app of this repo, `app-server` answers more requests each second than `@react-router/serve` on each route:
+
+| Route                                               | `app-server` | `@react-router/serve` | Change |
+| --------------------------------------------------- | -----------: | --------------------: | -----: |
+| `/`, a prerendered page                             |       27,353 |                17,611 |   +55% |
+| `/ssr`, a rendered page                             |        5,648 |                 2,401 |   2.4× |
+| `/assets/*.js`, 233 kilobytes (KB), 68 KB as brotli |       22,491 |                 2,006 |    11× |
+| `/hello.txt`, a prerendered file of 5 bytes         |       29,131 |                22,278 |   +31% |
+
+The table gives requests per second for a client that sends `Accept-Encoding: gzip, deflate, br`, as a browser does. Most of the large gains come from compression. `compression()` compresses each response with brotli for each request, and `app-server` sends the copy that the build wrote.
+
+With no `Accept-Encoding`, the gains are +17% for `/`, +15% for `/ssr`, +31% for `/assets/*.js`, and +23% for `/hello.txt`. In these numbers, `app-server` also adds the security headers, a request ID, a JSON log line, and the build ID to each response.
+
+A CDN that keeps the `/assets/*` files makes the asset gain smaller for a visitor.
+
+How we measured:
+
+- Build the package with `pnpm run build`, then build `test/fixtures/react-router` with `react-router build`.
+- In that directory, run `node build/server/app-server.js` and `pnpm exec react-router-serve build/server/index.js`, with `NODE_ENV=production`. Each server is one process. `pnpm install` installs `@react-router/serve` as a development dependency of this repo.
+- Send load to each route with `oha -z 5s -c 64`: 64 connections for 5 seconds. Use `--disable-compression` for the runs with no `Accept-Encoding`.
+- The table gives the median of 5 rounds. The two servers alternate in each round, and `app-server` got more requests each second in each round.
+- The versions are Node.js 26.13, `@react-router/serve` 8.5.1, Express 5.3.0, `compression` 1.8.2, and `oha` 1.16.0. The machine is one Apple M3 Max with macOS.
+
+### What it fixes
 
 - Each page has one URL. A page URL with the other trailing-slash form gets a 308 to it, for rendered and prerendered pages. A prerendered page answers at its own URL with a 200.
 - A prerendered resource route (`llms.txt`, `sitemap.xml`, a JSON API file) and each `.data` file keep the headers their loader sent: `Content-Type`, `Cache-Control`, CORS.
+- A static file gets the brotli or gzip copy that the build wrote. `compression()` compresses each response again for each request.
 - A streamed page under gzip reaches the client chunk by chunk.
 - Each request gets one JSON log line in your format, static files included, and an `X-Request-Id`.
-- Shutdown drains open requests with a deadline, and the keep-alive timeout outlasts the proxy's idle pool.
+- Shutdown drains open requests with a deadline, and the keep-alive timeout outlasts the proxy's idle pool. `@react-router/serve` closes the server on `SIGTERM`, with no deadline and no readiness probe.
+
+### What it adds
+
+For a marketing site:
+
+- [Redirects](#redirects) from a table, and [`noindex`](#preview-deploys) for preview deploys.
+- [Markdown twins](#content-negotiation) for agents, with `Vary: Accept` and a `Link` header.
+- [Security headers](#security-headers), and [a CSP for each document](#a-csp-for-each-document): script hashes for a prerendered page and a nonce for a rendered page.
+- ETags, 304s, and byte ranges for each static file, so Safari plays a `<video>` from the client build.
+- [One build for each environment](#environment): the `PUBLIC_` values go into each HTML document at serve time.
+
+For a web app:
+
+- [Deploys and open tabs](#deploys-and-open-tabs): after a deploy, the next navigation of an old tab loads its target as a document, so the old code never renders new data. The client module adds no request to a client navigation.
+- [Health checks](#health-checks) at `/livez` and `/readyz`, and a delay before the drain.
+- A [request body limit](#the-pipeline), and [`Cache-Control: private`](#the-pipeline) on each rendered page and data response with no `Cache-Control`, so a shared cache never keeps them for one user.
+- [Logs](#logs) with W3C and Datadog trace IDs, a logger in each loader, and the client address behind a proxy.
+- [Server-sent events](#long-lived-responses) that close at shutdown.
+- An auth check that also protects each prerendered file. See [Protect pages](#protect-pages).
+
+For each app:
+
+- One pipeline for development and production, with the same headers and the same CSP.
+- A [server build that runs with no install](#deploy), on Node.js, Bun, or Deno, or as a [Vercel Function](#deploy-to-vercel).
+
+### What changes for your app
+
+- The app needs Node.js 26+, Vite 8.3+, and React Router 8.5+. See [Requirements](#requirements).
+- The package has ES modules only.
+- A plugin is Hono middleware, not Express middleware.
+- With `defaultPlugins()`, a request body over 10 mebibytes (MiB) gets a 413, and a page URL with a trailing slash gets a 308. Change both with the options of `defaultPlugins()`.
+- The package does not support React Router `serverBundles`, and the app must serve at `/`. See [Limits](#limits).
 
 ## Requirements
 
@@ -184,8 +246,8 @@ The function differs from a long-lived process:
 
 1. `health()`: the liveness and readiness probes at `/livez` and `/readyz`. A probe skips the access log. `defaultPlugins({ health })` changes them, and `false` turns them off. See [Health checks](#health-checks).
 2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
-3. `accessLog({ redactQuery })`: one line per request when the body ends, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
-4. `streamingCompress()`: gzip that flushes after each chunk. Chunks that the body has queued together go out as one, up to 16 KiB, so a rendered page costs fewer flushes. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses gzip. The host gives the gzip stream. On a host with none, the plugin does nothing.
+3. `accessLog({ redactQuery })`: one line per request when the response ends, for the response that leaves the server, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
+4. `streamingCompress()`: gzip that flushes after each chunk. Chunks that the body has queued together go out as one, up to 16 KiB, so a rendered page costs fewer flushes. When the body ends by the time the gzip stream finishes its last chunk, that chunk and the gzip trailer go out together. On the node host, a body that ends with its first chunk, up to 64 KiB, uses a zlib stream from a pool, so a small page costs no new zlib stream. The pool keeps up to 16 streams between responses, about 4.3 MiB in all. A stream takes only such a body, and only one at least as long as each earlier body of that stream, so the gzip bytes of a body depend on that body alone. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses gzip. The host gives the gzip stream. On a host with none, the plugin does nothing.
 5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
 6. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
 7. The plugins of the named options. They see every response, prerendered pages included:
@@ -219,7 +281,7 @@ const frameOptions: Plugin = {
 };
 ```
 
-A plugin that sets a header on the response uses `withHeaderHook`. The hook runs after the later stages, as code after `await next()` does. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hook also runs on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages also run the hook on a copy of the headers before they choose a compressed copy, so a `no-transform` from a hook keeps the file as it is. A hook can run more than once for one request. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
+A plugin that sets a header on the response uses `withHeaderHook`. The hook changes the head once, where the response leaves, after the later stages and after the code that each stage runs after `await next()`. The hook of an inner stage runs first, so an outer stage has the last word. On Node.js and Vercel, the hooks change the list of headers that the server writes, so the response needs no copy. So code after `await next()` sees the response of the later stages without the changes of their hooks. To read or change the final headers, use a hook. A hook can read `requestContext()`. A hook that throws gets the answer of the app's `onError`, as a stage that throws does. On Node.js and Vercel, a wrapper of the app's `fetch` gets the response before the hooks: a header that it sets or deletes goes out, but it does not see the headers that the hooks set. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hooks also run on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages and `streamingCompress()` also run the hooks on a view of the headers before they choose a body, so a `no-transform`, a `Content-Encoding`, or a `Content-Range` from a hook keeps the body as it is. So a hook runs two or three times for a response with gzip or a compressed copy. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A view run can come before the code that a stage runs after `await next()`, and a throw in it changes nothing. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -650,12 +712,17 @@ export async function loader({ context }: Route.LoaderArgs) {
 
 A request with a valid W3C `traceparent` header logs `trace_id` and `span_id` on each line. `requestId({ datadogTraceIds: true })` also logs `dd.trace_id` and `dd.span_id`, the lower 64 bits in decimal, so Datadog connects each line to its trace.
 
-`accessLog({ attributes })` adds the app's own attributes to each request line. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
+`accessLog({ attributes })` adds the app's own attributes to each request line. The callback runs when the line goes out. It gets the context and what went out: `status`, `headers`, `bytes`, and `aborted`. Read a response header from `sent.headers`, not from `c.res`: `sent.headers` has the headers that went out on each runtime, after the header hooks, and `c.res` can lack them. On Node.js and Vercel, `sent.headers` also has the headers that the listener adds, such as `Content-Length`. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
 
 ```ts
 defaultPlugins({
 	requestId: { datadogTraceIds: true },
-	accessLog: { attributes: (c) => ({ "usr.id": c.get("userId") }) },
+	accessLog: {
+		attributes: (c, sent) => ({
+			"usr.id": c.get("userId"),
+			"http.response.cache_control": sent.headers.get("Cache-Control"),
+		}),
+	},
 });
 ```
 
@@ -735,6 +802,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
 - `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output after the build, such as `.vercel/output`.
 - `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
+- `ResponseEdge` (from `@ngrok/app-server`): for a listener that writes each response itself. The listener makes one for each request and gives it as the `edge` binding. The server runs the header hooks on a list of the headers and keeps the list in the edge, so it copies no response for them. The listener writes `edge.headersFor(response)` in place of the headers of the response, adds each body byte to `edge.bytes`, gives an error that stops the response to `edge.fail`, and calls `edge.close(status, aborted, head)` once, with the status and the header list that it sent. The access log takes its line from that report. Only the first request that gets an edge uses it: a request that the app sends through itself again with `c.env` changes its own response. The node host's listener on Node.js and the vercel handler give one. Without it, as on Bun and Deno, the server makes one new response with the headers after the hooks and a body that counts its bytes.
 
 ## Options
 
@@ -743,7 +811,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - `plugins`: default `defaultPlugins()`.
 - `logger`: default `jsonSink()`.
 - `listeners`: default the host's listeners. A listener decides how connections arrive. On the node host, the default is `[tcp()]` from `@ngrok/app-server/node`. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
-- `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
+- `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. The server passes it to each listener as `start(fetch, { trustForwardedProto })`, so the node listener on Node.js builds each request with that scheme and copies none. For a listener that ignores it, the server copies each request to change its scheme. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
 - `trustedProxyHops`: how many proxies in front of the server add to `X-Forwarded-For`, such as `1` behind the ngrok edge. With N, the client address is the Nth address from the right of that header. The access log and `requestContext()?.clientAddress` use it. Default `0`, the address of the socket. Set it only to the number of proxies that you run, else a client can spoof its address. For a build with no `server.ts`, set `TRUSTED_PROXY_HOPS`.
 - `shutdownDelayMs`: how long the listeners serve on after a stop signal, before the drain starts. See [Health checks](#health-checks). Default `0`.
 - `shutdownDeadlineMs`: how long open requests get to finish after the drain starts. Default `10000`.

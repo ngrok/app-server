@@ -1,8 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { getRequestListener } from "@hono/node-server";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer, serverInternals } from "../core/create-server.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { withHeaderHook } from "../core/header-hook.js";
@@ -12,12 +15,44 @@ import { noindex } from "../core/plugins/noindex.js";
 import { contentSecurityPolicy, securityHeaders } from "../core/plugins/security-headers.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { assets } from "../core/plugins/static.js";
-import type { Plugin } from "../core/types.js";
+import type { Listener, Plugin } from "../core/types.js";
 import type { LoggedLine } from "../test-server.js";
 import { productionSetup, stubFramework } from "../test-server.js";
 import { devServerStage } from "./dev-server.js";
 import type { NodeMiddleware } from "./dev-server.js";
 import { tcp } from "./tcp.js";
+
+/**
+ * A listener that gives each request its Node.js request and response but no
+ * edge, as `@hono/node-server` does on Bun and Deno.
+ */
+function noEdgeListener(): Listener {
+	return {
+		name: "no-edge",
+		start: async (fetch) => {
+			const listener = getRequestListener(async (request, { incoming, outgoing }) =>
+				fetch(request, { remoteAddress: incoming.socket.remoteAddress, incoming, outgoing }),
+			);
+			const server = createHttpServer((incoming, outgoing) => {
+				void listener(incoming, outgoing);
+			});
+			await new Promise<void>((resolve) => {
+				server.listen(0, "127.0.0.1", resolve);
+			});
+			const { port } = server.address() as AddressInfo;
+			return {
+				url: `http://127.0.0.1:${port}`,
+				stop: async () =>
+					new Promise<void>((resolve) => {
+						server.closeAllConnections();
+						server.close(() => {
+							resolve();
+						});
+					}),
+			};
+		},
+	};
+}
 
 describe("devServerStage", () => {
 	it("gives an HTML file of the public directory the CSP with its script hashes, for a 304 too", async () => {
@@ -114,7 +149,13 @@ describe("devServerStage", () => {
 	it("sends the request ID with the middleware's answer and logs its status and length", async () => {
 		const lines: LoggedLine[] = [];
 		const app = createServer({
-			plugins: [requestId(), accessLog(), assets()],
+			plugins: [
+				requestId(),
+				accessLog({
+					attributes: (_, sent) => ({ "test.request_id": sent.headers.get("X-Request-Id") }),
+				}),
+				assets(),
+			],
 			logger: {
 				log: (level, message, attributes) => {
 					lines.push({ level, message, attributes });
@@ -147,8 +188,61 @@ describe("devServerStage", () => {
 		expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
 			"http.status_code": 418,
 			"network.bytes_written": 6,
+			"test.request_id": "abc-123",
 		});
 	});
+
+	it.each([
+		{ host: "the node host", listener: () => tcp({ port: 0, host: "127.0.0.1" }) },
+		{ host: "a listener with no edge, as on Bun and Deno", listener: noEdgeListener },
+	])(
+		"logs the headers that the middleware sent and no body bytes for HEAD, with $host",
+		async ({ listener }) => {
+			const lines: LoggedLine[] = [];
+			const app = createServer({
+				plugins: [
+					requestId(),
+					accessLog({
+						attributes: (_, sent) => ({ "test.request_id": sent.headers.get("X-Request-Id") }),
+					}),
+					assets(),
+				],
+				logger: {
+					log: (level, message, attributes) => {
+						lines.push({ level, message, attributes });
+					},
+				},
+				listeners: [listener()],
+			});
+			const middleware: NodeMiddleware = (_, response) => {
+				response.statusCode = 418;
+				response.setHeader("Content-Length", "6");
+				response.end("teapot");
+			};
+			const internals = serverInternals(app);
+			await internals?.prepare({
+				...(await productionSetup({ logger: { log: () => {} } })),
+				mode: "development",
+				devServer: devServerStage(middleware),
+			});
+			const server = await internals?.listen(stubFramework(), []);
+			onTestFinished(async () => server?.shutdown());
+
+			const head = await fetch(new URL("/@vite/client", server?.urls[0]), {
+				method: "HEAD",
+				headers: { "X-Request-Id": "abc-123" },
+			});
+
+			expect([head.status, head.headers.get("X-Request-Id")]).toStrictEqual([418, "abc-123"]);
+			await vi.waitFor(() => {
+				expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
+					"http.status_code": 418,
+					"network.bytes_written": 0,
+					"test.request_id": "abc-123",
+				});
+			});
+		},
+	);
 
 	it("leaves the request body to the middleware after the body limit and an async stage", async () => {
 		const later: Plugin = {
@@ -312,6 +406,40 @@ describe("devServerStage", () => {
 		} finally {
 			await server?.shutdown();
 		}
+	});
+
+	it("runs each header hook once for an answer of the middleware", async () => {
+		let calls = 0;
+		const counted: Plugin = {
+			name: "counted",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					calls += 1;
+					response.set("X-Calls", String(calls));
+				}),
+		};
+		const app = createServer({
+			plugins: [counted, assets()],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (_request, response) => {
+			response.setHeader("Content-Type", "text/html");
+			response.end("<h1>Static</h1>");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+		onTestFinished(async () => server?.shutdown());
+
+		const response = await fetch(new URL("/static.html", server?.urls[0]));
+		await response.text();
+
+		expect([response.headers.get("X-Calls"), calls]).toStrictEqual(["1", 1]);
 	});
 
 	it("lets a header hook delete a header of the middleware's answer", async () => {

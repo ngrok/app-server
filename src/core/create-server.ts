@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
+import type { ErrorHandler, HTTPResponseError } from "hono/types";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
@@ -26,17 +28,33 @@ import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { checkOptionPlugins } from "./plugin-options.js";
 import { withRequestContext } from "./request-context.js";
+import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	FetchHandler,
 	FrameworkRuntime,
+	HeaderHook,
 	Listener,
 	LogSink,
 	Plugin,
 	RequestStore,
+	SentResponse,
 	SetupInfo,
 } from "./types.js";
+
+/** The response for `error`, as `onError` gives it for a stage that throws. */
+function answerError(error: Error | HTTPResponseError, context: Context<AppServerEnv>): Response {
+	// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
+	if ("getResponse" in error && typeof error.getResponse === "function") {
+		const response: unknown = error.getResponse();
+		if (response instanceof Response) {
+			return response;
+		}
+	}
+	context.get("logger").error("unhandled error", errorAttributes(error));
+	return context.text("Internal Server Error", 500);
+}
 
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
 const appInternals = new WeakMap<AppServer, ServerInternals>();
@@ -275,17 +293,13 @@ export function withForwardedProto(request: Request): Request {
 }
 
 /**
- * Runs `step`, and rethrows a thrown value that is not an `Error` as one.
- * Hono sends only an `Error` to `onError`, and rethrows any other value.
+ * A thrown value as an `Error`. Hono sends only an `Error` to `onError`, and
+ * rethrows any other value.
  */
-async function asError<Result>(step: () => Promise<Result>): Promise<Result> {
-	try {
-		return await step();
-	} catch (error) {
-		throw error instanceof Error
-			? error
-			: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
-	}
+function asError(error: unknown): Error {
+	return error instanceof Error
+		? error
+		: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
 }
 
 /** Whether `work` settles before `ms` pass. */
@@ -329,6 +343,16 @@ export function createServer({
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
 	const app = new Hono<AppServerEnv>();
+	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
+	let onError: ErrorHandler<AppServerEnv> = answerError;
+	const setOnError = app.onError.bind(app);
+	app.onError = (handler) => {
+		onError = handler;
+		return setOnError(handler);
+	};
+	app.onError(answerError);
+	const answerThrown = async (thrown: unknown, context: Context<AppServerEnv>) =>
+		onError(asError(thrown), context);
 	let requestStore: RequestStore | undefined;
 	if (trustForwardedProto) {
 		// Why wrap `fetch`: every plugin and route, not only the framework, must see the trusted scheme.
@@ -336,7 +360,8 @@ export function createServer({
 		app.fetch = async (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
 	}
 	app.use(async (context, next) => {
-		context.set("logger", requestLogger(logger, context));
+		const requestLog = requestLogger(logger, context);
+		context.set("logger", requestLog);
 		const remoteAddress = context.env?.remoteAddress;
 		context.set(
 			"clientAddress",
@@ -345,7 +370,24 @@ export function createServer({
 				: (forwardedClient(context.req.header("X-Forwarded-For"), trustedProxyHops) ??
 						remoteAddress),
 		);
-		await withRequestContext(requestStore, context, next);
+		// Why lists here: each stage's header hook then changes the head once, where the response
+		// leaves, and each report gets the response that leaves.
+		const hooks: HeaderHook[] = [];
+		const reports: ((sent: SentResponse) => void)[] = [];
+		context.set("headerHooks", hooks);
+		context.set("sentReports", reports);
+		const given = context.env?.edge;
+		// Why claim before the stages: a request that the app sends through itself again with `c.env`
+		// gets the same edge, and must change its own response.
+		const edge = given?.claim(requestLog) === true ? given : undefined;
+		// Why finish in the request context: a header hook can read `requestContext()`.
+		await withRequestContext(requestStore, context, async () => {
+			await next();
+			const finishing = finishResponse(context, { hooks, reports, edge, fail: answerThrown });
+			if (finishing != null) {
+				await finishing;
+			}
+		});
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
@@ -359,20 +401,19 @@ export function createServer({
 			if (part != null) {
 				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
 			}
-			return asError(async () => (middleware == null ? next() : middleware(context, next)));
+			try {
+				return await (middleware == null ? next() : middleware(context, next));
+			} catch (error) {
+				throw asError(error);
+			}
 		});
 	}
-	app.use(async (_, next) => asError(next));
-	app.onError((error, context) => {
-		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
-		if ("getResponse" in error && typeof error.getResponse === "function") {
-			const response: unknown = error.getResponse();
-			if (response instanceof Response) {
-				return response;
-			}
+	app.use(async (_, next) => {
+		try {
+			await next();
+		} catch (error) {
+			throw asError(error);
 		}
-		context.get("logger").error("unhandled error", errorAttributes(error));
-		return context.text("Internal Server Error", 500);
 	});
 
 	let prepared: Promise<void> | undefined;
@@ -418,7 +459,7 @@ export function createServer({
 				return response;
 			};
 			const starts = await Promise.allSettled(
-				chosen.map(async (listener) => listener.start(fetch)),
+				chosen.map(async (listener) => listener.start(fetch, { trustForwardedProto })),
 			);
 			const started = starts.flatMap((start) =>
 				start.status === "fulfilled" ? [start.value] : [],

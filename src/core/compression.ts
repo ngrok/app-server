@@ -94,3 +94,23 @@ export function preferredEncoding(
 export function forbidsTransform(cacheControl: string | null): boolean {
 	return /\bno-transform\b/u.test(cacheControl ?? "");
 }
+
+/** The result of one read of a byte stream. */
+export type ReadResult = ReadableStreamReadResult<Uint8Array>;
+
+/**
+ * The next result if `reader` has it queued, or the read that is still open.
+ * It never waits for the source.
+ *
+ * @example
+ * const next = await readIfQueued(reader); // => { result: { done: false, value } } or { pending }
+ */
+export async function readIfQueued(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ result: ReadResult } | { pending: Promise<ReadResult> }> {
+	const pending = reader.read();
+	// Why: a client that leaves before the body is read must not cause an unhandled rejection.
+	pending.catch(() => {});
+	const result = await Promise.race([pending, Promise.resolve().then(async () => undefined)]);
+	return result == null ? { pending } : { result };
+}

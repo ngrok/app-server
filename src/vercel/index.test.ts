@@ -6,11 +6,28 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
+import { withHeaderHook } from "../core/header-hook.js";
+import { accessLog } from "../core/plugins/access-log.js";
+import { requestId } from "../core/plugins/request-id.js";
+import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestContext } from "../core/request-context.js";
-import { stubFramework } from "../test-server.js";
+import type { Plugin } from "../core/types.js";
+import { heldStream, stubFramework } from "../test-server.js";
 import { handler, host } from "./index.js";
 
 let close: (() => Promise<void>) | undefined;
+
+/** The access log line in the stdout `output`, or `undefined` when there is none. */
+function requestLine(output: string): unknown {
+	return output
+		.split("\n")
+		.filter((line) => line.startsWith("{"))
+		.map((line): unknown => JSON.parse(line))
+		.find(
+			(line) =>
+				typeof line === "object" && line != null && "message" in line && line.message === "request",
+		);
+}
 
 afterEach(async () => {
 	await close?.();
@@ -18,8 +35,8 @@ afterEach(async () => {
 });
 
 /** Serves `handler` for an app on `node:http`, as a Vercel Function does, and gives its URL. */
-async function serve(): Promise<string> {
-	const app = createServer({ plugins: [] });
+async function serve(plugins: Plugin[] = []): Promise<string> {
+	const app = createServer({ plugins });
 	app.get("/whoami", (context) =>
 		context.json({ url: context.req.url, client: requestContext()?.clientAddress }),
 	);
@@ -46,6 +63,31 @@ async function serve(): Promise<string> {
 }
 
 describe("handler", () => {
+	it("sends the headers of the header hooks with a HEAD response", async () => {
+		const base = await serve([requestId(), securityHeaders()]);
+
+		const response = await fetch(`${base}/whoami`, { method: "HEAD" });
+
+		expect(response.headers.has("X-Request-Id")).toBe(true);
+		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
+	it("runs each header hook in the request's context", async () => {
+		const echoesId: Plugin = {
+			name: "echoes-id",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+				}),
+		};
+		const url = await serve([requestId(), echoesId]);
+
+		const response = await fetch(`${url}/whoami`, { headers: { "X-Request-Id": "abc-123" } });
+		await response.text();
+
+		expect(response.headers.get("X-Context-Id")).toBe("abc-123");
+	});
+
 	it("takes the scheme and the client address from the headers that Vercel sets", async () => {
 		const base = await serve();
 
@@ -92,6 +134,80 @@ describe("handler", () => {
 		await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/hello`);
 
 		await expect(written.promise).resolves.toContain('"message":"hello"');
+	});
+
+	it("writes the access log line of a request before it returns", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		onTestFinished(() => {
+			write.mockRestore();
+		});
+		const app = createServer({ plugins: [accessLog()] });
+		const listener = handler(
+			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+		);
+		const written = Promise.withResolvers<string>();
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing).finally(() => {
+				written.resolve(write.mock.calls.join(""));
+			});
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(async () => {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					resolve();
+				});
+			});
+		});
+
+		const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/page`);
+		await response.text();
+
+		expect(requestLine(await written.promise)).toMatchObject({ "network.bytes_written": 8 });
+	});
+
+	it("returns, with the access log line, when the client leaves during a streamed body", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		onTestFinished(() => {
+			write.mockRestore();
+		});
+		const app = createServer({ plugins: [accessLog()] });
+		const listener = handler(
+			createEntry({
+				app,
+				host,
+				clientDirectory: "/nonexistent",
+				framework: () => stubFramework(async () => heldStream("shell").response),
+			}),
+		);
+		const written = Promise.withResolvers<string>();
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing).finally(() => {
+				written.resolve(write.mock.calls.join(""));
+			});
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(async () => {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					resolve();
+				});
+			});
+		});
+
+		const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/page`);
+		const reader = response.body?.getReader();
+		await reader?.read();
+		await reader?.cancel();
+
+		expect(requestLine(await written.promise)).toMatchObject({
+			"network.bytes_written": 5,
+			"http.client_aborted": true,
+		});
 	});
 
 	it("returns after stdout takes the log lines that wait in its queue", async () => {

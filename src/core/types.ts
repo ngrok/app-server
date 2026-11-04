@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import type { ResponseEdge } from "./response-edge.js";
 
 /** A log level the server writes. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -106,6 +107,30 @@ export type RequestStore = {
 	get: () => Context<AppServerEnv> | undefined;
 };
 
+/** What went out for a response, when it ends or its client goes away. */
+export type SentResponse = {
+	/**
+	 * The status that went out. It differs from the status of the response
+	 * when a listener could not send the response, such as a 500 for a header
+	 * value that it cannot write.
+	 */
+	status: number;
+	/**
+	 * The headers that went out with `status`, after each header hook. Read
+	 * them here, not from `c.res`, which can lack the changes of the hooks: on
+	 * Node.js and Vercel the hooks change the list that the listener writes,
+	 * and Bun empties the headers of a response that it sent.
+	 */
+	headers: Pick<ResponseHeaders, "get" | "has">;
+	/**
+	 * The body bytes that went out, after compression. When `aborted` is
+	 * true, the client can have got fewer.
+	 */
+	bytes: number;
+	/** Whether the body stopped before its end, such as when the client went away or the body failed. */
+	aborted: boolean;
+};
+
 /** How a long-lived host stops. A serverless host has none. */
 export type Lifecycle = {
 	/**
@@ -143,6 +168,11 @@ export type HostRuntime = {
 export type ListenerBindings = {
 	/** The client's IP address, when the runtime knows it. */
 	remoteAddress?: string | undefined;
+	/**
+	 * Given by a listener that writes each response itself, such as the node
+	 * listener. See {@link ResponseEdge}.
+	 */
+	edge?: ResponseEdge | undefined;
 	[binding: string]: unknown;
 };
 
@@ -188,7 +218,9 @@ export type AppServerEnv = {
 		 */
 		rewritesHtml?: boolean;
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
-		headerHooks?: readonly HeaderHook[];
+		headerHooks?: HeaderHook[];
+		/** The reports of `onResponseSent` for the request. The server sets this list. */
+		sentReports?: ((sent: SentResponse) => void)[];
 	};
 };
 
@@ -203,10 +235,18 @@ export type ResponseHeaders = {
 
 /**
  * A change to the headers of a response, from a stage that runs before the
- * response. The stage runs it after the later stages, and a dev server
- * middleware that sends its own response runs it before it sends the head.
- * The static stages also run it on a copy of the headers, so it can run more
- * than once for one request.
+ * response. In an app server, it changes the head once, where the response
+ * leaves, after the code that each stage runs after its `next()`: the hook of
+ * an inner stage runs first, so an outer stage has the last word. A hook that
+ * throws gives a 500, as a stage that throws does. A dev server middleware
+ * that sends its own response runs the hooks before it sends the head.
+ *
+ * The static stages and `streamingCompress` also run the hooks on a view of
+ * the headers, to read the `Cache-Control` that leaves. So a hook can run two
+ * or three times for one request: each run must give the same headers and do
+ * nothing else, such as log, count, or store a value. A view run can come
+ * before the code that a stage runs after its `next()`, and a throw in it
+ * changes nothing.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;
@@ -311,5 +351,16 @@ export type StartedListener = {
 export type Listener = {
 	/** A name for logs. */
 	name: string;
-	start: (fetch: FetchHandler) => Promise<StartedListener>;
+	start: (fetch: FetchHandler, options?: ListenerStartOptions) => Promise<StartedListener>;
+};
+
+/** What the server tells a listener when it starts it. */
+export type ListenerStartOptions = {
+	/**
+	 * The `trustForwardedProto` of the server. A listener that builds each
+	 * request itself can then take the scheme from `X-Forwarded-Proto` at once,
+	 * so the server copies no request to change it.
+	 * @default false
+	 */
+	trustForwardedProto?: boolean;
 };

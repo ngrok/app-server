@@ -1,8 +1,23 @@
+import { randomBytes } from "node:crypto";
 import { constants, gunzipSync } from "node:zlib";
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
+import { withHeaderHook } from "../header-hook.js";
+import type { AppServerEnv, Plugin } from "../types.js";
 import { MAX_JOINED_BYTES, streamingCompress } from "./streaming-compress.js";
+
+/** A plugin whose header hook sets `name` to `value`. */
+function setsHeader(name: string, value: string): Plugin {
+	return {
+		name: `sets-${name.toLowerCase()}`,
+		middleware: async (context, next) =>
+			withHeaderHook(context, next, (headers) => {
+				headers.set(name, value);
+			}),
+	};
+}
 
 describe("streamingCompress", () => {
 	it("sends the first gzip chunk of a streamed page before the stream ends", async () => {
@@ -53,6 +68,57 @@ describe("streamingCompress", () => {
 		expect(text(new Uint8Array([...first, ...second]))).toBe(
 			"<p>one</p><p>two</p><p>three</p><p>late</p>",
 		);
+	});
+
+	it("sends a page whose body has ended as one gzip chunk, with the gzip trailer", async () => {
+		const page = `<main>${"<p>row</p>".repeat(300)}</main>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							for (const part of [page.slice(0, 1500), page.slice(1500)]) {
+								controller.enqueue(new TextEncoder().encode(part));
+							}
+							controller.close();
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		const after = await reader?.read();
+
+		expect(gunzipSync(first).toString()).toBe(page);
+		expect(after?.done).toBe(true);
+	});
+
+	it("sends the gzip of a large chunk in pieces while zlib still compresses it", async () => {
+		const chunk = randomBytes(256 * 1024);
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(chunk);
+						},
+					}),
+					{ headers: { "Content-Type": "text/html" } },
+				),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+		const reader = response.body?.getReader();
+		const first = (await reader?.read())?.value ?? new Uint8Array();
+		await reader?.cancel();
+
+		expect(first.byteLength).toBeGreaterThan(0);
+		expect(first.byteLength).toBeLessThanOrEqual(constants.Z_DEFAULT_CHUNK);
 	});
 
 	it("drops a Content-Length and an Accept-Ranges that the gzip body would break", async () => {
@@ -296,6 +362,50 @@ describe("streamingCompress", () => {
 		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
 
 		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe("hellobye");
+	});
+
+	it("drops a Content-Length that the header hook of a later stage sets on a gzip body", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress(), setsHeader("Content-Length", String(page.length))],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(response.headers.get("Content-Length")).toBeNull();
+		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe(page);
+	});
+
+	it("leaves a body alone when the header hook of a later stage sets its encoding or range", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const bodyOf = async (name: string, value: string) => {
+			const { request } = await testServer({
+				plugins: [streamingCompress(), setsHeader(name, value)],
+				render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+			});
+			const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+			return [response.headers.get("Content-Encoding"), await response.text()];
+		};
+
+		await expect(bodyOf("Content-Encoding", "br")).resolves.toStrictEqual(["br", page]);
+		await expect(bodyOf("Content-Range", "bytes 0-1502/2000")).resolves.toStrictEqual([null, page]);
+	});
+
+	it("adds Accept-Encoding to Vary in a plain Hono app", async () => {
+		const plugin = streamingCompress();
+		await plugin.setup?.(await productionSetup({ logger: { log: () => {} } }));
+		const app = new Hono<AppServerEnv>();
+		if (plugin.middleware != null) {
+			app.use(plugin.middleware);
+		}
+		app.get("/", (c) => c.html(`<p>${"hi ".repeat(500)}</p>`));
+
+		const response = await app.request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
 	it("sends the response as it is on a host with no gzip stream", async () => {

@@ -84,6 +84,10 @@ export {
 } from "./request-context.js";
 export {
 	//,
+	ResponseEdge,
+} from "./response-edge.js";
+export {
+	//,
 	shutdownSignal,
 } from "./shutdown.js";
 
@@ -164,6 +168,7 @@ export type {
 	Lifecycle,
 	Listener,
 	ListenerBindings,
+	ListenerStartOptions,
 	LogLevel,
 	LogSink,
 	Mode,
@@ -172,6 +177,7 @@ export type {
 	RequestLogger,
 	RequestStore,
 	ResponseHeaders,
+	SentResponse,
 	ServerBindings,
 	SetupInfo,
 	StartedListener,
