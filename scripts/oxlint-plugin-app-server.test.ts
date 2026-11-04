@@ -72,8 +72,17 @@ describe.each([
 	},
 	{
 		rule: "no-context-var",
-		invalid: ["context.var.logger.info('loading');", "const { logger } = context.var;"],
-		valid: ["context.get('logger').info('loading');", "const value = record['var'];"],
+		invalid: [
+			"context.var.logger.info('loading');",
+			"const { logger } = context.var;",
+			"c.var.logger.info('loading');",
+			"this.context.var.logger.info('loading');",
+		],
+		valid: [
+			"context.get('logger').info('loading');",
+			"const value = record['var'];",
+			"const value = record.var;",
+		],
 	},
 	{
 		rule: "prefer-url-parse",

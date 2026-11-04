@@ -94,6 +94,55 @@ describe("handler", () => {
 		await expect(written.promise).resolves.toContain('"message":"hello"');
 	});
 
+	it("returns after stdout takes the log lines that wait in its queue", async () => {
+		const drain = Promise.withResolvers<() => void>();
+		vi.spyOn(process.stdout, "write").mockImplementation((...parts: unknown[]) => {
+			const callback = parts.find((part) => typeof part === "function");
+			if (callback != null) {
+				drain.resolve(callback as () => void);
+			}
+			return true;
+		});
+		vi.spyOn(process.stdout, "writableLength", "get").mockReturnValue(1);
+		onTestFinished(() => {
+			vi.restoreAllMocks();
+		});
+		const app = createServer({ plugins: [] });
+		app.get("/hello", (context) => {
+			requestContext()?.logger.info("hello");
+			return context.text("hi");
+		});
+		const listener = handler(
+			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+		);
+		let returned = false;
+		const finished = Promise.withResolvers<undefined>();
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing).finally(() => {
+				returned = true;
+				finished.resolve(undefined);
+			});
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(async () => {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					resolve();
+				});
+			});
+		});
+
+		await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/hello`);
+		await Promise.race([drain.promise, finished.promise]);
+
+		expect(returned).toBe(false);
+		(await drain.promise)();
+		await finished.promise;
+		expect(returned).toBe(true);
+	});
+
 	it("renders with the framework when no route answers", async () => {
 		const base = await serve();
 

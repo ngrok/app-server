@@ -85,6 +85,12 @@ export function handler(
 			await listener(incoming, outgoing);
 		} finally {
 			flushLogs();
+			// Why wait: a full pipe keeps the rest of a write in a queue, and a frozen function does not send it.
+			if (process.stdout.writableLength > 0) {
+				await new Promise((resolve) => {
+					process.stdout.write("", resolve);
+				});
+			}
 		}
 	};
 }
