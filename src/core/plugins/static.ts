@@ -73,7 +73,9 @@ export type PrerenderedOptions = {
 	/**
 	 * Serves the markdown twin of a page, such as `/docs/button.md` for
 	 * `/docs/button`, to a request that {@link prefersMarkdown} accepts. A
-	 * page has a twin when `twinOf` names a file in the client build.
+	 * page has a twin when `twinOf` names a file in the client build. `twinOf`
+	 * gets the request path and the request's Hono context, the same as
+	 * `rewrite`. It returns `undefined` for a request with no twin.
 	 *
 	 * - A request that prefers markdown gets the twin, with the twin's
 	 *   captured headers. `rewrite` does not run for it.
@@ -100,7 +102,7 @@ export type PrerenderedOptions = {
 	 * @example
 	 * prerendered({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
 	 */
-	markdownTwins?: boolean | { twinOf: (path: string) => string | undefined };
+	markdownTwins?: boolean | { twinOf: TwinOf };
 	/**
 	 * Sends a request path to the next stage, with no file lookup. Use it for
 	 * private pages, so the auth check in the app or the framework runs for
@@ -127,6 +129,9 @@ export type PrerenderedOptions = {
 	cacheControl?: (path: string) => string | undefined;
 };
 
+/** Maps a request to the URL path of its markdown twin, or `undefined` when it has none. */
+type TwinOf = (path: string, context: Context<AppServerEnv>) => string | undefined;
+
 const REVALIDATE = "public, max-age=0, must-revalidate";
 const ONE_HOUR = "public, max-age=3600, stale-while-revalidate=86400";
 
@@ -135,13 +140,13 @@ function defaultTwinOf(path: string): string {
 	return `${trimTrailingSlashes(path) || "/index"}.md`;
 }
 
-/** The file of the markdown twin of `path`, or `undefined` when the page has none. */
+/** The file of the markdown twin of the request, or `undefined` when the page has none. */
 async function findTwin(
 	files: StaticFiles,
-	path: string,
-	twinOf: ((path: string) => string | undefined) | undefined,
+	context: Context<AppServerEnv>,
+	twinOf: TwinOf | undefined,
 ): Promise<{ path: string; file: StaticFile } | undefined> {
-	const twinPath = twinOf?.(path);
+	const twinPath = twinOf?.(context.req.path, context);
 	const file = twinPath == null ? undefined : await findStaticFile(files, twinPath);
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
@@ -182,7 +187,7 @@ function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
  * request on for the HTML.
  */
 function developmentTwins(
-	twinOf: (path: string) => string | undefined,
+	twinOf: TwinOf,
 	skip: PrerenderedOptions["skip"],
 	prerenderedPaths: ReadonlySet<string> | undefined,
 ): MiddlewareHandler<AppServerEnv> {
@@ -192,7 +197,7 @@ function developmentTwins(
 			(method === "GET" || method === "HEAD") &&
 			skip?.(path) !== true &&
 			prefersMarkdown(context.req.raw)
-				? twinOf(path)
+				? twinOf(path, context)
 				: undefined;
 		// Why both checks: production has no twin that the build does not prerender, or at a path that fails `isFilePath`.
 		if (
@@ -226,9 +231,7 @@ function developmentTwins(
 }
 
 /** The `twinOf` function that the `markdownTwins` option selects, or `undefined` when it is off. */
-function twinOfOption(
-	markdownTwins: PrerenderedOptions["markdownTwins"],
-): ((path: string) => string | undefined) | undefined {
+function twinOfOption(markdownTwins: PrerenderedOptions["markdownTwins"]): TwinOf | undefined {
 	if (markdownTwins === true) {
 		return defaultTwinOf;
 	}
@@ -316,7 +319,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				if ((method !== "GET" && method !== "HEAD") || options.skip?.(context.req.path) === true) {
 					return next();
 				}
-				const twin = await findTwin(files, context.req.path, twinOf);
+				const twin = await findTwin(files, context, twinOf);
 				const preferred = twin != null && prefersMarkdown(context.req.raw) ? twin : undefined;
 				const path =
 					preferred?.path ?? options.rewrite?.(context.req.path, context) ?? context.req.path;
