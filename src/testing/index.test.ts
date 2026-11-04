@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { cspNonce } from "../client/csp-nonce.js";
 import { createServer, defaultPlugins } from "../core/create-server.js";
 import { requestContext } from "../core/request-context.js";
@@ -64,6 +64,47 @@ describe("createTestServer", () => {
 		onTestFinished(server.close);
 
 		await expect(createTestServer({ app })).rejects.toThrow("Give each test server a new app");
+	});
+
+	it("refuses a file outside the client build", async () => {
+		const app = createServer({ logger: { log: () => {} } });
+
+		await expect(createTestServer({ app, files: { "../outside.txt": "x" } })).rejects.toThrow(
+			'The file "../outside.txt" is outside the client build',
+		);
+	});
+
+	it("frees the app when the client build fails", async () => {
+		const app = createServer({ logger: { log: () => {} } });
+
+		await expect(createTestServer({ app, files: { a: "file", "a/b": "file" } })).rejects.toThrow(
+			/ENOTDIR|EEXIST/u,
+		);
+		const server = await createTestServer({ app });
+		onTestFinished(server.close);
+	});
+
+	it("stops the plugins when the cancel of a body fails", async () => {
+		const onShutdown = vi.fn<() => Promise<void>>(async () => {});
+		const server = await createTestServer({
+			app: createServer({
+				plugins: [...defaultPlugins(), { name: "shutdown-probe", onShutdown }],
+				logger: { log: () => {} },
+			}),
+			framework: async () =>
+				new Response(
+					new ReadableStream({
+						cancel: () => {
+							throw new Error("cancel failed");
+						},
+					}),
+				),
+		});
+
+		await server.request("/rendered");
+		await server.close();
+
+		expect(onShutdown).toHaveBeenCalledTimes(1);
 	});
 });
 

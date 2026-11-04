@@ -1,11 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { Context } from "hono";
 import { BUILD_MANIFEST_FILE } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import type { AppServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
+import type { AppServerEntry } from "../core/entry.js";
 import { requestLogger } from "../core/log.js";
 import { withRequestContext as runInRequestContext } from "../core/request-context.js";
 import type { AppServerEnv, FrameworkRuntime, RequestContext } from "../core/types.js";
@@ -49,6 +50,30 @@ async function notFound(): Promise<Response> {
 	return new Response("Not Found", { status: 404 });
 }
 
+/** Writes `files` and the build manifest into `clientDirectory`, and gives the app's entry over them. */
+async function startEntry(
+	clientDirectory: string,
+	{ app, files, framework }: Required<TestServerOptions>,
+): Promise<AppServerEntry> {
+	for (const [path, content] of Object.entries(files)) {
+		const file = join(clientDirectory, path);
+		await mkdir(dirname(file), { recursive: true });
+		await writeFile(file, content);
+	}
+	const manifest: BuildManifest = {
+		prerendered: [],
+		headers: {},
+		scriptHashes: scriptHashesOf(clientDirectory),
+	};
+	await writeFile(join(clientDirectory, BUILD_MANIFEST_FILE), JSON.stringify(manifest));
+	return createEntry({
+		app,
+		host,
+		clientDirectory,
+		framework: () => ({ name: "test", fetch: framework }),
+	});
+}
+
 /**
  * Starts an app in production mode over a client build of `files`, with no
  * listener. It records the hashes of the inline scripts of each HTML file, as
@@ -74,25 +99,23 @@ export async function createTestServer({
 			"This app runs in another test server. Give each test server a new app from `createServer()`.",
 		);
 	}
+	for (const path of Object.keys(files)) {
+		if (isAbsolute(path) || normalize(path).split(sep)[0] === "..") {
+			throw new Error(
+				`The file "${path}" is outside the client build. Give a relative path in it.`,
+			);
+		}
+	}
 	usedApps.add(app);
 	const clientDirectory = await mkdtemp(join(tmpdir(), "app-server-test-"));
-	for (const [path, content] of Object.entries(files)) {
-		const file = join(clientDirectory, path);
-		await mkdir(dirname(file), { recursive: true });
-		await writeFile(file, content);
+	let entry: AppServerEntry;
+	try {
+		entry = await startEntry(clientDirectory, { app, files, framework });
+	} catch (error) {
+		usedApps.delete(app);
+		await rm(clientDirectory, { recursive: true, force: true });
+		throw error;
 	}
-	const manifest: BuildManifest = {
-		prerendered: [],
-		headers: {},
-		scriptHashes: scriptHashesOf(clientDirectory),
-	};
-	await writeFile(join(clientDirectory, BUILD_MANIFEST_FILE), JSON.stringify(manifest));
-	const entry = createEntry({
-		app,
-		host,
-		clientDirectory,
-		framework: () => ({ name: "test", fetch: framework }),
-	});
 	const responses: Response[] = [];
 	return {
 		request: async (path, init) => {
@@ -102,12 +125,16 @@ export async function createTestServer({
 		},
 		close: async () => {
 			// Why cancel an unread body: it can hold an open file, and Node.js 26 throws when garbage
-			// collection closes a `FileHandle`.
-			await Promise.all(
+			// collection closes a `FileHandle`. Why `allSettled`: the cancel of a body that failed
+			// rejects, and the test sees that error when it reads the body.
+			await Promise.allSettled(
 				responses.map(async ({ body }) => (body?.locked === false ? body.cancel() : undefined)),
 			);
-			await entry.stopPlugins();
-			await rm(clientDirectory, { recursive: true, force: true });
+			try {
+				await entry.stopPlugins();
+			} finally {
+				await rm(clientDirectory, { recursive: true, force: true });
+			}
 		},
 	};
 }
