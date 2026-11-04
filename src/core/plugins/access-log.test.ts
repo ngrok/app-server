@@ -21,7 +21,7 @@ async function listening(plugins: Plugin[], render: FrameworkRuntime["fetch"]) {
 	const server = await internals.listen(framework, []);
 	onTestFinished(async () => server.shutdown());
 	const requestLines = () => lines.filter((line) => line.message === "request");
-	return { url: server.urls[0] ?? "", requestLines };
+	return { url: server.urls[0] ?? "", requestLines, lines };
 }
 
 /** Sends a GET that accepts gzip and gives the response as it came on the wire. */
@@ -298,26 +298,74 @@ describe("accessLog on the Node.js listener", () => {
 		});
 	});
 
-	it("closes the connection and marks the line when a body ends before its Content-Length", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
-		onTestFinished(() => {
-			vi.restoreAllMocks();
+	it("answers 500 and logs it when a queued body does not match its Content-Length", async () => {
+		const { url, requestLines, lines } = await listening([accessLog()], async (request) => {
+			const body = new URL(request.url).pathname === "/short" ? "short" : "longer than ten";
+			return new Response(body, {
+				headers: { "Content-Type": "image/png", "Content-Length": "10" },
+			});
 		});
-		const { url, requestLines } = await listening(
-			[accessLog()],
-			async () =>
-				new Response("short", {
-					headers: { "Content-Type": "image/png", "Content-Length": "10" },
-				}),
-		);
 
-		await expect(getRaw(new URL("/image.png", url).href)).rejects.toThrow("socket hang up");
+		const short = await fetch(new URL("/short", url));
+		const long = await fetch(new URL("/long", url));
+
+		expect([short.status, await short.text()]).toStrictEqual([500, "Internal Server Error"]);
+		expect([long.status, await long.text()]).toStrictEqual([500, "Internal Server Error"]);
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(2);
+		});
+		expect(requestLines().map((line) => line.attributes)).toMatchObject([
+			{ "http.status_code": 500, "network.bytes_written": 21 },
+			{ "http.status_code": 500, "network.bytes_written": 21 },
+		]);
+		expect(lines.filter((line) => line.message === "unhandled error")).toHaveLength(2);
+	});
+
+	it("closes the connection and marks the line when a streamed body ends before its Content-Length", async () => {
+		let sendRest = () => {};
+		const { url, requestLines } = await listening([accessLog()], async () => {
+			let pulls = 0;
+			const body = new ReadableStream<Uint8Array>(
+				{
+					async pull(controller) {
+						pulls += 1;
+						if (pulls > 1) {
+							controller.close();
+							return;
+						}
+						// Why wait: the head goes out before the body ends short.
+						await new Promise<void>((resolve) => {
+							sendRest = resolve;
+						});
+						controller.enqueue(encoder.encode("short"));
+					},
+				},
+				{ highWaterMark: 0 },
+			);
+			return new Response(body, {
+				headers: { "Content-Type": "image/png", "Content-Length": "10" },
+			});
+		});
+
+		const response = await getRaw(new URL("/image.png", url).href);
+		sendRest();
+		const ended = await new Promise<boolean>((resolve) => {
+			response.on("data", () => {});
+			response.once("end", () => {
+				resolve(true);
+			});
+			response.once("error", () => {
+				resolve(false);
+			});
+		});
 		await vi.waitFor(() => {
 			expect(requestLines()).toHaveLength(1);
 		});
 
+		expect(ended).toBe(false);
 		expect(requestLines()[0]?.attributes).toMatchObject({
-			"network.bytes_written": 0,
+			"http.status_code": 200,
+			"network.bytes_written": 5,
 			"http.client_aborted": true,
 		});
 	});
@@ -342,13 +390,9 @@ describe("accessLog on the Node.js listener", () => {
 		});
 	});
 
-	it("closes the connection and marks the line when a body fails before the head goes out", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
-		onTestFinished(() => {
-			vi.restoreAllMocks();
-		});
-		const { url, requestLines } = await listening(
-			[accessLog()],
+	it("answers 500 and logs it when a body fails before the head goes out", async () => {
+		const { url, requestLines, lines } = await listening(
+			[requestId(), accessLog()],
 			async () =>
 				new Response(
 					new ReadableStream<Uint8Array>({
@@ -363,14 +407,21 @@ describe("accessLog on the Node.js listener", () => {
 				),
 		);
 
-		await expect(getRaw(new URL("/fails-early", url).href)).rejects.toThrow("socket hang up");
+		const response = await fetch(new URL("/fails-early", url), {
+			headers: { "X-Request-Id": "abc-123" },
+		});
+
+		expect([response.status, await response.text()]).toStrictEqual([500, "Internal Server Error"]);
 		await vi.waitFor(() => {
 			expect(requestLines()).toHaveLength(1);
 		});
-
 		expect(requestLines()[0]?.attributes).toMatchObject({
-			"network.bytes_written": 0,
-			"http.client_aborted": true,
+			"http.status_code": 500,
+			"network.bytes_written": 21,
+		});
+		expect(lines.find((line) => line.message === "unhandled error")?.attributes).toMatchObject({
+			"http.request_id": "abc-123",
+			"error.message": "render failed",
 		});
 	});
 

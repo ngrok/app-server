@@ -2,13 +2,8 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { readIfQueued } from "../core/compression.js";
 import type { ReadResult } from "../core/compression.js";
-import type {
-	HeaderHook,
-	ListenerBindings,
-	ResponseEdge,
-	ResponseHeaders,
-	SentBody,
-} from "../core/types.js";
+import { headerIndex, headerList, ResponseEdge } from "../core/response-edge.js";
+import type { ListenerBindings } from "../core/types.js";
 import type { NodeBindings } from "./dev-server.js";
 import { waitsForZlib } from "./gzip.js";
 
@@ -18,103 +13,8 @@ const ALREADY_SENT_HEADER = "x-hono-already-sent";
 const ALREADY_SENT = new Response(null, { headers: { [ALREADY_SENT_HEADER]: "true" } });
 /** The type that `@hono/node-server` gives a body with none. */
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=UTF-8";
-
-/** Calls `report` with `sent`, and drops a throw from it. */
-function callReport(report: (sent: SentBody) => void, sent: SentBody): void {
-	try {
-		report(sent);
-	} catch {
-		// Why drop it: the report runs in an event of Node's response, where a throw stops the process.
-	}
-}
-
-/** The edge of one request: the header hooks for the head, and the count of the body bytes. */
-class NodeEdge implements ResponseEdge {
-	public bytes = 0;
-	public hooks: readonly HeaderHook[] = [];
-	#report: ((sent: SentBody) => void) | undefined = undefined;
-	#sent: SentBody | undefined = undefined;
-
-	public useHeaderHooks(hooks: readonly HeaderHook[]): void {
-		this.hooks = hooks;
-	}
-
-	public onSent(report: (sent: SentBody) => void): void {
-		if (this.#sent == null) {
-			this.#report = report;
-		} else {
-			callReport(report, this.#sent);
-		}
-	}
-
-	/** Reports the bytes once. */
-	public close(aborted: boolean): void {
-		if (this.#sent != null) {
-			return;
-		}
-		this.#sent = { bytes: this.bytes, aborted };
-		if (this.#report != null) {
-			callReport(this.#report, this.#sent);
-		}
-	}
-}
-
-/** The index of the lowercase `name` in a flat `[name, value, …]` header list, or -1. */
-function indexOf(head: string[], name: string): number {
-	for (let index = 0; index < head.length; index += 2) {
-		if (head[index] === name) {
-			return index;
-		}
-	}
-	return -1;
-}
-
-/**
- * A view of a flat `[name, value, …]` header list with lowercase names, for
- * the header hooks. Why no `Headers`: the hooks change the list that
- * `writeHead` takes, so the response needs no copy.
- */
-function headView(head: string[]): ResponseHeaders {
-	const remove = (name: string) => {
-		for (let index = head.length - 2; index >= 0; index -= 2) {
-			if (head[index] === name) {
-				head.splice(index, 2);
-			}
-		}
-	};
-	const get = (name: string) => {
-		const lower = name.toLowerCase();
-		let value: string | null = null;
-		for (let index = 0; index < head.length; index += 2) {
-			if (head[index] === lower) {
-				value = value == null ? (head[index + 1] ?? "") : `${value}, ${head[index + 1] ?? ""}`;
-			}
-		}
-		return value;
-	};
-	return {
-		get,
-		has: (name) => indexOf(head, name.toLowerCase()) !== -1,
-		set: (name, value) => {
-			const lower = name.toLowerCase();
-			remove(lower);
-			head.push(lower, value);
-		},
-		append: (name, value) => {
-			const lower = name.toLowerCase();
-			const index = lower === "set-cookie" ? -1 : indexOf(head, lower);
-			// Why join: `Headers` sends the values of a name on one line, except each `Set-Cookie`.
-			if (index === -1) {
-				head.push(lower, value);
-			} else {
-				head[index + 1] = `${head[index + 1] ?? ""}, ${value}`;
-			}
-		},
-		delete: (name) => {
-			remove(name.toLowerCase());
-		},
-	};
-}
+/** The body of the 500 that goes out when the response cannot. */
+const ERROR_BODY = Buffer.from("Internal Server Error");
 
 /** Resolves after the microtasks that are queued now, and the ones that they queue. */
 async function afterMicrotasks(): Promise<void> {
@@ -136,21 +36,12 @@ async function drained(outgoing: ServerResponse): Promise<void> {
 	});
 }
 
-/** The flat `[name, value, …]` head of `response`, after `hooks`, for `writeHead`. */
-function headOf(response: Response, hooks: readonly HeaderHook[]): string[] {
-	const head: string[] = [];
-	for (const [name, value] of response.headers) {
-		head.push(name, value);
+/** `value` as a body chunk. Why throw: a string chunk has no `byteLength`, and the Fetch standard allows bytes only. */
+function bytesOf(value: unknown): Uint8Array {
+	if (value instanceof Uint8Array) {
+		return value;
 	}
-	const view = headView(head);
-	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
-	for (let index = hooks.length - 1; index >= 0; index -= 1) {
-		hooks[index]?.(view);
-	}
-	if (response.body != null && indexOf(head, "content-type") === -1) {
-		head.push("content-type", DEFAULT_CONTENT_TYPE);
-	}
-	return head;
+	throw new TypeError("A response body gave a chunk that is not a Uint8Array.");
 }
 
 /** The chunks that a body had queued in at most two reads, and the read that is still open. */
@@ -189,29 +80,23 @@ async function readAhead(
 		} else if (next.result.done) {
 			ahead.done = true;
 		} else {
-			ahead.chunks.push(next.result.value);
-			ahead.size += next.result.value.byteLength;
+			const chunk = bytesOf(next.result.value);
+			ahead.chunks.push(chunk);
+			ahead.size += chunk.byteLength;
 		}
 	}
 	return ahead;
 }
 
-/** Throws when a body that ended gave fewer bytes than its `Content-Length`. */
-function checkLength(bytes: number, length: number | undefined): void {
-	if (length != null && bytes < length) {
-		throw new Error("The body ended before its Content-Length.");
-	}
-}
-
-/** Writes the rest of the body at the pace of the client, then ends the response. */
+/**
+ * Writes the rest of the body at the pace of the client, then ends the
+ * response. Why no length check: `strictContentLength` makes Node throw for a
+ * body that does not match its `Content-Length`.
+ */
 async function pump(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 	first: Promise<ReadResult>,
-	{
-		outgoing,
-		edge,
-		length,
-	}: { outgoing: ServerResponse; edge: NodeEdge; length: number | undefined },
+	{ outgoing, edge }: { outgoing: ServerResponse; edge: ResponseEdge },
 ): Promise<void> {
 	let read = first;
 	for (;;) {
@@ -221,12 +106,13 @@ async function pump(
 			return;
 		}
 		if (result.done) {
-			checkLength(edge.bytes, length);
 			outgoing.end();
 			return;
 		}
-		edge.bytes += result.value.byteLength;
-		if (!outgoing.write(result.value)) {
+		const chunk = bytesOf(result.value);
+		const flowing = outgoing.write(chunk);
+		edge.bytes += chunk.byteLength;
+		if (!flowing) {
 			// oxlint-disable-next-line no-await-in-loop -- the client sets the pace.
 			await drained(outgoing);
 		}
@@ -234,80 +120,115 @@ async function pump(
 	}
 }
 
+/** Writes the head and the body of `response`, with `head` in place of its headers. */
+async function writeBody(
+	response: Response,
+	reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
+	{ outgoing, edge, head }: { outgoing: ServerResponse; edge: ResponseEdge; head: string[] },
+): Promise<void> {
+	const { body, status } = response;
+	if (body == null || reader == null) {
+		outgoing.writeHead(status, head);
+		outgoing.end();
+		return;
+	}
+	if (headerIndex(head, "content-type") === -1) {
+		head.push("content-type", DEFAULT_CONTENT_TYPE);
+	}
+	const ahead = await readAhead(reader, body);
+	if (outgoing.destroyed) {
+		return;
+	}
+	if (ahead.done) {
+		const index = headerIndex(head, "content-length");
+		if (index === -1 && headerIndex(head, "transfer-encoding") === -1) {
+			head.push("content-length", String(ahead.size));
+		} else if (index !== -1 && Number(head[index + 1]) !== ahead.size) {
+			throw new Error("The body does not match its Content-Length.");
+		}
+		outgoing.writeHead(status, head);
+		outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
+		edge.bytes += ahead.size;
+		return;
+	}
+	outgoing.writeHead(status, head);
+	for (const chunk of ahead.chunks) {
+		outgoing.write(chunk);
+		edge.bytes += chunk.byteLength;
+	}
+	if (ahead.chunks.length === 0) {
+		// Why: the client gets the head at once, such as the open of an event stream.
+		outgoing.flushHeaders();
+	}
+	await pump(reader, ahead.pending ?? reader.read(), { outgoing, edge });
+}
+
 /**
- * Writes `response` to `outgoing`. It runs the header hooks of `edge` on the
- * head, and counts the body bytes in `edge`. It never rejects.
+ * Writes `response` to `outgoing`, with the headers that the server gave
+ * `edge` for it, and counts the body bytes in `edge`. It never rejects.
  *
- * - A body that ends within the chunks that it has queued goes out with its
- *   `Content-Length`, in one socket write with the head.
+ * - A body that ends within two reads of the chunks that it has queued goes
+ *   out with its `Content-Length`, in one socket write with the head.
  * - When the first chunk is not ready, the head goes out at once, so an event
  *   stream opens at once. A stream of the host's gzip whose source gave bytes
  *   is the exception: zlib finishes it soon, so the head waits for it.
  * - It reads the next chunk only when Node takes the last one, and it cancels
  *   the body when the socket closes.
- * - A body that fails, or that ends before its `Content-Length`, destroys the
- *   socket, so no client and no cache keeps a cut response as complete.
+ * - When a step fails before the head goes out, such as a body that fails or
+ *   a header that Node rejects, a 500 goes out. After the head, a failure or
+ *   a body that does not match its `Content-Length` destroys the socket, so
+ *   no client and no cache keeps a cut response as complete.
  */
 async function writeResponse(
 	response: Response,
 	outgoing: ServerResponse,
-	edge: NodeEdge,
+	edge: ResponseEdge,
 ): Promise<void> {
-	const { body, status } = response;
-	// Why: the dev server stage answered through Node's response.
+	const { body } = response;
+	let { status } = response;
 	if (body == null && response.headers.has(ALREADY_SENT_HEADER)) {
+		// Why: the dev server stage answered through Node's response, and gave its status and length.
+		edge.bytes = Number(response.headers.get("content-length") ?? 0);
+		edge.close(status, false);
 		return;
 	}
 	if (outgoing.destroyed) {
-		edge.close(true);
+		edge.close(status, true);
 		await body?.cancel().catch(() => {});
 		return;
 	}
-	const reader = body?.getReader();
-	// Why one listener: it reports the bytes and stops the body that the client no longer reads.
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	// Why one listener: it reports what went out and stops the body that the client no longer reads.
 	// Why `on`: a response emits `close` once, and `once` adds a wrapper for each request.
 	outgoing.on("close", () => {
-		edge.close(!outgoing.writableFinished);
+		edge.close(status, !outgoing.writableFinished);
 		reader?.cancel().catch(() => {});
 	});
 	try {
-		const head = headOf(response, edge.hooks);
-		if (body == null || reader == null) {
-			outgoing.writeHead(status, head);
-			outgoing.end();
-			return;
-		}
-		const index = indexOf(head, "content-length");
-		const length = index === -1 ? undefined : Number(head[index + 1]);
-		const ahead = await readAhead(reader, body);
-		if (outgoing.destroyed) {
-			return;
-		}
-		if (ahead.done) {
-			checkLength(ahead.size, length);
-			if (length == null && indexOf(head, "transfer-encoding") === -1) {
-				head.push("content-length", String(ahead.size));
-			}
-			outgoing.writeHead(status, head);
-			edge.bytes += ahead.size;
-			outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
-			return;
-		}
-		outgoing.writeHead(status, head);
-		for (const chunk of ahead.chunks) {
-			edge.bytes += chunk.byteLength;
-			outgoing.write(chunk);
-		}
-		if (ahead.chunks.length === 0) {
-			// Why: the client gets the head at once, such as the open of an event stream.
-			outgoing.flushHeaders();
-		}
-		await pump(reader, ahead.pending ?? reader.read(), { outgoing, edge, length });
+		reader = body?.getReader();
+		// Why strict: Node then throws for a body that is longer or shorter than its `Content-Length`.
+		outgoing.strictContentLength = true;
+		await writeBody(response, reader, {
+			outgoing,
+			edge,
+			head: edge.headersFor(response) ?? headerList(response),
+		});
 	} catch (error) {
 		reader?.cancel(error).catch(() => {});
-		// oxlint-disable-next-line no-console -- the writer runs after the pipeline and its logger, as `@hono/node-server`'s writer does.
-		console.error(error);
-		outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+		edge.fail(error);
+		if (outgoing.headersSent || outgoing.destroyed) {
+			outgoing.destroy(error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
+		status = 500;
+		outgoing.writeHead(status, [
+			"content-type",
+			DEFAULT_CONTENT_TYPE,
+			"content-length",
+			String(ERROR_BODY.byteLength),
+		]);
+		outgoing.end(ERROR_BODY);
+		edge.bytes += ERROR_BODY.byteLength;
 	}
 }
 
@@ -338,22 +259,34 @@ export function keepGlobalResponse<T>(create: () => T): T {
 /** A `Host` header that a URL keeps as it is: a name or an address, and an optional port. */
 const VALID_HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/iu;
 
+/** The request target that the client sent, on a request that {@link useForwardedProto} changed. */
+const SENT_TARGET = Symbol("sentTarget");
+
+/** A Node request whose target can carry the target that the client sent. */
+type Targeted = IncomingMessage & { [SENT_TARGET]?: string };
+
 /**
  * Gives `incoming` an absolute target with the scheme of its
  * `X-Forwarded-Proto`. Why: `@hono/node-server` takes the scheme from the
  * socket, which is plain HTTP behind a proxy that ends TLS. A target with the
  * scheme gives the request its URL when it is made, so the server copies no
- * request to change it. `incoming.url` is then the absolute URL.
+ * request to change it. {@link listenerOf} then puts the target that the
+ * client sent back.
  */
-function useForwardedProto(incoming: IncomingMessage): void {
+function useForwardedProto(incoming: Targeted): void {
 	const { host, "x-forwarded-proto": proto } = incoming.headers;
+	const target = incoming.url;
 	if (
 		(proto === "https" || proto === "http") &&
 		host != null &&
 		VALID_HOST.test(host) &&
-		incoming.url?.startsWith("/") === true
+		target?.startsWith("/") === true
 	) {
-		incoming.url = `${proto}://${host}${incoming.url}`;
+		incoming[SENT_TARGET] = target;
+		// Why drop `:80` for https: a proxy can send the port of its own hop, and the server took the
+		// scheme from the socket first, where 80 is the default port, so the URL never kept it.
+		const authority = proto === "https" && host.endsWith(":80") ? host.slice(0, -3) : host;
+		incoming.url = `${proto}://${authority}${target}`;
 	}
 }
 
@@ -366,8 +299,9 @@ const writesResponses = !("Bun" in globalThis) && !("Deno" in globalThis);
 /**
  * A `node:http` request listener. `@hono/node-server` builds each request,
  * `answer` makes the response, and the listener writes it. Each HTTP/1
- * request on Node.js gets an `edge` binding, so the server leaves its header
- * hooks to the head and the access log takes the bytes from the listener.
+ * request on Node.js gets an `edge` binding, so the server gives the listener
+ * the headers after its header hooks, and the access log takes the bytes from
+ * the listener.
  * With `trustForwardedProto`, each request takes its scheme from
  * `X-Forwarded-Proto`, as the server option does.
  *
@@ -400,6 +334,12 @@ function listenerOf(
 			if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse)) {
 				return answer(request, { remoteAddress } satisfies ListenerBindings);
 			}
+			const targeted: Targeted = incoming;
+			const target = targeted[SENT_TARGET];
+			// Why: the request has its URL now, and the app gets the target that the client sent.
+			if (target != null) {
+				incoming.url = target;
+			}
 			if (!writesResponses) {
 				const response = await answer(request, { remoteAddress, incoming, outgoing });
 				// Why: `@hono/node-server` drops the body of a response whose socket closed, with no cancel.
@@ -408,12 +348,13 @@ function listenerOf(
 				}
 				return response;
 			}
-			const edge = new NodeEdge();
+			const edge = new ResponseEdge();
 			let response: Response;
 			try {
 				response = await answer(request, { remoteAddress, incoming, outgoing, edge });
 			} catch (error) {
-				edge.close(true);
+				// Why 500: `@hono/node-server` answers a failed request with one.
+				edge.close(500, false);
 				throw error;
 			}
 			await writeResponse(response, outgoing, edge);

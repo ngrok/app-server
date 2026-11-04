@@ -314,6 +314,40 @@ describe("devServerStage", () => {
 		}
 	});
 
+	it("runs each header hook once for an answer of the middleware", async () => {
+		let calls = 0;
+		const counted: Plugin = {
+			name: "counted",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					calls += 1;
+					response.set("X-Calls", String(calls));
+				}),
+		};
+		const app = createServer({
+			plugins: [counted, assets()],
+			logger: { log: () => {} },
+			listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+		});
+		const viteMiddleware: NodeMiddleware = (_request, response) => {
+			response.setHeader("Content-Type", "text/html");
+			response.end("<h1>Static</h1>");
+		};
+		const internals = serverInternals(app);
+		await internals?.prepare({
+			...(await productionSetup({ logger: { log: () => {} } })),
+			mode: "development",
+			devServer: devServerStage(viteMiddleware),
+		});
+		const server = await internals?.listen(stubFramework(), []);
+		onTestFinished(async () => server?.shutdown());
+
+		const response = await fetch(new URL("/static.html", server?.urls[0]));
+		await response.text();
+
+		expect([response.headers.get("X-Calls"), calls]).toStrictEqual(["1", 1]);
+	});
+
 	it("lets a header hook delete a header of the middleware's answer", async () => {
 		const app = createServer({
 			plugins: [buildId({ value: "v42" }), assets()],

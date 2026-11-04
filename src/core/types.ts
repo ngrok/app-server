@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import type { ResponseEdge } from "./response-edge.js";
 
 /** A log level the server writes. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -106,37 +107,21 @@ export type RequestStore = {
 	get: () => Context<AppServerEnv> | undefined;
 };
 
-/** What a listener reports when a response ends or its client goes away. */
-export type SentBody = {
+/** What went out for a response, when it ends or its client goes away. */
+export type SentResponse = {
 	/**
-	 * The bytes of the body that the listener gave to its socket, after
-	 * compression. When `aborted` is true, the client can have got fewer.
+	 * The status that went out. It differs from the status of the response
+	 * when a listener could not send the response, such as a 500 for a header
+	 * value that it cannot write.
+	 */
+	status: number;
+	/**
+	 * The body bytes that went out, after compression. When `aborted` is
+	 * true, the client can have got fewer.
 	 */
 	bytes: number;
 	/** Whether the body stopped before its end, such as when the client went away or the body failed. */
 	aborted: boolean;
-};
-
-/**
- * What a listener that writes each response itself gives each request, as
- * its `edge` binding. The server then leaves the header hooks to the head
- * that the listener writes, so it copies no response for them, and the
- * access log takes the body bytes from the listener.
- */
-export type ResponseEdge = {
-	/**
-	 * Takes the header hooks of the request, in stage order. The listener runs
-	 * them on the head of the response that the server returns, in reverse
-	 * order, so the hook of an inner stage runs first. The server calls this
-	 * once, before it returns the response.
-	 */
-	useHeaderHooks: (hooks: readonly HeaderHook[]) => void;
-	/**
-	 * Calls `report` once: when the response ends, or when the client goes
-	 * away first. `report` can run before this returns. A throw from `report`
-	 * never reaches the listener.
-	 */
-	onSent: (report: (sent: SentBody) => void) => void;
 };
 
 /** How a long-lived host stops. A serverless host has none. */
@@ -227,6 +212,8 @@ export type AppServerEnv = {
 		rewritesHtml?: boolean;
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
 		headerHooks?: HeaderHook[];
+		/** The reports of `onResponseSent` for the request. The server sets this list. */
+		sentReports?: ((sent: SentResponse) => void)[];
 	};
 };
 
@@ -241,12 +228,15 @@ export type ResponseHeaders = {
 
 /**
  * A change to the headers of a response, from a stage that runs before the
- * response. In an app server, it runs once where the response leaves, after
- * the code that each stage runs after its `next()`: on the head that a
- * listener with an `edge` writes, else on the response that the server
- * returns. A dev server middleware that sends its own response runs it
- * before it sends the head. The static stages also run it on a copy of the
- * headers, so it can run more than once for one request.
+ * response. In an app server, it changes the head once, where the response
+ * leaves, after the code that each stage runs after its `next()`: the hook of
+ * an inner stage runs first, so an outer stage has the last word. A hook that
+ * throws gives a 500, as a stage that throws does. A dev server middleware
+ * that sends its own response runs the hooks before it sends the head.
+ *
+ * The static stages and `streamingCompress` also run the hooks on a view of
+ * the headers, to read the `Cache-Control` that leaves, so a hook can run
+ * more than once for one request. A hook must only read and change headers.
  */
 // Why `undefined`, not `void`: an async hook would run after the head goes out, so its headers would be lost.
 export type HeaderHook = (headers: ResponseHeaders) => undefined;
@@ -351,7 +341,7 @@ export type StartedListener = {
 export type Listener = {
 	/** A name for logs. */
 	name: string;
-	start: (fetch: FetchHandler, options: ListenerStartOptions) => Promise<StartedListener>;
+	start: (fetch: FetchHandler, options?: ListenerStartOptions) => Promise<StartedListener>;
 };
 
 /** What the server tells a listener when it starts it. */
@@ -360,6 +350,7 @@ export type ListenerStartOptions = {
 	 * The `trustForwardedProto` of the server. A listener that builds each
 	 * request itself can then take the scheme from `X-Forwarded-Proto` at once,
 	 * so the server copies no request to change it.
+	 * @default false
 	 */
-	trustForwardedProto: boolean;
+	trustForwardedProto?: boolean;
 };

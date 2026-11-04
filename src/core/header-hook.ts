@@ -67,13 +67,11 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
 
 /**
  * Runs `hook` on the response headers after the later stages. In an app
- * server, the hook runs once where the response leaves, after the code that
- * each stage runs after its `next()`: on the head that the listener writes,
- * so the response needs no copy, else on the response that the server
- * returns. So a stage can decide after its `next()` what its hook does. A
- * dev server middleware that sends its own response runs the hook before it
- * sends the head, so each response gets the same headers in development and
- * in production.
+ * server, the hook changes the head once, where the response leaves, after
+ * the code that each stage runs after its `next()`. So a stage can decide
+ * after its `next()` what its hook does, and the response needs no copy. A
+ * hook that throws gives a 500. See {@link HeaderHook} for the order of the
+ * hooks and the views that also run them.
  *
  * @example
  * const frameOptions: Plugin = {
@@ -98,22 +96,6 @@ export async function withHeaderHook(
 	}
 	hooks.push(hook);
 	await next();
-}
-
-/**
- * Runs `hooks` on the headers of `context.res`, in reverse order, so the hook
- * of an inner stage runs first and an outer stage has the last word. The
- * server calls it once, after every stage, when no listener takes the hooks.
- * The first change copies the response.
- */
-export function runHeaderHooks(context: Context<AppServerEnv>, hooks: readonly HeaderHook[]): void {
-	if (hooks.length === 0) {
-		return;
-	}
-	const headers = responseHeaders(context);
-	for (let index = hooks.length - 1; index >= 0; index -= 1) {
-		hooks[index]?.(headers);
-	}
 }
 
 /**

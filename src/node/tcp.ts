@@ -43,7 +43,7 @@ export function tcp({
 }: TcpOptions = {}): Listener {
 	return {
 		name: "tcp",
-		start: async (fetch, { trustForwardedProto }) => {
+		start: async (fetch, { trustForwardedProto = false } = {}) => {
 			const options = {
 				port: port ?? (process.env.PORT == null ? 3000 : parsePort(process.env.PORT)),
 				hostname: host ?? (process.env.HOST || undefined),

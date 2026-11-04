@@ -141,7 +141,8 @@ export function devServerStage(
 		for (const [name, value] of context.res.headers) {
 			outgoing.appendHeader(name, value);
 		}
-		const undoHooks = runHooksAtHead(outgoing, context.get("headerHooks") ?? []);
+		const hooks = context.get("headerHooks") ?? [];
+		const undoHooks = runHooksAtHead(outgoing, hooks);
 		const answered = await new Promise<boolean>((resolve, reject) => {
 			const onFinish = () => {
 				resolve(true);
@@ -163,6 +164,9 @@ export function devServerStage(
 			});
 		});
 		if (answered) {
+			// Why empty the list: the hooks ran on the head that the middleware sent, so the server must
+			// not run them again on the response below.
+			hooks.length = 0;
 			// Why a new response per request: the later stages set headers on it. The headers of
 			// `RESPONSE_ALREADY_SENT` tell `@hono/node-server` to send nothing. The status and length
 			// are the middleware's, for the access log.

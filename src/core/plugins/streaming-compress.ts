@@ -125,6 +125,27 @@ function replay(
 }
 
 /**
+ * `response` with the gzip `body` and its headers. Why not in a header hook:
+ * the body and its headers go together, also to the code that an outer stage
+ * runs after its `next()`.
+ */
+function gzipped(
+	response: Response,
+	body: ReadableStream<Uint8Array>,
+	{ hasLength }: { hasLength: boolean },
+): Response {
+	const replacement = new Response(body, response);
+	replacement.headers.set("Content-Encoding", "gzip");
+	// Why the flag: a delete costs as much as a set, and a streamed page has no length.
+	if (hasLength) {
+		replacement.headers.delete("Content-Length");
+	}
+	// Why: a range of the gzip bytes cannot be served, because each response compresses again.
+	replacement.headers.delete("Accept-Ranges");
+	return replacement;
+}
+
+/**
  * Gzips text responses and flushes after each chunk, so a streamed page shell
  * or a server-sent event reaches the client at once. Chunks that the body has
  * queued together are one chunk, up to 16 KiB. `hono/compress` holds a
@@ -148,20 +169,13 @@ export function streamingCompress(): Plugin {
 			if (gzip == null) {
 				return next();
 			}
-			// Why state for the hook: the code after `next()` decides, and the hook changes the headers
-			// where the response leaves, with no copy of the response.
+			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
+			// not gzip then needs no copy for it.
 			let varies = false;
-			let gzipped = false;
 			await withHeaderHook(context, next, (headers) => {
 				const vary = varies ? withVary(headers.get("Vary"), "Accept-Encoding") : undefined;
 				if (vary != null) {
 					headers.set("Vary", vary);
-				}
-				if (gzipped) {
-					headers.set("Content-Encoding", "gzip");
-					headers.delete("Content-Length");
-					// Why: a range of the gzip bytes cannot be served, because each response compresses again.
-					headers.delete("Accept-Ranges");
 				}
 			});
 			const response = context.res;
@@ -205,10 +219,11 @@ export function streamingCompress(): Plugin {
 			) {
 				compress = false;
 			}
-			if (source !== body || compress) {
-				replaceResponse(context, new Response(compress ? gzip(source) : source, response));
+			if (compress) {
+				replaceResponse(context, gzipped(response, gzip(source), { hasLength: length != null }));
+			} else if (source !== body) {
+				replaceResponse(context, new Response(source, response));
 			}
-			gzipped = compress;
 		},
 	};
 }

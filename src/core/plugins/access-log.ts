@@ -1,7 +1,8 @@
 import type { Context } from "hono";
-import { replaceResponse, withHeaderHook } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import { errorAttributes } from "../log.js";
-import type { AppServerEnv, Plugin, SentBody } from "../types.js";
+import { onResponseSent } from "../response-edge.js";
+import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 
 /** Options for {@link accessLog}. */
 export type AccessLogOptions = {
@@ -11,7 +12,11 @@ export type AccessLogOptions = {
 	 * @default true
 	 */
 	redactQuery?: boolean;
-	/** More attributes for each request line, such as the app's user ID. */
+	/**
+	 * More attributes for each request line, such as the app's user ID. On
+	 * Node.js and Vercel, `c.res` here does not have the changes of the header
+	 * hooks.
+	 */
 	attributes?: (context: Context<AppServerEnv>) => Readonly<Record<string, unknown>>;
 	/**
 	 * Set `Server-Timing: app;dur=<ms>` on each HTML document: the time until
@@ -49,8 +54,9 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
 /**
  * One log line per request, static hits included, with Datadog standard
  * attribute names. The line goes out when the response ends or the client
- * disconnects, so a streamed response logs its full duration and size. A
- * listener with an `edge`, such as the node listener, counts the bytes.
+ * disconnects, so a streamed response logs its full duration and size. It
+ * logs the response that leaves the server, after each stage. A listener
+ * with an `edge`, such as the node listener, counts the bytes.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
@@ -77,8 +83,8 @@ export function accessLog({
 					})
 				: next());
 			// Why a catch: a log line must never change the response or stop its stream. The listener can
-			// call `write` from an event of its socket, where a throw stops the process.
-			const write = (sent: SentBody) => {
+			// call the report from an event of its socket, where a throw stops the process.
+			onResponseSent(context, (sent) => {
 				const line = lineAttributes(context, sent, started);
 				try {
 					context
@@ -94,59 +100,7 @@ export function accessLog({
 						// Why drop it: the sink failed twice, so no line can go out.
 					}
 				}
-			};
-			const response = context.res;
-			// Why HEAD: Hono drops the body of a HEAD response, so no one reads it to its end.
-			if (context.req.method === "HEAD") {
-				write({ bytes: 0, aborted: false });
-				return;
-			}
-			// Why `Content-Length`: a stage that answers through Node's response, such as Vite in
-			// development, gives a response with no body and the length it sent.
-			if (response.body == null) {
-				write({ bytes: Number(response.headers.get("Content-Length") ?? 0), aborted: false });
-				return;
-			}
-			// Why the listener first: it counts each chunk as it writes it, so the body needs no stream around it.
-			const { edge } = context.env;
-			if (edge != null) {
-				edge.onSent(write);
-				return;
-			}
-			const reader = response.body.getReader();
-			let bytes = 0;
-			const counted = new ReadableStream<Uint8Array>(
-				{
-					async pull(controller) {
-						let result: ReadableStreamReadResult<Uint8Array>;
-						try {
-							result = await reader.read();
-						} catch (error) {
-							// Why here: `cancel` does not run for a stream that failed.
-							write({ bytes, aborted: true });
-							throw error;
-						}
-						const { done, value } = result;
-						if (done) {
-							controller.close();
-							write({ bytes, aborted: false });
-							return;
-						}
-						bytes += value.byteLength;
-						controller.enqueue(value);
-					},
-					async cancel(reason) {
-						try {
-							write({ bytes, aborted: true });
-						} finally {
-							await reader.cancel(reason);
-						}
-					},
-				},
-				// Why 0: a pass-through stream must not read ahead of the client.
-				{ highWaterMark: 0 },
-			);
-			replaceResponse(context, new Response(counted, response));
+			});
 		},
 	};
 
@@ -163,12 +117,12 @@ export function accessLog({
 
 	function lineAttributes(
 		context: Context<AppServerEnv>,
-		{ bytes, aborted }: SentBody,
+		{ status, bytes, aborted }: SentResponse,
 		started: number,
 	): Record<string, unknown> {
 		const line: Record<string, unknown> = {
 			"http.url": requestUrl(context.req.url),
-			"http.status_code": context.res.status,
+			"http.status_code": status,
 			"http.useragent": context.req.header("User-Agent"),
 			"http.referer": loggedReferer(context.req.header("Referer"), { redact: redactQuery }),
 			"network.client.ip": context.get("clientAddress"),

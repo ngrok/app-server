@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { runHeaderHooks } from "./header-hook.js";
+import type { Context } from "hono";
+import type { HTTPResponseError } from "hono/types";
 import { errorAttributes, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
@@ -27,17 +28,38 @@ import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { checkOptionPlugins } from "./plugin-options.js";
 import { withRequestContext } from "./request-context.js";
+import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	FetchHandler,
 	FrameworkRuntime,
+	HeaderHook,
 	Listener,
 	LogSink,
 	Plugin,
 	RequestStore,
+	SentResponse,
 	SetupInfo,
 } from "./types.js";
+
+/** The response for `error`, as `onError` gives it for a stage that throws. */
+function answerError(error: Error | HTTPResponseError, context: Context<AppServerEnv>): Response {
+	// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
+	if ("getResponse" in error && typeof error.getResponse === "function") {
+		const response: unknown = error.getResponse();
+		if (response instanceof Response) {
+			return response;
+		}
+	}
+	context.get("logger").error("unhandled error", errorAttributes(error));
+	return context.text("Internal Server Error", 500);
+}
+
+/** {@link answerError} for any thrown value. */
+function answerThrown(thrown: unknown, context: Context<AppServerEnv>): Response {
+	return answerError(asError(thrown), context);
+}
 
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
 const appInternals = new WeakMap<AppServer, ServerInternals>();
@@ -333,7 +355,8 @@ export function createServer({
 		app.fetch = async (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
 	}
 	app.use(async (context, next) => {
-		context.set("logger", requestLogger(logger, context));
+		const requestLog = requestLogger(logger, context);
+		context.set("logger", requestLog);
 		const remoteAddress = context.env?.remoteAddress;
 		context.set(
 			"clientAddress",
@@ -342,16 +365,18 @@ export function createServer({
 				: (forwardedClient(context.req.header("X-Forwarded-For"), trustedProxyHops) ??
 						remoteAddress),
 		);
-		// Why a list here: each stage's header hook then runs once, where the response leaves.
-		context.set("headerHooks", []);
+		// Why lists here: each stage's header hook then changes the head once, where the response
+		// leaves, and each report gets the response that leaves.
+		const hooks: HeaderHook[] = [];
+		const reports: ((sent: SentResponse) => void)[] = [];
+		context.set("headerHooks", hooks);
+		context.set("sentReports", reports);
+		const given = context.env?.edge;
+		// Why claim before the stages: a request that the app sends through itself again with `c.env`
+		// gets the same edge, and must change its own response.
+		const edge = given?.claim(requestLog) === true ? given : undefined;
 		await withRequestContext(requestStore, context, next);
-		const hooks = context.get("headerHooks") ?? [];
-		const { edge } = context.env;
-		if (edge == null) {
-			runHeaderHooks(context, hooks);
-		} else {
-			edge.useHeaderHooks(hooks);
-		}
+		finishResponse(context, { hooks, reports, edge, fail: answerThrown });
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
@@ -379,17 +404,7 @@ export function createServer({
 			throw asError(error);
 		}
 	});
-	app.onError((error, context) => {
-		// Why no `instanceof`: the app's routes can throw an `HTTPException` from another copy of Hono.
-		if ("getResponse" in error && typeof error.getResponse === "function") {
-			const response: unknown = error.getResponse();
-			if (response instanceof Response) {
-				return response;
-			}
-		}
-		context.get("logger").error("unhandled error", errorAttributes(error));
-		return context.text("Internal Server Error", 500);
-	});
+	app.onError(answerError);
 
 	let prepared: Promise<void> | undefined;
 	let running: RunningServer | undefined;

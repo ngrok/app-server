@@ -84,6 +84,10 @@ export {
 } from "./request-context.js";
 export {
 	//,
+	ResponseEdge,
+} from "./response-edge.js";
+export {
+	//,
 	shutdownSignal,
 } from "./shutdown.js";
 
@@ -172,9 +176,8 @@ export type {
 	RequestContext,
 	RequestLogger,
 	RequestStore,
-	ResponseEdge,
 	ResponseHeaders,
-	SentBody,
+	SentResponse,
 	ServerBindings,
 	SetupInfo,
 	StartedListener,
