@@ -26,7 +26,7 @@ A CDN that keeps the `/assets/*` files makes the asset gain smaller for a visito
 How we measured:
 
 - Build the package with `pnpm run build`, then build `test/fixtures/react-router` with `react-router build`.
-- In that directory, run `node build/server/app-server.js` and `react-router-serve build/server/index.js`, with `NODE_ENV=production`. Each server is one process.
+- In that directory, run `node build/server/app-server.js` and `pnpm exec react-router-serve build/server/index.js`, with `NODE_ENV=production`. Each server is one process. `pnpm install` installs `@react-router/serve` as a development dependency of this repo.
 - Send load to each route with `oha -z 5s -c 64`: 64 connections for 5 seconds. Use `--disable-compression` for the runs with no `Accept-Encoding`.
 - The table gives the median of 5 rounds. The two servers alternate in each round, and `app-server` got more requests each second in each round.
 - The versions are Node.js 26.13, `@react-router/serve` 8.5.1, Express 5.3.0, `compression` 1.8.2, and `oha` 1.16.0. The machine is one Apple M3 Max with macOS.
