@@ -239,9 +239,12 @@ async function check(runtime: string): Promise<void> {
 	}
 }
 
-/** `app-server start` on Node: Ctrl+C stops the server at once, though the app left a timer. */
+/**
+ * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
+ * server at once, though the app left a timer.
+ */
 async function checkStart(): Promise<void> {
-	const { child, url } = startServer("node", [cliPath, "start", "--port", "0"], {
+	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
 		cwd: devDirectory,
 		env: { HOST: "127.0.0.1" },
 	});
@@ -251,6 +254,11 @@ async function checkStart(): Promise<void> {
 		const exitCode = exited(child, 5_000);
 		child.kill("SIGINT");
 		assert.equal(await exitCode, 0, "`start` exits without waiting for the app's timers");
+		assert.deepEqual(
+			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
+			["vite plugin saw listening", "vite plugin saw close"],
+			"a Vite plugin gets the HTTP server's events",
+		);
 		process.stdout.write("ok node start\n");
 	} finally {
 		child.kill("SIGKILL");

@@ -12,5 +12,16 @@ export default {
 			name: "@ngrok/app-server",
 			resolveId: (id) => (id === "virtual:@ngrok/app-server/entry" ? entry : undefined),
 		},
+		{
+			// Why: a plugin that waits for the HTTP server's events, as some apps' plugins do.
+			name: "http-server-events",
+			configureServer: (server) => {
+				for (const event of ["listening", "close"]) {
+					server.httpServer?.once(event, () => {
+						process.stdout.write(`${JSON.stringify({ message: `vite plugin saw ${event}` })}\n`);
+					});
+				}
+			},
+		},
 	],
 };

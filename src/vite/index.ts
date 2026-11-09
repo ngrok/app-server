@@ -9,11 +9,21 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isBuiltin } from "node:module";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+	basename,
+	dirname,
+	extname,
+	isAbsolute,
+	join,
+	posix,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
-import { BUILD_MANIFEST_FILE, manifestKey } from "../core/build-manifest.js";
+import { BUILD_MANIFEST_FILE, DEFAULT_ASSETS_PATH, manifestKey } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
@@ -122,6 +132,11 @@ export type HostOutput = {
 	clientDirectory: string;
 	/** The server entry, such as `build/server/app-server.js`. */
 	entryFile: string;
+	/**
+	 * The URL path of Vite's `build.assetsDir` in the client build, such as
+	 * `/assets/`. Its files have content hashes in their names.
+	 */
+	assetsPath: string;
 };
 
 /** Options for {@link appServer}. */
@@ -242,7 +257,22 @@ function hostOutput(config: ResolvedConfig, host: HostBuild): HostOutput {
 		root: config.root,
 		clientDirectory: outDir(config, "client"),
 		entryFile: join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName),
+		assetsPath: urlPathOfAssetsDir(
+			config.environments.client?.build.assetsDir ?? config.build.assetsDir,
+		),
 	};
+}
+
+/**
+ * The URL path of Vite's `build.assetsDir`. Why the default for the root: an
+ * immutable cache on each file of the client build would keep an old page.
+ *
+ * @example
+ * urlPathOfAssetsDir("blog-assets/build"); // => "/blog-assets/build/"
+ */
+function urlPathOfAssetsDir(assetsDir: string): string {
+	const path = posix.normalize(`/${assetsDir.replaceAll("\\", "/")}/`);
+	return path === "/" ? DEFAULT_ASSETS_PATH : path;
 }
 
 /** The absolute path of an environment's build output. */
@@ -644,19 +674,25 @@ function appBuildId({ bundleId, assetsDirectory, assets }: ClientBuild): string 
 	return hash.digest("hex").slice(0, 16);
 }
 
-/** The `buildId` of the build manifest that the client build wrote, if any. */
-function writtenBuildId(clientDirectory: string): string | undefined {
+/**
+ * The `buildId` and the `assetsPath` of the build manifest that the client
+ * build wrote. Why keep them: the prerender pass runs after the client build,
+ * which knows them.
+ */
+function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildId" | "assetsPath"> {
 	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
-	if (!existsSync(path)) {
-		return undefined;
+	const manifest: unknown = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+	if (typeof manifest !== "object" || manifest == null) {
+		return {};
 	}
-	const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
-	return typeof manifest === "object" &&
-		manifest != null &&
-		"buildId" in manifest &&
-		typeof manifest.buildId === "string"
-		? manifest.buildId
-		: undefined;
+	return {
+		...("buildId" in manifest && typeof manifest.buildId === "string"
+			? { buildId: manifest.buildId }
+			: {}),
+		...("assetsPath" in manifest && typeof manifest.assetsPath === "string"
+			? { assetsPath: manifest.assetsPath }
+			: {}),
+	};
 }
 
 /**
@@ -699,10 +735,8 @@ function capture(server: PreviewServer, afterPass: () => void): void {
 		next();
 	});
 	server.httpServer.once("close", () => {
-		const buildId = writtenBuildId(clientDirectory);
 		writeBuildManifest(clientDirectory, {
-			// Why keep it: the prerender pass runs after the client build, which derived it.
-			...(buildId == null ? {} : { buildId }),
+			...clientBuildFields(clientDirectory),
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
@@ -776,7 +810,7 @@ function writeCopies(path: string): void {
 
 /**
  * Runs {@link writeCopies} for each file in the client build, except dotfiles
- * such as the copies. With `changedSince`, only for a file that changed at or
+ * such as the copies, and except a link or a file in a linked directory. With `changedSince`, only for a file that changed at or
  * after that time, in milliseconds since the epoch.
  */
 function writeAllCopies(
@@ -786,18 +820,31 @@ function writeAllCopies(
 	if (!existsSync(clientDirectory)) {
 		return;
 	}
-	for (const entry of readdirSync(clientDirectory, { recursive: true, withFileTypes: true })) {
-		const path = join(entry.parentPath, entry.name);
+	for (const path of filesInside(clientDirectory)) {
 		// Why skip dotfiles: the server never sends one, such as `.app-server.json`.
 		if (
-			entry.isFile() &&
-			!entry.name.startsWith(".") &&
+			!basename(path).startsWith(".") &&
 			(changedSince == null ||
 				(statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= changedSince)
 		) {
 			writeCopies(path);
 		}
 	}
+}
+
+/**
+ * The path of each file under `directory`. Why not through a link: a copy goes
+ * next to its file, so a file in a linked directory would get its copies in
+ * the link's target, outside the client build.
+ */
+function filesInside(directory: string): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) {
+			return filesInside(path);
+		}
+		return entry.isFile() ? [path] : [];
+	});
 }
 
 /**
@@ -888,6 +935,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 				};
 				writeBuildManifest(directory, {
 					buildId: clientBuild.bundleId,
+					assetsPath: urlPathOfAssetsDir(this.environment.config.build.assetsDir),
 					prerendered: [],
 					headers: {},
 					scriptHashes: {},

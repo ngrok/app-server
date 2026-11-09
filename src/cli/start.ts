@@ -1,4 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
+import type { Server } from "node:http";
+import type { Plugin } from "vite";
 import { errorAttributes, jsonSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
@@ -14,7 +16,8 @@ import { listenFromPort } from "./start-port.js";
  * Runs the app in development: the same pipeline as production, with Vite in
  * middleware mode inside it. Each request loads the server entry through
  * Vite's SSR runner, so an edit to a route or to the app's `server.ts` applies
- * at once. HMR shares the port.
+ * at once. HMR shares the port. Vite's plugins get the CLI's HTTP server as
+ * `server.httpServer`.
  *
  * The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, the
  * server tries each next port, unless Vite's `server.strictPort` is true. The
@@ -24,8 +27,9 @@ export async function start(): Promise<void> {
 	const vite = await import("vite");
 	const httpServer = createHttpServer();
 	const viteServer = await vite.createServer({
-		server: { middlewareMode: true, ws: { server: httpServer } },
+		server: { middlewareMode: { server: httpServer }, ws: { server: httpServer } },
 		appType: "custom",
+		plugins: [shareHttpServer(httpServer)],
 	});
 	// Why read it for each request: a Vite restart, such as after a config edit, replaces the environments.
 	const ssrRunner = () => {
@@ -104,6 +108,28 @@ export async function start(): Promise<void> {
 			void Promise.all([pluginsStopped, httpClosed, viteClosed]).finally(exitAfterFlush);
 		});
 	}
+}
+
+/**
+ * A Vite plugin that sets `server.httpServer` to the CLI's HTTP server before
+ * the `configureServer` hooks of the app's plugins run. Why: in middleware
+ * mode, Vite sets it to `null`. Then a plugin that waits for `listening` or
+ * `close` on it does nothing, with no error.
+ *
+ * @example
+ * vite.createServer({ plugins: [shareHttpServer(httpServer)] });
+ */
+function shareHttpServer(httpServer: Server): Plugin {
+	return {
+		name: "@ngrok/app-server:http-server",
+		enforce: "pre",
+		configureServer: {
+			order: "pre",
+			handler: (server) => {
+				server.httpServer = httpServer;
+			},
+		},
+	};
 }
 
 /** The hostname for Vite's `server.host`: `true` is every interface, and no value is `localhost`. */

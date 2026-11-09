@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from "hono";
-import { readBuildManifest } from "./build-manifest.js";
+import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { errorAttributes } from "./log.js";
@@ -119,6 +119,7 @@ export function createEntry({
 			capturedHeaders: new Map(Object.entries(manifest.headers)),
 			scriptHashes: new Map(Object.entries(manifest.scriptHashes)),
 			buildId: manifest.buildId,
+			assetsPath: manifest.assetsPath ?? DEFAULT_ASSETS_PATH,
 		};
 		await internals.prepare(info);
 		return runtime;

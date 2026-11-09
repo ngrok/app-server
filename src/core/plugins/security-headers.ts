@@ -15,6 +15,11 @@ export type SecurityHeaderValues = {
 	 * policy. It has no default.
 	 */
 	"Content-Security-Policy"?: string | false;
+	/**
+	 * The browser features that the page and its frames can use, such as
+	 * `camera=(), microphone=(), geolocation=()`. It has no default.
+	 */
+	"Permissions-Policy"?: string | false;
 };
 
 // Why no `includeSubDomains`: a browser keeps HSTS for a year, and on an apex domain it would force
@@ -40,9 +45,10 @@ export type SecurityHeadersOptions = {
  * - `Cross-Origin-Opener-Policy: same-origin`
  * - `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
  *
- * A response that has a header keeps its own value. The exception is
- * `Content-Security-Policy`, which has no default: the plugin adds a set
- * value as a second policy, and a browser enforces both.
+ * `Content-Security-Policy` and `Permissions-Policy` have no default. A
+ * response that has a header keeps its own value. The exception is
+ * `Content-Security-Policy`: the plugin adds a set value as a second policy,
+ * and a browser enforces both.
  * `defaultPlugins()` puts it before the static stages, so it also sees
  * prerendered pages.
  *
@@ -52,6 +58,7 @@ export type SecurityHeadersOptions = {
  * 		headers: {
  * 			"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
  * 			"Content-Security-Policy": "frame-ancestors 'none'",
+ * 			"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
  * 		},
  * 	},
  * });

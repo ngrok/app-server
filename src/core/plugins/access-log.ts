@@ -3,6 +3,7 @@ import { withHeaderHook } from "../header-hook.js";
 import { errorAttributes } from "../log.js";
 import { onResponseSent } from "../response-edge.js";
 import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
+import { answeredByDevServer } from "./static.js";
 
 /** Options for {@link accessLog}. */
 export type AccessLogOptions = {
@@ -62,6 +63,12 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  * logs the response that leaves the server, after each stage. A listener
  * with an `edge`, such as the node listener, counts the bytes.
  *
+ * - A 5xx line has the level `error`, and each other line has the level `info`.
+ * - A line has `http.route` when the framework adapter gives the route
+ *   pattern that it matched, such as `/domains/:domainId`.
+ * - In development, a request that Vite answers, such as a source module,
+ *   gets no line.
+ *
  * @example
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
  * // {"level":"info","message":"request","http.status_code":200,"network.bytes_written":5120,"duration":1830000,...}
@@ -86,14 +93,21 @@ export function accessLog({
 						}
 					})
 				: next());
+			if (answeredByDevServer(context)) {
+				return;
+			}
 			// Why a catch: a log line must never change the response or stop its stream. The listener can
 			// call the report from an event of its socket, where a throw stops the process.
 			onResponseSent(context, (sent) => {
 				const line = lineAttributes(context, sent, started);
 				try {
-					context
-						.get("logger")
-						.info("request", attributes == null ? line : { ...line, ...attributes(context, sent) });
+					// Why `error` for a 5xx only: Datadog takes the status of a line from its level, and crawlers
+					// make most 4xx responses.
+					const logger = context.get("logger");
+					logger[sent.status >= 500 ? "error" : "info"](
+						"request",
+						attributes == null ? line : { ...line, ...attributes(context, sent) },
+					);
 				} catch (error) {
 					try {
 						context.get("logger").error("access log attributes failed", {
@@ -134,6 +148,10 @@ export function accessLog({
 			// Why nanoseconds: Datadog's standard `duration` attribute is in nanoseconds.
 			duration: Math.round((performance.now() - started) * 1_000_000),
 		};
+		const route = context.get("routePattern");
+		if (route != null) {
+			line["http.route"] = route;
+		}
 		if (aborted) {
 			line["http.client_aborted"] = true;
 		}

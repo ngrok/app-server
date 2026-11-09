@@ -10,6 +10,7 @@ import type { BuildIdOptions } from "./plugins/build-id.js";
 import { health } from "./plugins/health.js";
 import type { HealthOptions } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
+import type { NoindexOptions } from "./plugins/noindex.js";
 import { privateDocuments } from "./plugins/private-documents.js";
 import { redirects } from "./plugins/redirects.js";
 import type { RedirectRule } from "./plugins/redirects.js";
@@ -131,10 +132,10 @@ export type DefaultPluginsOptions = {
 	securityHeaders?: SecurityHeadersOptions | false;
 	/**
 	 * Sets `X-Robots-Tag: noindex, nofollow` on each response, such as on a
-	 * preview deploy. See {@link noindex}.
+	 * preview deploy. The options decide for each request. See {@link noindex}.
 	 * @default false
 	 */
-	noindex?: boolean;
+	noindex?: boolean | NoindexOptions;
 	/**
 	 * The options of the build ID on each document and data response. `false`
 	 * turns it off. See {@link buildId}.
@@ -186,7 +187,9 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		// Why before the static stages: these plugins must see the prerendered pages. Why before
 		// `beforeStatic`: an app plugin, such as an auth check, then gets the CSP nonce, and its own
 		// responses get these headers. Their order among themselves changes no response.
-		...(options.noindex === true ? [noindex()] : []),
+		...(options.noindex == null || options.noindex === false
+			? []
+			: [noindex(options.noindex === true ? {} : options.noindex)]),
 		...(options.buildId === false ? [] : [buildId(options.buildId)]),
 		...(options.contentSecurityPolicy == null
 			? []

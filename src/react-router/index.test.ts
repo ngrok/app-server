@@ -1,9 +1,13 @@
 import { RouterContextProvider } from "react-router";
 import type { HandleDocumentRequestFunction, ServerBuild } from "react-router";
 import { describe, expect, it } from "vitest";
+import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { appServerContext, isServerBuild, runtime } from "./index.js";
 import { testServer } from "../test-server.js";
+
+/** The module of a route in a server build. */
+type RouteModule = NonNullable<ServerBuild["routes"][string]>["module"];
 
 /** A server build with one page, `/whoami`, whose document reads the app server context. */
 function documentBuild(overrides: Partial<ServerBuild> = {}): ServerBuild {
@@ -56,6 +60,61 @@ describe("runtime", () => {
 			requestId: undefined,
 			logger: { info: expect.any(Function) },
 		});
+	});
+
+	it("logs the route pattern that React Router matched as http.route, and runs the app's middleware", async () => {
+		const seen: string[] = [];
+		const build = documentBuild();
+		build.routes.root = {
+			id: "root",
+			path: "",
+			module: {
+				default: () => null,
+				middleware: [
+					async ({ request }, next) => {
+						seen.push(new URL(request.url).pathname);
+						return next();
+					},
+				],
+			},
+		};
+		build.routes.domain = {
+			id: "domain",
+			parentId: "root",
+			path: "domains/:domainId",
+			module: { default: () => null },
+		};
+		build.routes.status = {
+			id: "status",
+			parentId: "root",
+			path: "api/status",
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a resource route has no default export, which the type requires.
+			module: { loader: () => Response.json({ ok: true }) } as unknown as RouteModule,
+		};
+		const framework = runtime(build, { mode: "production" });
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			render: framework.fetch,
+		});
+
+		for (const path of [
+			"/domains/d_1",
+			"/domains/d_1.data",
+			"/api/status",
+			"/whoami",
+			"/nothing/here",
+		]) {
+			await (await request(path)).text();
+		}
+
+		expect(lines.map((line) => line.attributes["http.route"])).toStrictEqual([
+			"/domains/:domainId",
+			"/domains/:domainId",
+			"/api/status",
+			"/whoami",
+			undefined,
+		]);
+		expect(seen).toContain("/domains/d_1");
 	});
 
 	it("reads the client directory and prerendered paths from the build", () => {

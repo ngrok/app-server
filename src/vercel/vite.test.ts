@@ -62,7 +62,7 @@ describe("vercel", () => {
 			regions: ["iad1"],
 		});
 
-		host.output?.({ root, clientDirectory, entryFile });
+		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/" });
 
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
@@ -129,6 +129,7 @@ describe("vercel", () => {
 			root: nested,
 			clientDirectory: join(nested, "dist/client"),
 			entryFile: join(nested, "dist/app-server.js"),
+			assetsPath: "/assets/",
 		});
 
 		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
@@ -136,6 +137,38 @@ describe("vercel", () => {
 			"client/robots.txt",
 			"vercel-function.js",
 		]);
+	});
+
+	it("puts the files of Vite's build.assetsDir on the CDN with the immutable cache", () => {
+		const custom = mkdtempSync(join(tmpdir(), "app-server-vercel-assets-dir-"));
+		onTestFinished(() => {
+			rmSync(custom, { recursive: true, force: true });
+		});
+		write(join(custom, "build/server/app-server.js"), "export const appServer = {};\n");
+		write(join(custom, "build/client/blog-assets/build/app-abc.js"), "app();");
+		write(join(custom, "build/client/blog-assets/post.png"), "png");
+
+		vercel().output?.({
+			root: custom,
+			clientDirectory: join(custom, "build/client"),
+			entryFile: join(custom, "build/server/app-server.js"),
+			assetsPath: "/blog-assets/build/",
+		});
+
+		expect(filesUnder(join(custom, ".vercel/output/static"))).toStrictEqual([
+			"blog-assets/build/app-abc.js",
+		]);
+		expect(json(join(custom, ".vercel/output/config.json"))).toMatchObject({
+			routes: [
+				{ handle: "filesystem" },
+				{ src: "^/(.*)$", dest: "/index" },
+				{ handle: "hit" },
+				{
+					src: String.raw`^/blog-assets/build/.*$`,
+					headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+				},
+			],
+		});
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

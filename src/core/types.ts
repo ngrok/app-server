@@ -201,6 +201,12 @@ export type AppServerEnv = {
 		 * dev server stage sets it, for a 304 too.
 		 */
 		documentScriptHashes?: readonly string[];
+		/**
+		 * The route pattern that the framework matched, such as
+		 * `/domains/:domainId`. The framework adapter sets it, and the access log
+		 * writes it as `http.route`.
+		 */
+		routePattern?: string;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
@@ -285,6 +291,8 @@ export type SetupInfo = {
 			mode: "production";
 			/** The URL paths that the build prerendered. */
 			prerenderedPaths: readonly string[];
+			/** The URL path of the hashed files of the client build, such as `/assets/`. */
+			assetsPath: string;
 	  }
 	| {
 			mode: "development";

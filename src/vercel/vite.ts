@@ -15,9 +15,9 @@ import type { HostBuild, HostOutput } from "../vite/index.js";
 export type VercelOptions = {
 	/**
 	 * More URL path prefixes of the client build that Vercel's CDN serves,
-	 * such as `["/blog-assets/"]`. Each starts and ends with `/`. `/assets/`
-	 * is always one. Their files skip the pipeline, and the function does not
-	 * carry them.
+	 * such as `["/blog-assets/"]`. Each starts and ends with `/`. The URL path
+	 * of Vite's `build.assetsDir`, `/assets/` by default, is always one. Their
+	 * files skip the pipeline, and the function does not carry them.
 	 */
 	cdnPaths?: readonly string[];
 	/** Headers for each file that the CDN serves, such as CORS headers. */
@@ -26,12 +26,13 @@ export type VercelOptions = {
 	regions?: readonly string[];
 	/** The memory of the function, in MB. @default the project's */
 	memory?: number;
-	/** The longest time that a request runs, in seconds. @default the project's */
+	/**
+	 * The longest time that a request runs, in seconds. It applies to each
+	 * request, because one function serves each route. A route module's
+	 * `config` export does nothing. @default the project's
+	 */
 	maxDuration?: number;
 };
-
-/** The hashed files of the client build. Their names change with their content. */
-const ASSETS = "/assets/";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
@@ -87,10 +88,14 @@ function filesUnder(
 
 /**
  * The `.vercel/output` routes: a CDN file gets its headers, and each other
- * request goes to the function. Why the `hit` phase: a CDN path with no file
- * goes to the function, whose `no-store` 404 must not get the immutable cache.
+ * request goes to the function. A file under `assetsPath` also gets the
+ * immutable cache. Why the `hit` phase: a CDN path with no file goes to the
+ * function, whose `no-store` 404 must not get the immutable cache.
  */
-function routes(prefixes: readonly string[], cdnHeaders: Readonly<Record<string, string>>) {
+function routes(
+	prefixes: readonly string[],
+	{ assetsPath, cdnHeaders }: { assetsPath: string; cdnHeaders: Readonly<Record<string, string>> },
+) {
 	return [
 		{ handle: "filesystem" },
 		{ src: "^/(.*)$", dest: "/index" },
@@ -98,7 +103,7 @@ function routes(prefixes: readonly string[], cdnHeaders: Readonly<Record<string,
 		...prefixes.map((prefix) => ({
 			// Why `.*$`: Vercel adds `$` to a pattern that has none.
 			src: `^${escaped(prefix)}.*$`,
-			headers: prefix === ASSETS ? { ...cdnHeaders, "Cache-Control": IMMUTABLE } : cdnHeaders,
+			headers: prefix === assetsPath ? { ...cdnHeaders, "Cache-Control": IMMUTABLE } : cdnHeaders,
 			continue: true,
 		})),
 	];
@@ -106,10 +111,10 @@ function routes(prefixes: readonly string[], cdnHeaders: Readonly<Record<string,
 
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
-	{ root, clientDirectory, entryFile }: HostOutput,
+	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, regions, memory, maxDuration }: VercelOptions,
 ): void {
-	const prefixes = [ASSETS, ...cdnPaths.filter((path) => path !== ASSETS)];
+	const prefixes = [assetsPath, ...cdnPaths.filter((path) => path !== assetsPath)];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
 	const fromRoot = (path: string): string => {
@@ -174,7 +179,7 @@ function writeOutput(
 	);
 	writeFileSync(
 		join(output, "config.json"),
-		`${JSON.stringify({ version: 3, routes: routes(prefixes, cdnHeaders) }, null, "\t")}\n`,
+		`${JSON.stringify({ version: 3, routes: routes(prefixes, { assetsPath, cdnHeaders }) }, null, "\t")}\n`,
 	);
 }
 
@@ -193,9 +198,9 @@ function checkCdnPaths(paths: readonly string[]): void {
  * The build side of the vercel host. After the build, it writes
  * `.vercel/output` in the Vite root, for `vercel deploy --prebuilt`:
  *
- * - `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN
- *   serves them, and each file under `/assets/` gets a one-year immutable
- *   cache.
+ * - `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default)
+ *   and the other `cdnPaths`. The CDN serves them, and each file of
+ *   `build.assetsDir` gets a one-year immutable cache.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
  *   each other request, with the whole server build and the rest of the
  *   client build.
