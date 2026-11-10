@@ -1,7 +1,14 @@
 import { parseAccept } from "hono/utils/accept";
 
+/**
+ * The content types that the server and the build compress: each text type,
+ * each type with a `+json` or `+xml` suffix, and the other types that
+ * `mime-db` marks compressible and that a site sends, such as `image/x-icon`
+ * and `font/ttf`. Why not `font/woff` and `font/woff2`: they are compressed
+ * already.
+ */
 const COMPRESSIBLE =
-	/^(?:text\/|application\/(?:json|javascript|xml|schema\+json|manifest\+json|x-ndjson|connect\+json)|image\/svg\+xml)/u;
+	/^(?:text\/|[\w-]+\/[\w.-]+\+(?:json|xml)|application\/(?:json|xml|javascript|x-ndjson|wasm|yaml|x-yaml|x-sh\b|vnd\.ms-fontobject)|image\/(?:x-icon|vnd\.microsoft\.icon|bmp)|font\/(?:ttf|otf))/u;
 
 /**
  * The smallest body that the server or the build compresses. Why: gzip

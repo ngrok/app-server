@@ -5,9 +5,9 @@ import {
 	preferredEncoding,
 	readIfQueued,
 } from "../compression.js";
-import type { ReadResult } from "../compression.js";
+import type { Encoding, ReadResult } from "../compression.js";
 import { hookedHeaders, replaceResponse, withHeaderHook } from "../header-hook.js";
-import type { Plugin, SetupInfo } from "../types.js";
+import type { Plugin } from "../types.js";
 import { withVary } from "../vary.js";
 
 /** The chunks that a body has queued, and the read that is still open, if any. */
@@ -58,7 +58,7 @@ function join(chunks: Uint8Array[], size: number): Uint8Array {
 /**
  * The body again: the queued chunks, then the rest of `reader`. Each pull
  * waits for one chunk at most, and joins it with the chunks that are queued
- * after it, up to {@link MAX_JOINED_BYTES}. Why join: gzip flushes after each
+ * after it, up to {@link MAX_JOINED_BYTES}. Why join: zlib flushes after each
  * chunk, and each flush costs more than the bytes. A renderer such as React
  * queues many small chunks at once. A chunk that comes later still goes out on
  * its own. A chunk that does not fit waits for the next pull, and an empty
@@ -124,56 +124,76 @@ function replay(
 	);
 }
 
+/** A host stream that compresses a byte stream. */
+type Compress = (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+
 /**
- * `response` with the gzip `body` and its headers. Why not in a header hook:
- * the body and its headers go together, also to the code that an outer stage
- * runs after its `next()`.
+ * `response` with the compressed `body` and its headers. Why not in a header
+ * hook: the body and its headers go together, also to the code that an outer
+ * stage runs after its `next()`.
  */
-function gzipped(
+function compressed(
 	response: Response,
 	body: ReadableStream<Uint8Array>,
-	{ hasLength }: { hasLength: boolean },
+	{ encoding, hasLength }: { encoding: Encoding; hasLength: boolean },
 ): Response {
 	const replacement = new Response(body, response);
-	replacement.headers.set("Content-Encoding", "gzip");
+	replacement.headers.set("Content-Encoding", encoding);
 	// Why the flag: a delete costs as much as a set, and a streamed page has no length.
 	if (hasLength) {
 		replacement.headers.delete("Content-Length");
 	}
-	// Why: a range of the gzip bytes cannot be served, because each response compresses again.
+	// Why: a range of the compressed bytes cannot be served, because each response compresses again.
 	replacement.headers.delete("Accept-Ranges");
 	return replacement;
 }
 
 /**
- * Gzips text responses and flushes after each chunk, so a streamed page shell
- * or a server-sent event reaches the client at once. Chunks that the body has
- * queued together are one chunk, up to 16 KiB. `hono/compress` holds a
- * stream until it ends. Skips a response that is already encoded, a partial
- * response, one marked `no-transform`, and one whose `Content-Length` is
- * under 1 KiB. It adds `Accept-Encoding` to the `Vary` of each response that
- * it can gzip. The host gives the gzip stream. On a host with none, the
- * plugin does nothing.
+ * Compresses text responses with brotli or gzip, and flushes after each
+ * chunk, so a streamed page shell or a server-sent event reaches the client
+ * at once. A client gets brotli when its `Accept-Encoding` ranks `br` at
+ * least as high as `gzip`. Chunks that the body has queued together are one
+ * chunk, up to 16 KiB. `hono/compress` holds a stream until it ends. Skips a
+ * response that is already encoded, a partial response, one marked
+ * `no-transform`, and one whose `Content-Length` is under 1 KiB. It adds
+ * `Accept-Encoding` to the `Vary` of each response that it can compress. The
+ * host gives the streams. On a host with none, the plugin does nothing.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress()] });
  */
 export function streamingCompress(): Plugin {
-	let gzip: SetupInfo["gzip"];
+	/** The host's streams, in the order that the plugin prefers them. */
+	let streams = new Map<Encoding, Compress>();
+	let offered: readonly Encoding[] = [];
+	/** The encoding that an `Accept-Encoding` header prefers, with its stream. */
+	const choose = (header: string | undefined) => {
+		const encoding = preferredEncoding(header, offered);
+		const stream = encoding == null ? undefined : streams.get(encoding);
+		return encoding == null || stream == null ? undefined : { encoding, stream };
+	};
 	return {
 		name: "streaming-compress",
-		setup: (info) => {
-			({ gzip } = info);
+		setup: ({ brotli, gzip }) => {
+			streams = new Map();
+			// Why brotli first: at quality 4 its output is smaller than gzip's, for the same CPU time.
+			if (brotli != null) {
+				streams.set("br", brotli);
+			}
+			if (gzip != null) {
+				streams.set("gzip", gzip);
+			}
+			offered = [...streams.keys()];
 		},
 		middleware: async (context, next) => {
-			if (gzip == null) {
+			if (offered.length === 0) {
 				return next();
 			}
 			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
-			// not gzip then needs no copy for it.
-			let gzipping = false;
+			// not compress then needs no copy for it.
+			let compressing = false;
 			await withHeaderHook(context, next, (headers) => {
-				// Why: the bytes of a type that the plugin never gzips, such as an image, do not vary by
+				// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
 				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
 				const type = headers.get("Content-Type");
 				const vary =
@@ -183,8 +203,8 @@ export function streamingCompress(): Plugin {
 				if (vary != null) {
 					headers.set("Vary", vary);
 				}
-				// Why: the hook of an inner stage can set the length of the body before gzip.
-				if (gzipping) {
+				// Why: the hook of an inner stage can set the length of the body before compression.
+				if (compressing) {
 					headers.delete("Content-Length");
 				}
 			});
@@ -195,14 +215,15 @@ export function streamingCompress(): Plugin {
 			}
 			const length = response.headers.get("Content-Length");
 			const { body } = response;
+			const chosen = choose(context.req.header("Accept-Encoding"));
 			if (
 				type == null ||
 				body == null ||
 				context.req.method === "HEAD" ||
 				(length != null && Number(length) < MIN_COMPRESS_BYTES) ||
-				preferredEncoding(context.req.header("Accept-Encoding"), ["gzip"]) == null ||
+				chosen == null ||
 				response.headers.has("Content-Encoding") ||
-				// Why: gzip changes the bytes, so a `Content-Range` would no longer match them.
+				// Why: compression changes the bytes, so a `Content-Range` would no longer match them.
 				response.headers.has("Content-Range") ||
 				forbidsTransform(response.headers.get("Cache-Control"))
 			) {
@@ -214,7 +235,7 @@ export function streamingCompress(): Plugin {
 				const reader = body.getReader();
 				const queued = await readQueued(reader);
 				const size = queued.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-				// Why: gzip makes a small body larger, and a body from a string has no `Content-Length`.
+				// Why: compression makes a small body larger, and a body from a string has no `Content-Length`.
 				compress = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
@@ -228,8 +249,14 @@ export function streamingCompress(): Plugin {
 					!forbidsTransform(hooked.get("Cache-Control"));
 			}
 			if (compress) {
-				gzipping = true;
-				replaceResponse(context, gzipped(response, gzip(source), { hasLength: length != null }));
+				compressing = true;
+				replaceResponse(
+					context,
+					compressed(response, chosen.stream(source), {
+						encoding: chosen.encoding,
+						hasLength: length != null,
+					}),
+				);
 			} else if (source !== body) {
 				replaceResponse(context, new Response(source, response));
 			}

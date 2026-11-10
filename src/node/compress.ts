@@ -1,12 +1,20 @@
-import { constants, crc32, createDeflateRaw, createGzip } from "node:zlib";
-import type { DeflateRaw, Gzip } from "node:zlib";
+import type { Transform } from "node:stream";
+import {
+	brotliCompressSync,
+	constants,
+	crc32,
+	createBrotliCompress,
+	createDeflateRaw,
+	createGzip,
+} from "node:zlib";
+import type { DeflateRaw } from "node:zlib";
 
 /**
- * A stream from {@link gzipStream}. Why a class: the node response writer
- * reads `busy` to hold the head for zlib's first chunk, and a field costs
- * less than a `WeakMap` entry for each response.
+ * A stream from {@link gzipStream} or {@link brotliStream}. Why a class: the
+ * node response writer reads `busy` to hold the head for zlib's first chunk,
+ * and a field costs less than a `WeakMap` entry for each response.
  */
-class GzipBody extends ReadableStream<Uint8Array> {
+class ZlibBody extends ReadableStream<Uint8Array> {
 	/** Whether the next chunk waits only on zlib, because the source gave the bytes already. */
 	public busy = false;
 }
@@ -14,13 +22,13 @@ class GzipBody extends ReadableStream<Uint8Array> {
 /**
  * Whether the next chunk of `stream` waits only on zlib, because its source
  * gave the bytes already. It gives `undefined` for a stream that is not from
- * {@link gzipStream}.
+ * {@link gzipStream} or {@link brotliStream}.
  *
  * @example
  * waitsForZlib(gzipStream(source)); // => false, until the first read gives zlib a chunk
  */
 export function waitsForZlib(stream: ReadableStream<Uint8Array>): boolean | undefined {
-	return stream instanceof GzipBody ? stream.busy : undefined;
+	return stream instanceof ZlibBody ? stream.busy : undefined;
 }
 
 /**
@@ -159,7 +167,7 @@ function release(deflater: Deflater): void {
 }
 
 /** Writes `chunk` to `stream`. zlib gives all the output of the chunk before this resolves. */
-async function write(stream: Gzip, chunk: Uint8Array): Promise<void> {
+async function write(stream: Transform, chunk: Uint8Array): Promise<void> {
 	return new Promise((resolve, reject) => {
 		stream.write(chunk, (error) => {
 			if (error == null) {
@@ -220,22 +228,28 @@ async function gzipOnce(
 	return Buffer.concat(parts);
 }
 
+/** How {@link zlibStream} compresses a body. */
+type Codec = {
+	/** A new zlib stream that flushes after each write. */
+	create: () => Transform;
+	/** The output for a body with no bytes. */
+	empty: Buffer;
+	/**
+	 * The output for a body of one chunk, up to 64 KiB, with no new zlib
+	 * stream. `use` gets the zlib stream while it compresses.
+	 */
+	once?: (value: Uint8Array, use: (deflater: Deflater | undefined) => void) => Promise<Buffer>;
+};
+
 /**
- * Gzips a byte stream. `Z_SYNC_FLUSH` makes each written chunk readable at
- * once. It reads the next source chunk only when the consumer pulls, so a slow
- * client holds back the source. When the source ends by the time zlib
- * finishes a chunk, that chunk and the gzip trailer go out as one. Why: the
- * host writes each chunk to the socket on its own, and a write costs more
+ * Compresses a byte stream with `codec`. Each written chunk is readable at
+ * once. It reads the next source chunk only when the consumer pulls, so a
+ * slow client holds back the source. When the source ends by the time zlib
+ * finishes a chunk, that chunk and the end of the stream go out as one. Why:
+ * the host writes each chunk to the socket on its own, and a write costs more
  * than its few bytes.
- *
- * A body that ends with its first chunk, up to 64 KiB, takes a pooled raw
- * deflate stream. Why: a new zlib stream costs more main-thread time than
- * zlib takes for a small page.
- *
- * @example
- * new Response(gzipStream(response.body), response);
  */
-export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableStream<Uint8Array> {
 	const reader = source.getReader();
 	let ended = false;
 	const markEnded = () => {
@@ -243,8 +257,8 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 	};
 	// Why a flag: after each zlib write, it tells with no read whether the source ended meanwhile.
 	void reader.closed.then(markEnded, () => {});
-	/** The gzip stream of a body of more than one chunk. */
-	let gzip: Gzip | undefined;
+	/** The zlib stream of a body of more than one chunk. */
+	let zlib: Transform | undefined;
 	/** The pooled deflate stream while it compresses the one chunk of a body. */
 	let pooled: Deflater | undefined;
 	let started = false;
@@ -261,11 +275,11 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 		held = [];
 		heldBytes = 0;
 	};
-	const startGzip = (
-		body: GzipBody,
+	const startZlib = (
+		body: ZlibBody,
 		controller: ReadableStreamDefaultController<Uint8Array>,
-	): Gzip => {
-		const created = createGzip({ flush: constants.Z_SYNC_FLUSH });
+	): Transform => {
+		const created = codec.create();
 		created.on("data", (chunk: Buffer) => {
 			held.push(chunk);
 			heldBytes += chunk.byteLength;
@@ -285,7 +299,7 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 		});
 		return created;
 	};
-	const stream: GzipBody = new GzipBody(
+	const stream: ZlibBody = new ZlibBody(
 		{
 			async pull(controller) {
 				try {
@@ -298,32 +312,32 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 					if (!started) {
 						started = true;
 						if (chunk.done) {
-							controller.enqueue(EMPTY_MEMBER);
+							controller.enqueue(codec.empty);
 							controller.close();
 							return;
 						}
 						stream.busy = true;
 						// Why wait: a source that closes in the pull that gave this chunk ends one microtask later.
 						await Promise.resolve();
-						if (ended && chunk.value.byteLength <= POOLED_MAX_BYTES) {
-							const member = await gzipOnce(chunk.value, (deflater) => {
+						if (codec.once != null && ended && chunk.value.byteLength <= POOLED_MAX_BYTES) {
+							const output = await codec.once(chunk.value, (deflater) => {
 								pooled = deflater;
 							});
 							stream.busy = false;
-							controller.enqueue(member);
+							controller.enqueue(output);
 							controller.close();
 							return;
 						}
 					}
-					gzip ??= startGzip(stream, controller);
+					zlib ??= startZlib(stream, controller);
 					stream.busy = true;
 					if (chunk.done) {
-						gzip.end();
+						zlib.end();
 						return;
 					}
-					await write(gzip, chunk.value);
+					await write(zlib, chunk.value);
 					if (ended) {
-						gzip.end();
+						zlib.end();
 						return;
 					}
 					stream.busy = false;
@@ -332,13 +346,13 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 					enqueueHeld(controller);
 				} catch (error) {
 					stream.busy = false;
-					gzip?.destroy();
+					zlib?.destroy();
 					throw error;
 				}
 			},
 			// Why cancel the source: a client disconnect must reach the handler, so it stops its work.
 			async cancel(reason) {
-				gzip?.destroy();
+				zlib?.destroy();
 				// Why destroy: a stream that a write still uses must never go back to the pool.
 				pooled?.stream.destroy();
 				return reader.cancel(reason);
@@ -348,4 +362,57 @@ export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<U
 		{ highWaterMark: 0 },
 	);
 	return stream;
+}
+
+const GZIP: Codec = {
+	create: () => createGzip({ flush: constants.Z_SYNC_FLUSH }),
+	empty: EMPTY_MEMBER,
+	once: gzipOnce,
+};
+
+/**
+ * Gzips a byte stream. `Z_SYNC_FLUSH` makes each written chunk readable at
+ * once. It reads the next source chunk only when the consumer pulls, so a slow
+ * client holds back the source. When the source ends by the time zlib
+ * finishes a chunk, that chunk and the gzip trailer go out as one.
+ *
+ * A body that ends with its first chunk, up to 64 KiB, takes a pooled raw
+ * deflate stream. Why: a new zlib stream costs more main-thread time than
+ * zlib takes for a small page.
+ *
+ * @example
+ * new Response(gzipStream(response.body), response);
+ */
+export function gzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	return zlibStream(source, GZIP);
+}
+
+/**
+ * The brotli quality of a response. Why 4: for HTML, its output is 10% to
+ * 18% smaller than gzip level 6, at the same or less CPU time. The
+ * `compression` middleware of Express also uses 4.
+ */
+const BROTLI_QUALITY = 4;
+
+const BROTLI_PARAMS = {
+	[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+	[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+};
+
+const BROTLI: Codec = {
+	create: () =>
+		createBrotliCompress({ flush: constants.BROTLI_OPERATION_FLUSH, params: BROTLI_PARAMS }),
+	empty: brotliCompressSync(new Uint8Array(), { params: BROTLI_PARAMS }),
+};
+
+/**
+ * Compresses a byte stream with brotli, quality 4. `BROTLI_OPERATION_FLUSH`
+ * makes each written chunk readable at once. It reads and ends as
+ * {@link gzipStream} does.
+ *
+ * @example
+ * new Response(brotliStream(response.body), response);
+ */
+export function brotliStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	return zlibStream(source, BROTLI);
 }

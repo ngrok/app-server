@@ -13,7 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
@@ -711,6 +711,14 @@ describe("appServer in a server build", () => {
 		}
 	}
 
+	/** Each file under `directory`, relative to it, in code unit order. */
+	function filesUnder(directory: string): string[] {
+		return readdirSync(directory, { recursive: true, withFileTypes: true })
+			.filter((entry) => entry.isFile())
+			.map((entry) => relative(directory, join(entry.parentPath, entry.name)).split(sep).join("/"))
+			.toSorted();
+	}
+
 	/**
 	 * Builds `entry.js` of a project with `files` and the Vite `config`, copies
 	 * the build alone to a new directory, and gives the `values` export of the
@@ -931,6 +939,96 @@ describe("appServer in a server build", () => {
 
 		expect(values).toStrictEqual(["own file"]);
 		expect(existsSync(join(server, "node_modules/og/word.txt"))).toBe(true);
+	});
+
+	/** A package like `@vercel/og`: it reads its own file, loads an optional package in a `try`, and lists a dependency that it bundled. */
+	const ogPackage = {
+		"entry.js": 'import { word } from "og";\nexport const values = [await word()];',
+		"node_modules/og/package.json": JSON.stringify({
+			name: "og",
+			type: "module",
+			exports: { ".": { node: "./dist/node.js", default: "./dist/edge.js" } },
+			dependencies: { bundled: "1.0.0" },
+			optionalDependencies: { speedy: "1.0.0" },
+		}),
+		"node_modules/og/dist/node.js": [
+			'import { readFileSync } from "node:fs";',
+			"export const word = async () => {",
+			'\tconst own = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+			"\ttry {",
+			'\t\treturn own + (await import("speedy")).suffix;',
+			"\t} catch {",
+			"\t\treturn own;",
+			"\t}",
+			"};",
+		].join("\n"),
+		"node_modules/og/dist/node.js.map": "{}",
+		"node_modules/og/dist/edge.js": "export const word = async () => 'edge';",
+		"node_modules/og/dist/word.txt": "own file",
+		...commonJsPackage("bundled", 'module.exports = "bundled";'),
+		...commonJsPackage("speedy", 'exports.suffix = " fast";'),
+		"node_modules/speedy/README.md": "docs",
+	};
+
+	it("copies only the files of an external package and its dependencies that the server build loads", async () => {
+		const { values, server } = await buildAlone(ogPackage, {});
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"og/dist/node.js",
+			"og/dist/word.txt",
+			"og/package.json",
+			"speedy/index.js",
+			"speedy/package.json",
+		]);
+	});
+
+	it("copies each file of a package in `externals.whole`, and no package in `externals.omit`", async () => {
+		const { values, server } = await buildAlone(ogPackage, {
+			plugins: [
+				appServer({
+					framework: reactRouterAdapter(),
+					host: node(),
+					externals: { whole: ["og"], omit: ["speedy"] },
+				}).find((plugin) => plugin.name === "@ngrok/app-server:standalone"),
+			],
+		});
+
+		expect(values).toStrictEqual(["own file"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"bundled/index.js",
+			"bundled/package.json",
+			"og/dist/edge.js",
+			"og/dist/node.js",
+			"og/dist/node.js.map",
+			"og/dist/word.txt",
+			"og/package.json",
+		]);
+	});
+
+	it("copies each file of a native package and of the packages that it depends on", async () => {
+		const { values, server } = await buildAlone(
+			{
+				"entry.js": 'import { native } from "native";\nexport const values = [native];',
+				...commonJsPackage("native", 'exports.native = "native";', {
+					optionalDependencies: { "native-lib": "1.0.0" },
+				}),
+				"node_modules/native/addon.node": "binary",
+				// Why: the system's loader reads a library such as libvips, so a trace cannot see it.
+				"node_modules/native-lib/package.json": JSON.stringify({ name: "native-lib" }),
+				"node_modules/native-lib/lib/libnative.so": "library",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["native"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"native-lib/lib/libnative.so",
+			"native-lib/package.json",
+			"native/addon.node",
+			"native/index.js",
+			"native/package.json",
+		]);
 	});
 
 	it("keeps the peers of a package that reads its own files external, so the bundle shares one copy", async () => {

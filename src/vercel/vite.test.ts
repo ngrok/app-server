@@ -157,6 +157,37 @@ describe("vercel", () => {
 		]);
 	});
 
+	it("keeps only the brotli copy of a file that has one in the function, with the size of the file", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-brotli-only-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		write(join(site, "build/server/app-server.js"), entrySource());
+		write(join(site, "build/client/blog/index.html"), "<h1>Blog</h1>");
+		write(join(site, "build/client/blog/.index.html.gz"), "gzip");
+		write(join(site, "build/client/blog/.index.html.br"), "br");
+		write(join(site, "build/client/feed.xml"), "<rss/>");
+		write(join(site, "build/client/.feed.xml.gz"), "gzip");
+
+		vercel().output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const client = join(site, ".vercel/output/functions/index.func/build/client");
+		expect(filesUnder(client)).toStrictEqual([
+			".app-server-brotli.json",
+			".feed.xml.gz",
+			"blog/.index.html.br",
+			"feed.xml",
+		]);
+		expect(json(join(client, ".app-server-brotli.json"))).toStrictEqual({
+			"/blog/index.html": "<h1>Blog</h1>".length,
+		});
+	});
+
 	it("keeps each prerendered page in the function by default, with no start of the server build", () => {
 		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-default-pages-"));
 		onTestFinished(() => {
@@ -272,8 +303,8 @@ describe("vercel", () => {
 		);
 		// Why each file: a request that no page route matches, such as `/about/`, reaches the function.
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			".app-server-brotli.json",
 			"about/.index.html.br",
-			"about/index.html",
 			"app/index.html",
 			"docs.md",
 			"docs/index.html",

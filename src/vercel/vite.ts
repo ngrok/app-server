@@ -11,8 +11,10 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
+import { BROTLI_ONLY_LIST } from "./brotli-only.js";
 import type { CdnPageReport, PagesReport } from "./pages.js";
 
 /** Options for {@link vercel}. */
@@ -310,17 +312,47 @@ function writeOutput(
 	const isCdnFile = (file: string): boolean =>
 		prefixes.some((prefix) => `/${posix(file)}`.startsWith(prefix));
 
-	for (const file of filesUnder(clientDirectory)) {
+	const clientFiles = filesUnder(clientDirectory);
+	const listed = new Set(clientFiles);
+	/** The file of each brotli copy that the function keeps, with the size of the file. */
+	const brotliOnly: Record<string, number> = {};
+	/**
+	 * Whether the function drops `file`, a file or a gzip copy, because the
+	 * brotli copy of its file takes its place. Why: the function then holds one
+	 * copy of each text file, not three. Each browser accepts brotli, and the
+	 * CDN compresses the decompressed file for a client that does not.
+	 */
+	const brotliCopyOnly = (file: string): boolean => {
+		const name = basename(file);
+		const original = name.startsWith(".") ? /^\.(?<name>.+)\.gz$/u.exec(name)?.groups?.name : name;
+		return (
+			original != null &&
+			listed.has(join(dirname(file), original)) &&
+			listed.has(join(dirname(file), copyName(original, "br")))
+		);
+	};
+	for (const file of clientFiles) {
 		const from = join(clientDirectory, file);
 		// Why the function keeps the file of a page that the CDN serves: a request that no page route
 		// matches, such as the other trailing slash form, or a markdown request, reaches the function.
 		if (!isCdnFile(file)) {
-			copyFile(from, join(functionDirectory, fromRoot(from)));
+			if (!brotliCopyOnly(file)) {
+				copyFile(from, join(functionDirectory, fromRoot(from)));
+			} else if (!basename(file).startsWith(".")) {
+				brotliOnly[`/${posix(file)}`] = statSync(from).size;
+			}
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
 			// send no dotfile, such as a compressed copy, and no file in a dot directory.
 			copyFile(from, join(output, "static", file));
 		}
+	}
+
+	if (Object.keys(brotliOnly).length > 0) {
+		writeFileSync(
+			join(functionDirectory, fromRoot(clientDirectory), BROTLI_ONLY_LIST),
+			JSON.stringify(brotliOnly),
+		);
 	}
 
 	// Why the whole server build: it runs with no install, and it keeps the client build's path.

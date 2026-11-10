@@ -24,6 +24,9 @@ const files: Record<string, string> = {
 	"docs/tab\tstop.md": "# Tab",
 	"components/button.data": "[data]",
 	"llms.txt": "llms",
+	"install.sh": "#!/bin/sh",
+	"openapi.yaml": "openapi: 3.1.0",
+	"feed.rss": "<rss></rss>",
 	"digits.bin": "0123456789",
 	"growing.txt": "0123456789",
 	"legacy.htm": "<h1>Legacy</h1>",
@@ -162,6 +165,22 @@ describe("prerendered", () => {
 		const response = await request("/components/button.data");
 
 		expect(response.headers.get("Content-Type")).toBe("text/x-script");
+	});
+
+	it("serves common files that Hono's types lack with their own type, not application/octet-stream", async () => {
+		const { request } = await staticServer();
+
+		const types = await Promise.all(
+			["/install.sh", "/openapi.yaml", "/feed.rss"].map(async (path) =>
+				(await request(path)).headers.get("Content-Type"),
+			),
+		);
+
+		expect(types).toStrictEqual([
+			"application/x-sh",
+			"text/yaml; charset=utf-8",
+			"application/rss+xml",
+		]);
 	});
 
 	it("compares If-None-Match with an ETag that the headers option sets", async () => {

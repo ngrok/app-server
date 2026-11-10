@@ -34,6 +34,7 @@ import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
 import {
 	copyPackages,
+	removeUntraced,
 	dependencyNames,
 	findPackage,
 	isNativePackage,
@@ -156,6 +157,26 @@ export type AppServerOptions = {
 	 * default plugins.
 	 */
 	app?: string;
+	/**
+	 * How the server build copies the packages that stay external, such as a
+	 * native package. The build copies only the files that its modules can
+	 * load, as `@vercel/nft` traces them. A native package and the packages
+	 * that it depends on keep each file, and so does a package in
+	 * `ssr.external`.
+	 */
+	externals?: {
+		/**
+		 * Packages that keep each file, such as a package that reads a file
+		 * whose path the trace cannot find.
+		 */
+		whole?: readonly string[];
+		/**
+		 * Packages that the build does not copy, such as an optional dependency
+		 * that a package loads in a `try`, as `@vercel/og` loads `sharp`. The
+		 * server fails when it loads one with no `try`.
+		 */
+		omit?: readonly string[];
+	};
 };
 
 /** The built-in framework adapters, each with the name of the Vite plugin that marks its framework. */
@@ -315,11 +336,16 @@ function isServerBuild(environment: Pick<Environment, "name" | "mode">): boolean
  * each package that reads a file next to its own module (see `readsOwnFiles`),
  * and each package that the bundle shares with a package that the app keeps
  * external: the whole package of an external subpath, and each peer, at each
- * level. Those stay external, so the plugin copies each one, whole, with its
- * dependencies, into `node_modules` in the server build. It also writes a `package.json` there, so
- * Node, Bun, and Deno load the build as ES modules and find that `node_modules`.
+ * level. Those stay external, so the plugin copies each one, with its
+ * dependencies, into `node_modules` in the server build, and then removes each
+ * file that the build cannot load (see `removeUntraced`). A package in
+ * `ssr.external`, and a package that the app reads at run time, such as
+ * through `require.resolve`, keep each file. It also writes a `package.json` there, so Node, Bun, and
+ * Deno load the build as ES modules and find that `node_modules`.
  */
-function standalone(): Plugin {
+function standalone({ whole = [], omit = [] }: AppServerOptions["externals"] = {}): Plugin {
+	// Why: the app can read any file of such a package at run time.
+	const readByApp = new Set<string>();
 	// Why a value for each name: two copies of one external package cannot share one `node_modules`.
 	const externals = new Map<string, string | undefined>();
 	// Why: the bundle and an external package must share one copy of a package, such as `react`.
@@ -394,6 +420,7 @@ function standalone(): Plugin {
 				return;
 			}
 			externals.clear();
+			readByApp.clear();
 			shared.clear();
 			natives.clear();
 			scans.clear();
@@ -424,6 +451,7 @@ function standalone(): Plugin {
 				const directory = findPackage(name, root);
 				if (directory != null) {
 					externals.set(name, directory);
+					readByApp.add(name);
 				}
 			}
 			for (const name of withPeers(
@@ -494,11 +522,14 @@ function standalone(): Plugin {
 					if (directory != null) {
 						externals.set(name, directory);
 					}
+					if (BARE_IMPORT.test(source) && !isBuiltin(source)) {
+						readByApp.add(name);
+					}
 				}
 				return null;
 			},
 		},
-		writeBundle() {
+		async writeBundle() {
 			if (!isServerBuild(this.environment)) {
 				return;
 			}
@@ -532,11 +563,17 @@ function standalone(): Plugin {
 			}
 			const target = join(directory, "node_modules");
 			rmSync(target, { recursive: true, force: true });
-			copyPackages(found, target);
+			const copied = copyPackages(found, target, { omit: new Set(omit) });
+			const kept = new Set([...whole, ...readByApp]);
+			await removeUntraced(
+				directory,
+				copied,
+				({ name, source }) => kept.has(name) || isNative(source),
+			);
 			writeFileSync(join(directory, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
 			if (found.size > 0) {
 				this.environment.logger.info(
-					`@ngrok/app-server copied the external packages ${[...found.keys()].join(", ")}, with their dependencies, into ${target}.`,
+					`@ngrok/app-server copied the external packages ${[...found.keys()].join(", ")}, with the files of their dependencies that the server build loads, into ${target}.`,
 				);
 			}
 		},
@@ -992,5 +1029,5 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 			}
 		},
 	};
-	return [main, copies, standalone()];
+	return [main, copies, standalone(options.externals)];
 }
