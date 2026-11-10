@@ -472,6 +472,26 @@ describe("streamingCompress", () => {
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("gzips for a client that prefers brotli on a host with no brotli stream", async () => {
+		const logger = { log: () => {} };
+		const app = createServer({ plugins: [streamingCompress()], logger });
+		// Why no `brotli` key: a host from before brotli builds its setup with no such key.
+		const { brotli: _brotli, ...setup } = await productionSetup({ logger });
+		await serverInternals(app)?.prepare(setup);
+
+		const response = await app.request(
+			"/",
+			{ headers: { "Accept-Encoding": "br, gzip" } },
+			{
+				framework: stubFramework(
+					async () => new Response("a".repeat(2048), { headers: { "Content-Type": "text/html" } }),
+				),
+			},
+		);
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+	});
+
 	it("sends the response as it is on a host with no compression stream", async () => {
 		const logger = { log: () => {} };
 		const app = createServer({ plugins: [streamingCompress()], logger });

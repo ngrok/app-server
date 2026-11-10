@@ -297,7 +297,7 @@ export type SetupInfo = {
 	/** The host's gzip stream, when it has one. */
 	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
 	/** The host's brotli stream, when it has one. */
-	brotli: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	brotli?: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
 	logger: LogSink;
 } & (
 	| {

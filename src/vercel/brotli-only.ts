@@ -38,6 +38,34 @@ function sliced(stream: ReadableStream<Uint8Array>, { start, end }: ByteRange) {
 }
 
 /**
+ * The bytes of the stream that `open` gives, with `open` called on the first
+ * read. Why: a pipe reads its source at once, and a stage can drop a response
+ * that no one reads.
+ */
+function decodedOnRead(
+	open: () => Promise<ReadableStream<Uint8Array>>,
+): ReadableStream<Uint8Array> {
+	let reader: Promise<ReadableStreamDefaultReader<Uint8Array>> | undefined;
+	return new ReadableStream<Uint8Array>(
+		{
+			async pull(controller) {
+				reader ??= open().then((stream) => stream.getReader());
+				const { done, value } = await (await reader).read();
+				if (done) {
+					controller.close();
+				} else {
+					controller.enqueue(value);
+				}
+			},
+			async cancel(reason) {
+				await (await reader)?.cancel(reason);
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+}
+
+/**
  * `files` that also find each file in {@link BROTLI_ONLY_LIST}, with the
  * size from the list and the time of its brotli copy. Each read of such a
  * file decompresses its brotli copy. Why: a function then keeps one copy of
@@ -78,13 +106,15 @@ export function brotliOnlyFiles(files: StaticFiles): StaticFiles {
 				if (!(await readSizes()).has(path)) {
 					return inner.open(path, range);
 				}
-				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Node.js types its web streams apart from the global ones.
-				const decompress = Duplex.toWeb(createBrotliDecompress()) as ReadableWritablePair<
-					Uint8Array,
-					Uint8Array
-				>;
-				const decoded = (await inner.open(brotliCopy(path))).pipeThrough(decompress);
-				return range == null ? decoded : sliced(decoded, range);
+				return decodedOnRead(async () => {
+					// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Node.js types its web streams apart from the global ones.
+					const decompress = Duplex.toWeb(createBrotliDecompress()) as ReadableWritablePair<
+						Uint8Array,
+						Uint8Array
+					>;
+					const decoded = (await inner.open(brotliCopy(path))).pipeThrough(decompress);
+					return range == null ? decoded : sliced(decoded, range);
+				});
 			},
 			...(snapshot == null ? {} : { snapshot: async () => wrap(await snapshot()) }),
 		};

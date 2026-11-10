@@ -983,6 +983,63 @@ describe("appServer in a server build", () => {
 		]);
 	});
 
+	it("copies the entry that Bun and Deno take of an external package, besides the Node entry", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: {
+						".": {
+							bun: "./dist/bun.js",
+							deno: "./dist/deno.js",
+							node: "./dist/node.js",
+							default: "./dist/edge.js",
+						},
+					},
+					dependencies: { bundled: "1.0.0" },
+					optionalDependencies: { speedy: "1.0.0" },
+				}),
+				"node_modules/og/dist/bun.js": "export const word = async () => 'bun';",
+				"node_modules/og/dist/deno.js": "export const word = async () => 'deno';",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules/og"))).toStrictEqual([
+			"dist/bun.js",
+			"dist/deno.js",
+			"dist/node.js",
+			"dist/word.txt",
+			"package.json",
+		]);
+	});
+
+	it("copies each file of an external package that finds its own file through `import.meta.dirname`", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/dist/node.js": [
+					'import { readFileSync } from "node:fs";',
+					'import { join } from "node:path";',
+					'export const word = async () => readFileSync(join(import.meta.dirname, "word.txt"), "utf8");',
+				].join("\n"),
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file"]);
+		expect(filesUnder(join(server, "node_modules/og"))).toStrictEqual([
+			"dist/edge.js",
+			"dist/node.js",
+			"dist/node.js.map",
+			"dist/word.txt",
+			"package.json",
+		]);
+	});
+
 	it("copies each file of a package in `externals.whole`, and no package in `externals.omit`", async () => {
 		const { values, server } = await buildAlone(ogPackage, {
 			plugins: [

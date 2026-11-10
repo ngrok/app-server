@@ -14,6 +14,7 @@ import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestContext } from "../core/request-context.js";
 import type { Plugin } from "../core/types.js";
 import { heldStream, stubFramework } from "../test-server.js";
+import { brotliOnlyFiles } from "./brotli-only.js";
 import { handler, host } from "./index.js";
 
 let close: (() => Promise<void>) | undefined;
@@ -340,6 +341,41 @@ describe("host", () => {
 			plain: [String(page.length), page],
 			range: [206, "3456"],
 			list: "rendered",
+		});
+	});
+
+	it("opens the brotli copy of a file only when the body is read, and cancels it with the body", async () => {
+		const compressed = brotliCompressSync("a".repeat(4096));
+		let opens = 0;
+		let cancels = 0;
+		const files = brotliOnlyFiles({
+			stat: async (path) =>
+				path === "/page.html" ? undefined : { kind: "file", size: 1, mtimeMs: 0 },
+			open: async (path) => {
+				if (path === "/.app-server-brotli.json") {
+					return Response.json({ "/page.html": 4096 }).body ?? new ReadableStream();
+				}
+				opens += 1;
+				return new ReadableStream<Uint8Array>({
+					pull(controller) {
+						controller.enqueue(compressed);
+					},
+					cancel() {
+						cancels += 1;
+					},
+				});
+			},
+		});
+
+		const reader = (await files.open("/page.html")).getReader();
+		const unread = opens;
+		const first = await reader.read();
+		await reader.cancel();
+
+		expect({ unread, first: first.value?.byteLength }).toStrictEqual({ unread: 0, first: 4096 });
+		// Why poll: the pipe cancels its source after the cancel returns.
+		await vi.waitFor(() => {
+			expect(cancels).toBe(1);
 		});
 	});
 });

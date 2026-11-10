@@ -40,9 +40,9 @@ const HEADER = Buffer.from([31, 139, 8, 0, 0, 0, 0, 0, 0, 3]);
 const EMPTY_MEMBER = Buffer.concat([HEADER, Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0, 0])]);
 
 /**
- * The largest body that a pooled zlib stream compresses. Why a limit: the
- * CRC-32 of a pooled gzip body runs on the main thread, and above about 64
- * KiB it costs more than a new zlib stream does. Brotli uses the same limit.
+ * The largest body that a pooled gzip or brotli stream compresses. Why a
+ * limit: above about 64 KiB, the CRC-32 of a gzip body on the main thread
+ * costs more than a new zlib stream does.
  */
 const POOLED_MAX_BYTES = 64 * 1024;
 
@@ -72,6 +72,8 @@ type Pool = {
 	 * the size of its longest body (see {@link take}).
 	 */
 	sized: boolean;
+	/** Whether a reset lets the stream compress the next body. Else each body gets a new stream. */
+	reuses: boolean;
 };
 
 function newPooled(pool: Pool): Pooled {
@@ -101,6 +103,7 @@ const DEFLATE_POOL: Pool = {
 	create: () => createDeflateRaw({ flush: constants.Z_FINISH }),
 	idle: [],
 	sized: true,
+	reuses: true,
 };
 
 /**
@@ -124,6 +127,8 @@ const BROTLI_POOL: Pool = {
 		createBrotliCompress({ flush: constants.BROTLI_OPERATION_FINISH, params: BROTLI_PARAMS }),
 	idle: [],
 	sized: false,
+	// Why not on Deno: after a reset, its brotli encoder gives no bytes for the next body.
+	reuses: !("Deno" in globalThis),
 };
 
 /**
@@ -174,7 +179,12 @@ function release(pool: Pool, pooled: Pooled): void {
 	pooled.fail = ignore;
 	const { stream } = pooled;
 	// Why check the queues: a stream with output or input still queued would give it to the next body.
-	if (stream.destroyed || stream.readableLength !== 0 || stream.writableLength !== 0) {
+	if (
+		!pool.reuses ||
+		stream.destroyed ||
+		stream.readableLength !== 0 ||
+		stream.writableLength !== 0
+	) {
 		stream.destroy();
 		return;
 	}

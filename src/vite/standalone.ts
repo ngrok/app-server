@@ -249,12 +249,28 @@ function removeEmptyDirectories(directory: string): void {
 }
 
 /**
+ * The export conditions of each runtime that the server runs on, besides
+ * `import`, `require`, and `default`. Why each: Bun and Deno take their own
+ * entry of a package before its `node` entry.
+ */
+const RUNTIME_CONDITIONS = [["node"], ["bun", "node"], ["deno", "node"]];
+
+/**
+ * Code that finds a file next to its own module in a way that `@vercel/nft`
+ * does not follow. Why: the trace then misses the file, so the package keeps
+ * each file.
+ */
+const UNTRACED_OWN_FILE = /import\.meta\.(?:dirname|filename)\b/u;
+
+/**
  * Removes each file of a package in `copied` that the server build in
  * `serverDirectory` cannot load, as `@vercel/nft` traces it from each module
  * of the build. A package that no traced file is in goes away whole. Each
  * package for which `whole` is true, and each package that it depends on,
  * keeps each file. Why: a native package can load a library through the
  * system's loader, such as `sharp` loads libvips, and a trace cannot see it.
+ * A package with a loaded module that matches {@link UNTRACED_OWN_FILE}
+ * keeps each file too.
  *
  * @example
  * await removeUntraced("/app/build/server", copied, (copy) => isNativePackage(copy.source));
@@ -282,15 +298,27 @@ export async function removeUntraced(
 		return;
 	}
 	const modules = ownFiles(serverDirectory).filter((file) => /\.[cm]?js$/u.test(file));
-	const { fileList } = await nodeFileTrace(modules, { base: serverDirectory, mixedModules: true });
-	const traced = new Set([...fileList].map((file) => join(serverDirectory, file)));
+	// Why a cache: the traces share the parse of each module.
+	const cache = {};
+	const traces = await Promise.all(
+		RUNTIME_CONDITIONS.map(async (conditions) =>
+			nodeFileTrace(modules, { base: serverDirectory, mixedModules: true, conditions, cache }),
+		),
+	);
+	const traced = new Set(
+		traces.flatMap(({ fileList }) => [...fileList].map((file) => join(serverDirectory, file))),
+	);
 	const pruned = [...copied.keys()].filter(
 		(destination) => !kept.has(destination) && existsSync(destination),
 	);
 	for (const destination of pruned) {
 		const files = ownFiles(destination);
-		const used = files.some((file) => traced.has(file));
-		for (const file of files) {
+		const loaded = files.filter((file) => traced.has(file));
+		const keepsEach = loaded.some(
+			(file) => /\.[cm]?js$/u.test(file) && UNTRACED_OWN_FILE.test(readFileSync(file, "utf8")),
+		);
+		const used = loaded.length > 0;
+		for (const file of keepsEach ? [] : files) {
 			// Why each `package.json`: Node reads it to find the entry and the module type of a file.
 			if (!traced.has(file) && !(used && basename(file) === "package.json")) {
 				rmSync(file);
