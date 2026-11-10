@@ -1,5 +1,5 @@
 import { cpSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { nodeFileTrace } from "@vercel/nft";
 
 /**
@@ -255,23 +255,18 @@ function removeEmptyDirectories(directory: string): void {
  */
 const RUNTIME_CONDITIONS = [["node"], ["bun", "node"], ["deno", "node"]];
 
+/**
+ * A `require.resolve()` or an `import.meta.resolve()` of a string literal.
+ * The `source` group is the string.
+ */
+export const RESOLVE_CALL =
+	/\b(?:require|import\.meta)\.resolve\(\s*(?<quote>["'`])(?<source>[^"'`$]+)\k<quote>/gu;
+
 /** Code that finds a file next to its own module in a way that `@vercel/nft` does not follow. */
 const UNTRACED_OWN_FILE = /import\.meta\.(?:dirname|filename)\b/u;
 
-/**
- * Whether the trace missed a file of a package, from the files of the
- * package that it found: a module that finds a file through
- * {@link UNTRACED_OWN_FILE}, or only a `package.json`, as for a
- * `require.resolve()` of a subpath in its `exports`.
- */
-function missesFiles(loaded: readonly string[]): boolean {
-	return (
-		(loaded.length > 0 && loaded.every((file) => basename(file) === "package.json")) ||
-		loaded.some(
-			(file) => /\.[cm]?js$/u.test(file) && UNTRACED_OWN_FILE.test(readFileSync(file, "utf8")),
-		)
-	);
-}
+/** The warning of `@vercel/nft` for a module that it cannot parse, such as a TypeScript file, so it finds no import of it. */
+const UNPARSED = /^Failed to parse (?<file>.+) as module:/u;
 
 /**
  * Removes each file of a package in `copied` that the server build in
@@ -280,8 +275,11 @@ function missesFiles(loaded: readonly string[]): boolean {
  * package for which `whole` is true, and each package that it depends on,
  * keeps each file. Why: a native package can load a library through the
  * system's loader, such as `sharp` loads libvips, and a trace cannot see it.
- * A package whose files the trace misses ({@link missesFiles}) keeps each
- * file too, with each package that it depends on.
+ * The trace misses the files that a module loads through
+ * {@link UNTRACED_OWN_FILE}, the imports of a module that it cannot parse,
+ * and a file that {@link RESOLVE_CALL} finds through the `exports` of a
+ * package. So the package of such a module, or the package that it
+ * resolves, keeps each file, with each package that it depends on.
  *
  * @example
  * await removeUntraced("/app/build/server", copied, (copy) => isNativePackage(copy.source));
@@ -319,13 +317,37 @@ export async function removeUntraced(
 	const traced = new Set(
 		traces.flatMap(({ fileList }) => [...fileList].map((file) => join(serverDirectory, file))),
 	);
+	// Why relative: the warning names the real path, and `/tmp` on macOS is a symbolic link.
+	const real = realpathSync(serverDirectory);
+	const unparsed = new Set(
+		traces.flatMap(({ warnings }) =>
+			[...warnings].flatMap(({ message }) => {
+				const file = UNPARSED.exec(message)?.groups?.file;
+				return file == null ? [] : [join(serverDirectory, relative(real, file))];
+			}),
+		),
+	);
 	const present = [...copied.keys()].filter((destination) => existsSync(destination));
-	for (const destination of present) {
+	for (const destination of present.filter((each) => !kept.has(each))) {
+		const loaded = ownFiles(destination).filter((file) => traced.has(file));
+		const code = loaded
+			.filter((file) => /\.[cm]?js$/u.test(file))
+			.map((file) => readFileSync(file, "utf8"));
 		if (
-			!kept.has(destination) &&
-			missesFiles(ownFiles(destination).filter((file) => traced.has(file)))
+			loaded.some((file) => unparsed.has(file)) ||
+			code.some((each) => UNTRACED_OWN_FILE.test(each))
 		) {
 			keep(destination);
+		}
+		const resolved = new Set(
+			code.flatMap((each) =>
+				[...each.matchAll(RESOLVE_CALL)].map(({ groups }) => packageName(groups?.source ?? "")),
+			),
+		);
+		for (const each of [destination, ...(copied.get(destination)?.dependencies ?? [])]) {
+			if (resolved.has(copied.get(each)?.name ?? "")) {
+				keep(each);
+			}
 		}
 	}
 	for (const destination of present.filter((each) => !kept.has(each))) {

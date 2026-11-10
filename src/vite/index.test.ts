@@ -1050,7 +1050,7 @@ describe("appServer in a server build", () => {
 		]);
 	});
 
-	it("copies each file of a package of which the trace finds only the `package.json`", async () => {
+	it("copies each file of a package that a loaded module gives to `require.resolve()`", async () => {
 		const { values, server } = await buildAlone(
 			{
 				...ogPackage,
@@ -1068,13 +1068,16 @@ describe("appServer in a server build", () => {
 					'\treturn own + " " + data;',
 					"};",
 				].join("\n"),
-				"node_modules/og/dist/data.cjs":
-					'module.exports = require("node:fs").readFileSync(require.resolve("data/word.txt"), "utf8");',
+				"node_modules/og/dist/data.cjs": [
+					'const { readFileSync } = require("node:fs");',
+					'module.exports = require("data") + readFileSync(require.resolve("data/word.txt"), "utf8");',
+				].join("\n"),
 				"node_modules/data/package.json": JSON.stringify({
 					name: "data",
-					exports: { "./word.txt": "./word.txt" },
+					exports: { ".": "./index.js", "./word.txt": "./word.txt" },
 				}),
-				"node_modules/data/word.txt": "data file",
+				"node_modules/data/index.js": 'module.exports = "data ";',
+				"node_modules/data/word.txt": "file",
 				"node_modules/data/README.md": "docs",
 			},
 			{},
@@ -1083,8 +1086,35 @@ describe("appServer in a server build", () => {
 		expect(values).toStrictEqual(["own file data file"]);
 		expect(filesUnder(join(server, "node_modules/data"))).toStrictEqual([
 			"README.md",
+			"index.js",
 			"package.json",
 			"word.txt",
+		]);
+	});
+
+	it("copies the dependencies of a package whose Bun entry the trace cannot parse, such as TypeScript", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: { ".": { bun: "./dist/bun.ts", node: "./dist/node.js" } },
+					dependencies: { bundled: "1.0.0" },
+					optionalDependencies: { speedy: "1.0.0" },
+				}),
+				"node_modules/og/dist/bun.ts": [
+					'import bundled from "bundled";',
+					"export const word: () => Promise<string> = async () => bundled;",
+				].join("\n"),
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules/bundled"))).toStrictEqual([
+			"index.js",
+			"package.json",
 		]);
 	});
 

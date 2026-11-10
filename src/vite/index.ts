@@ -40,6 +40,7 @@ import {
 	isNativePackage,
 	packageDirectoryOf,
 	packageName,
+	RESOLVE_CALL,
 	readsOwnFiles,
 } from "./standalone.js";
 
@@ -313,13 +314,6 @@ function outDir(config: ResolvedConfig, environment: string): string {
 function isJavaScriptFile(id: string): boolean {
 	return isAbsolute(id) && !id.includes("?") && JAVASCRIPT_EXTENSIONS.has(extname(id));
 }
-
-/**
- * A `require.resolve()` or an `import.meta.resolve()` of a string literal.
- * The `source` group is the string.
- */
-const RESOLVE_CALL =
-	/\b(?:require|import\.meta)\.resolve\(\s*(?<quote>["'`])(?<source>[^"'`$]+)\k<quote>/gu;
 
 /** The dependency fields of the app's `package.json` that can name a package the server imports. */
 const APP_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "devDependencies"];
