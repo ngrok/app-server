@@ -215,4 +215,14 @@ describe("brotliStream", () => {
 			bodies.map((chunks) => chunks.map((chunk) => Buffer.from(chunk).toString()).join("")),
 		);
 	});
+
+	it("sends the same bytes for a page from a pooled encoder, whatever body it sent before", async () => {
+		const before = await bytes(brotliStream(queued(page)));
+
+		await bytes(brotliStream(queued(new Uint8Array(randomBytes(64 * 1024)))));
+		const after = await bytes(brotliStream(queued(page)));
+
+		expect(after.equals(before)).toBe(true);
+		expect(brotliDecompressSync(after)).toStrictEqual(Buffer.from(page));
+	});
 });
