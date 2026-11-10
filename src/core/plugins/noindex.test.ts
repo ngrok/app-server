@@ -45,6 +45,22 @@ describe("noindex", () => {
 		}
 	});
 
+	it("skips a request with the unlessHeader, and varies each response on it", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } }),
+			clientDirectory,
+		});
+
+		const direct = await request("/about.html");
+		const edge = await request("/about.html", { headers: { "x-ngrok-edge": "1" } });
+
+		expect([direct.headers.get("X-Robots-Tag"), edge.headers.get("X-Robots-Tag")]).toStrictEqual([
+			"noindex, nofollow",
+			null,
+		]);
+		expect(edge.headers.get("Vary")?.split(", ")).toContain("x-ngrok-edge");
+	});
+
 	it("is off by default and on with true in defaultPlugins", async () => {
 		const off = await testServer({ plugins: defaultPlugins(), clientDirectory });
 		const on = await testServer({ plugins: defaultPlugins({ noindex: true }), clientDirectory });

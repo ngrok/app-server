@@ -431,13 +431,26 @@ async function checkVercel(): Promise<void> {
 	);
 	try {
 		const base = await url;
-		const page = await fetch(new URL("/", base));
-		const html = await page.text();
-		assert.match(html, /React Router home/u, "the function sends the prerendered page");
-		assert.match(
-			page.headers.get("etag") ?? "",
-			/^W\//u,
-			"the prerendered page comes from its file",
+		const html = readFileSync(join(output, "static/_app-server/pages/index.html"), "utf8");
+		assert.match(html, /React Router home/u, "the CDN has the prerendered page");
+		assert.ok(
+			!existsSync(join(copy, "build/client/index.html")),
+			"the function does not carry the prerendered page",
+		);
+		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
+		const { routes } = JSON.parse(readFileSync(join(output, "config.json"), "utf8")) as {
+			routes: { src?: string; dest?: string; headers?: Record<string, string> }[];
+		};
+		const route = (src: string) => routes.find((each) => each.src === src);
+		assert.deepEqual(
+			[route("^/$")?.dest, route("^/$")?.headers?.["x-content-type-options"]],
+			["/_app-server/pages/index.html", "nosniff"],
+			"the CDN sends the prerendered page with the pipeline's headers",
+		);
+		assert.equal(
+			route(String.raw`^/hello\.txt$`)?.headers?.["cache-control"],
+			"max-age=60",
+			"the build's headers replay on the CDN",
 		);
 		const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)].map(
 			(match) => match.groups?.path ?? "",
@@ -451,9 +464,6 @@ async function checkVercel(): Promise<void> {
 		assert.equal(missing.headers.get("cache-control"), "no-store");
 		await missing.text();
 
-		const hello = await fetch(new URL("/hello.txt", base));
-		assert.equal(await hello.text(), "hello");
-		assert.equal(hello.headers.get("cache-control"), "max-age=60", "the build's headers replay");
 		const whoami = await fetch(new URL("/whoami", base), {
 			headers: { "X-Request-Id": "abc-123" },
 		});

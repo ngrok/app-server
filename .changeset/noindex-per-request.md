@@ -2,12 +2,13 @@
 "@ngrok/app-server": patch
 ---
 
-`defaultPlugins({ noindex })` and `noindex()` take `when` and `vary`, so an app can decide for each request. `when` gets the Hono context. The plugin adds each header in `vary` to `Vary` on each response, so a CDN keeps one answer for each value:
+`defaultPlugins({ noindex })` and `noindex()` can decide for each request:
+
+- `unlessHeader`: a request with this header gets no `X-Robots-Tag`, and each response gets the header in `Vary`. On the `vercel` host, the CDN serves a prerendered page and picks the answer by the header.
+- `when` and `vary`: any rule of the Hono context, with the request headers that it reads. On the `vercel` host, a prerendered page with `when` stays in the function.
 
 ```ts
-defaultPlugins({
-	noindex: { when: (c) => c.req.header("x-ngrok-edge") == null, vary: ["x-ngrok-edge"] },
-});
+defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } });
 ```
 
 `noindex: true` still sets `X-Robots-Tag: noindex, nofollow` on each response.

@@ -27,7 +27,7 @@ import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
-import { checkOptionPlugins } from "./plugin-options.js";
+import { checkOptionPlugins, presenceHeadersOf } from "./plugin-options.js";
 import { withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
@@ -78,6 +78,8 @@ export type RunningServer = {
 /** What `createEntry` calls on an app. */
 export type ServerInternals = {
 	logger: LogSink;
+	/** The request headers whose presence alone changes the answer of a plugin. See `presenceHeaders`. */
+	presenceHeaders: readonly string[];
 	/** Runs each plugin's `setup` once and adds the framework handler after the app's routes. */
 	prepare: (info: SetupInfo) => Promise<void>;
 	/**
@@ -189,7 +191,7 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		// responses get these headers. Their order among themselves changes no response.
 		...(options.noindex == null || options.noindex === false
 			? []
-			: [noindex(options.noindex === true ? {} : options.noindex)]),
+			: [options.noindex === true ? noindex() : noindex(options.noindex)]),
 		...(options.buildId === false ? [] : [buildId(options.buildId)]),
 		...(options.contentSecurityPolicy == null
 			? []
@@ -424,6 +426,7 @@ export function createServer({
 	let stoppingPlugins: Promise<void> | undefined;
 	const internals: ServerInternals = {
 		logger,
+		presenceHeaders: presenceHeadersOf(plugins),
 		setRequestStore: (store) => {
 			requestStore = store;
 		},

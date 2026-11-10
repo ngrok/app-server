@@ -1,15 +1,20 @@
+import { execFileSync } from "node:child_process";
 import {
 	copyFileSync,
 	cpSync,
 	mkdirSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix as posixPath, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
+import type { CdnPageReport, PagesReport } from "./pages.js";
 
 /** Options for {@link vercel}. */
 export type VercelOptions = {
@@ -20,8 +25,21 @@ export type VercelOptions = {
 	 * files skip the pipeline, and the function does not carry them.
 	 */
 	cdnPaths?: readonly string[];
-	/** Headers for each file that the CDN serves, such as CORS headers. */
+	/** Headers for each file under `cdnPaths` and Vite's `build.assetsDir`, such as CORS headers. */
 	cdnHeaders?: Readonly<Record<string, string>>;
+	/**
+	 * Which prerendered pages the CDN serves, with no function. After the
+	 * build, `vercel()` starts the server build once and sends each
+	 * prerendered path through the pipeline as an anonymous client. The CDN
+	 * serves a page when its answer is a public 200 from its file, and the
+	 * same for another host, client address, and query. The CDN then sends
+	 * the pipeline's body and headers. The function serves each other page,
+	 * and the CDN never keeps its answer. `false` keeps each page in the
+	 * function. A function keeps each path that it refuses in the function,
+	 * such as a page whose answer depends on one query key.
+	 * @default true
+	 */
+	cdnPages?: boolean | ((path: string) => boolean);
 	/** The Vercel regions of the function, such as `["iad1"]`. @default the project's */
 	regions?: readonly string[];
 	/** The memory of the function, in MB. @default the project's */
@@ -35,6 +53,28 @@ export type VercelOptions = {
 };
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
+
+/**
+ * The URL path under `static/` of the bodies of the pages that the CDN
+ * serves. A route sends a request for it to the function, so a page has one
+ * URL.
+ */
+const PAGES = "/_app-server/pages";
+
+/**
+ * The script that finds the pages that the CDN serves. Why the source in a
+ * `.ts` module: the tests of this package run the source, and Node.js runs a
+ * `.ts` file with no import of its own.
+ */
+const PAGES_SCRIPT = fileURLToPath(
+	new URL(import.meta.url.endsWith(".ts") ? "./pages.ts" : "./vercel-pages.js", import.meta.url),
+);
+
+/** A case-insensitive pattern for `text/markdown`, in the regular expression syntax of any engine. */
+const MARKDOWN = "text/markdown".replaceAll(
+	/[a-z]/gu,
+	(letter) => `[${letter}${letter.toUpperCase()}]`,
+);
 
 /** The variable that gives the function the time of the build, in milliseconds. */
 const BUILT_AT = "APP_SERVER_BUILT_AT";
@@ -94,9 +134,19 @@ function filesUnder(
  */
 function routes(
 	prefixes: readonly string[],
-	{ assetsPath, cdnHeaders }: { assetsPath: string; cdnHeaders: Readonly<Record<string, string>> },
+	{
+		assetsPath,
+		cdnHeaders,
+		pages,
+	}: {
+		assetsPath: string;
+		cdnHeaders: Readonly<Record<string, string>>;
+		pages: readonly CdnPageReport[];
+	},
 ) {
 	return [
+		...(pages.length === 0 ? [] : [{ src: `^${escaped(PAGES)}(?:/.*)?$`, dest: "/index" }]),
+		...pages.flatMap((page) => pageRoutes(page)),
 		{ handle: "filesystem" },
 		{ src: "^/(.*)$", dest: "/index" },
 		{ handle: "hit" },
@@ -109,14 +159,139 @@ function routes(
 	];
 }
 
+/**
+ * The routes of one page that the CDN serves: one for each case of the
+ * presence headers, with the headers of that case. Why only GET and HEAD: the
+ * function answers the other methods, such as a form's POST. Why the
+ * function for a request that names `text/markdown`: it negotiates the twin.
+ */
+function pageRoutes({ path, file, answers, twin }: CdnPageReport) {
+	const src = `^${escaped(path)}$`;
+	const names = [...new Set(answers.flatMap(({ present }) => present))];
+	return [
+		...(twin == null
+			? []
+			: [
+					{
+						src,
+						has: [{ type: "header", key: "accept", value: { re: MARKDOWN } }],
+						dest: "/index",
+					},
+				]),
+		...answers.map(({ present, headers }) => {
+			const missing = names.filter((name) => !present.includes(name));
+			return {
+				src,
+				caseSensitive: true,
+				methods: ["GET", "HEAD"],
+				...(present.length === 0 ? {} : { has: present.map((key) => ({ type: "header", key })) }),
+				...(missing.length === 0
+					? {}
+					: { missing: missing.map((key) => ({ type: "header", key })) }),
+				headers,
+				dest: `${PAGES}${file}`,
+			};
+		}),
+	];
+}
+
+/**
+ * Finds the pages that the CDN serves ({@link VercelOptions.cdnPages}), and
+ * writes their bodies under `static/`.
+ */
+function findCdnPages(
+	entryFile: string,
+	output: string,
+	cdnPages: NonNullable<VercelOptions["cdnPages"]>,
+): PagesReport {
+	if (cdnPages === false) {
+		return { cdn: [], server: [] };
+	}
+	const pagesDirectory = join(output, "static", PAGES);
+	const reportFile = join(output, "pages.json");
+	try {
+		execFileSync(process.execPath, [PAGES_SCRIPT, entryFile, pagesDirectory, reportFile], {
+			stdio: "inherit",
+			env: { ...process.env, NODE_ENV: "production" },
+		});
+	} catch (error) {
+		throw new Error(
+			"@ngrok/app-server/vercel could not start the server build to find the prerendered pages that the CDN can serve. Give the build the environment of the app, or set `vercel({ cdnPages: false })`.",
+			{ cause: error },
+		);
+	}
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the step of this package wrote the file.
+	const report = JSON.parse(readFileSync(reportFile, "utf8")) as PagesReport;
+	rmSync(reportFile);
+	if (cdnPages === true) {
+		return report;
+	}
+	const refused = report.cdn.filter((page) => !cdnPages(page.path));
+	for (const page of refused) {
+		rmSync(join(pagesDirectory, page.file));
+	}
+	return {
+		cdn: report.cdn.filter((page) => !refused.includes(page)),
+		server: [
+			...report.server,
+			...refused.map(({ path }) => ({ path, reason: "`cdnPages` keeps it in the function" })),
+		],
+	};
+}
+
+/**
+ * The URL path of each file that the function does not need, with its
+ * compressed copies: the file of each page that the CDN serves. Why keep the
+ * files of a page with a twin: the function answers its markdown requests.
+ */
+function cdnOnlyFiles(pages: readonly CdnPageReport[]): Set<string> {
+	const byPath = new Map(pages.map((page) => [page.path, page]));
+	const kept = new Set(
+		pages.flatMap(({ file, twin }) => {
+			const twinFile = twin == null ? undefined : byPath.get(twin)?.file;
+			return twin == null ? [] : [file, ...(twinFile == null ? [] : [twinFile])];
+		}),
+	);
+	return new Set(
+		pages
+			.map(({ file }) => file)
+			.filter((file) => !kept.has(file))
+			.flatMap((file) => {
+				const directory = posixPath.dirname(file);
+				const name = posixPath.basename(file);
+				return [
+					file,
+					posixPath.join(directory, copyName(name, "br")),
+					posixPath.join(directory, copyName(name, "gzip")),
+				];
+			}),
+	);
+}
+
+/** Writes the paths that the function serves, and why, so the build log shows them. */
+function reportPages({ cdn, server }: PagesReport): void {
+	const shown = server.slice(0, 20);
+	process.stdout.write(
+		[
+			`@ngrok/app-server/vercel: the CDN serves ${cdn.length} prerendered paths, and the function serves ${server.length}.`,
+			...shown.map(({ path, reason }) => `  ${path}: ${reason}`),
+			...(server.length > shown.length ? [`  and ${server.length - shown.length} more`] : []),
+			"",
+		].join("\n"),
+	);
+}
+
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
 	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
-	{ cdnPaths = [], cdnHeaders = {}, regions, memory, maxDuration }: VercelOptions,
+	{ cdnPaths = [], cdnHeaders = {}, cdnPages = true, regions, memory, maxDuration }: VercelOptions,
 ): void {
 	const prefixes = [assetsPath, ...cdnPaths.filter((path) => path !== assetsPath)];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
+	const pages = findCdnPages(entryFile, output, cdnPages);
+	reportPages(pages);
+	const cdnOnly = cdnOnlyFiles(pages.cdn);
 	const fromRoot = (path: string): string => {
 		const inside = relative(root, path);
 		if (inside.startsWith("..") || isAbsolute(inside)) {
@@ -131,7 +306,9 @@ function writeOutput(
 	for (const file of filesUnder(clientDirectory)) {
 		const from = join(clientDirectory, file);
 		if (!isCdnFile(file)) {
-			copyFile(from, join(functionDirectory, fromRoot(from)));
+			if (!cdnOnly.has(`/${posix(file)}`)) {
+				copyFile(from, join(functionDirectory, fromRoot(from)));
+			}
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
 			// send no dotfile, such as a compressed copy, and no file in a dot directory.
@@ -179,7 +356,7 @@ function writeOutput(
 	);
 	writeFileSync(
 		join(output, "config.json"),
-		`${JSON.stringify({ version: 3, routes: routes(prefixes, { assetsPath, cdnHeaders }) }, null, "\t")}\n`,
+		`${JSON.stringify({ version: 3, routes: routes(prefixes, { assetsPath, cdnHeaders, pages: pages.cdn }) }, null, "\t")}\n`,
 	);
 }
 
@@ -200,7 +377,8 @@ function checkCdnPaths(paths: readonly string[]): void {
  *
  * - `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default)
  *   and the other `cdnPaths`. The CDN serves them, and each file of
- *   `build.assetsDir` gets a one-year immutable cache.
+ *   `build.assetsDir` gets a one-year immutable cache. It also holds the
+ *   prerendered pages that the CDN serves. See `cdnPages`.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
  *   each other request, with the whole server build and the rest of the
  *   client build.
