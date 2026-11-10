@@ -117,6 +117,47 @@ describe("runtime", () => {
 		expect(seen).toContain("/domains/d_1");
 	});
 
+	it("gives the client the build's route manifest, so the route pattern middleware adds no client request", async () => {
+		/** A manifest entry for a route with a server loader and no client code. */
+		const entry = (id: string, path: string, parentId?: string) => ({
+			id,
+			path,
+			...(parentId == null ? {} : { parentId }),
+			module: `/assets/${id}.js`,
+			hasAction: false,
+			hasLoader: true,
+			hasClientAction: false,
+			hasClientLoader: false,
+			hasClientMiddleware: false,
+			hasErrorBoundary: false,
+			clientActionModule: undefined,
+			clientLoaderModule: undefined,
+			clientMiddlewareModule: undefined,
+			hydrateFallbackModule: undefined,
+		});
+		const manifest = { root: entry("root", ""), whoami: entry("whoami", "whoami", "root") };
+		const build = documentBuild({
+			assets: {
+				entry: { module: "/assets/entry.js", imports: [] },
+				routes: manifest,
+				url: "/assets/manifest.js",
+				version: "1",
+			},
+		});
+		build.entry.module.default = (...args: Parameters<HandleDocumentRequestFunction>) =>
+			Response.json(args[3].manifest.routes);
+		const framework = runtime(build, { mode: "production" });
+		const { request } = await testServer({ plugins: [], render: framework.fetch });
+
+		const document = await request("/whoami");
+		const discovery = await request("/__manifest?paths=/whoami&version=1");
+
+		// Why through JSON: the client gets the manifest as JSON, which has no field that is `undefined`.
+		const sent: unknown = await Response.json(manifest).json();
+		await expect(document.json()).resolves.toStrictEqual(sent);
+		await expect(discovery.json()).resolves.toStrictEqual(sent);
+	});
+
 	it("reads the client directory and prerendered paths from the build", () => {
 		const framework = runtime(documentBuild(), { mode: "production" });
 
