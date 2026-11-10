@@ -921,3 +921,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
 - The package has two host adapters, `node` and `vercel`. Another host, such as Cloudflare Workers, needs its own adapter. See `HostRuntime` and `HostBuild`. A serverless host calls the `fetch` of the build's `appServer` export for each request. The build also exports `hostModule`, the host's run-side module, so a function file can call it through the bundle's copy.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.
+
+## Contributing
+
+Each change meets the six goals of the [north star](./docs/north-star.md): correct, least surprising, fast, delightful, clean, and efficient. [AGENTS.md](./AGENTS.md) is the guide for humans and agents. It lists the goals, the [principles](./docs/principles/README.md) that serve them, and the checks to run before a pull request.
