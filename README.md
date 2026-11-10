@@ -206,7 +206,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 ## Deploy to Vercel
 
-The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files and each public prerendered page.
+The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files, and with `cdnPages`, each public prerendered page.
 
 Use `vercel()` as the host:
 
@@ -221,16 +221,18 @@ After the build, `vercel()` writes `.vercel/output` (the Build Output API, versi
 
 The output has two parts:
 
-- `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default), the other `cdnPaths`, and the public prerendered pages. The CDN serves them. Each file of `build.assetsDir` gets `Cache-Control: public, max-age=31536000, immutable`. A request under `build.assetsDir` with no file goes to the function, which sends a 404 with `Cache-Control: no-store`. A request under another CDN path with no file goes through the pipeline, as on the node host.
+- `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default), the other `cdnPaths`, and with `cdnPages`, the public prerendered pages. The CDN serves them. Each file of `build.assetsDir` gets `Cache-Control: public, max-age=31536000, immutable`. A request under `build.assetsDir` with no file goes to the function, which sends a 404 with `Cache-Control: no-store`. A request under another CDN path with no file goes through the pipeline, as on the node host.
 - `functions/index.func/`: the function for each other request. It has the whole server build, which runs with no install (see [Deploy](#deploy)), and the rest of the client build. The Node.js version of the function is the version that ran the build.
 
 ### Prerendered pages on the CDN
 
-After the build, `vercel()` starts the server build once, with no listener, and sends each prerendered path through the pipeline. Each request comes from an anonymous client, with no cookie and no `Authorization`. The CDN serves a page when its answer meets all of these conditions:
+By default, the function serves each prerendered page, so a page gets the same pipeline as a rendered page. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
+
+With `vercel({ cdnPages: true })`, the CDN serves each public prerendered page with no function. After the build, `vercel()` starts the server build once, with no listener, and sends each prerendered path through the pipeline. The first request comes from an anonymous client, with no cookie and no `Authorization`. The CDN serves a page when its answer meets all of these conditions:
 
 - It is a 200 from the page's file.
 - It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
-- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. Only `X-Request-Id` and `Date` can change.
+- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only `X-Request-Id` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 
 The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason.
@@ -240,17 +242,16 @@ The function serves each other prerendered page, and the CDN never keeps its ans
 - A page that an auth check in `beforeStatic` protects stays in the function, because the check refuses the anonymous request. So the CDN never keeps a page behind auth.
 - A page whose answer changes with the query or the host stays in the function, such as with a `prerendered({ rewrite })` that reads the query.
 - A request that names `text/markdown` in `Accept` goes to the function, which negotiates the twin.
-- With `noindex: { when }`, each page stays in the function, because the build cannot see what `when` reads.
 - Vercel allows 2,048 routes for each deployment. A page uses one route for each case of the `unlessHeader` header, and one more for a twin. If the pages need more routes, the function serves the rest.
 - A request with another method, such as a form's `POST`, goes to the function.
 
-The build cannot see a check that the anonymous request passes but another client fails, such as an allowlist of client addresses, or a rule on one query key. Keep such a page in the function with `cdnPages`. The build also needs the app's environment, because it runs each plugin's `setup`.
+The build cannot see a check that both clients pass but another client fails, such as a check of a real session, an allowlist of client addresses, or a rule on one query key. Keep such a page in the function with a `cdnPages` function. A page that the CDN serves writes no access log line. The build also needs the app's environment, because it runs each plugin's `setup`.
 
 `vercel()` takes:
 
 - `cdnPaths`: more URL path prefixes for the CDN, such as `["/blog-assets/"]`. Each starts and ends with `/`. Their files skip the pipeline, and the function does not carry them. Vercel limits a function to 250 MB, so put a large directory of the client build here. Default none.
 - `cdnHeaders`: headers for each file of `cdnPaths` and `build.assetsDir`, such as CORS headers. Default none.
-- `cdnPages`: which prerendered pages the CDN can serve. Default `true`, each page that qualifies. A function keeps each path that it refuses in the function, such as `(path) => path !== "/"` for a page that renders a filtered view for one query key. `false` keeps each page in the function.
+- `cdnPages`: which prerendered pages the CDN can serve. `true` gives the CDN each page that qualifies. A function gives the CDN each page that qualifies and that it accepts, such as `(path) => path !== "/"` for a page that renders a filtered view for one query key. Default `false`: the function serves each page.
 - `regions`, `memory`, and `maxDuration`: the function's Vercel config. Default the project's. One function serves each route, so the values apply to each request. A route module's `config` export, such as `export const config = { maxDuration: 60 }` for `@vercel/react-router`, does nothing.
 
 The function differs from a long-lived process:
@@ -628,13 +629,7 @@ To allow indexing only for a request with a header, give `unlessHeader`. Each re
 defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } });
 ```
 
-For another rule, give `when`. It gets the request's Hono context. Give the request headers that it reads in `vary`. On the `vercel` host, a page with `when` stays in the function, because the CDN cannot run it. With `unlessHeader`, the CDN serves the page and picks the answer by the header. See [Prerendered pages on the CDN](#prerendered-pages-on-the-cdn).
-
-```ts
-defaultPlugins({
-	noindex: { when: (c) => !c.req.path.startsWith("/docs/"), vary: [] },
-});
-```
+On the `vercel` host with `cdnPages`, the CDN serves the page and picks the answer by the header. See [Prerendered pages on the CDN](#prerendered-pages-on-the-cdn).
 
 ## Content negotiation
 

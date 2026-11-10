@@ -179,6 +179,12 @@ export type ListenerBindings = {
 /** The Hono bindings of an app server: the listener's values and the framework. */
 export type ServerBindings = ListenerBindings & {
 	framework: FrameworkRuntime;
+	/**
+	 * Gets the URL path of the client build's file that `prerendered()` sends,
+	 * such as `/about/index.html`. Only the build's check of the CDN pages
+	 * gives it. Why a binding: each other request then pays one property read.
+	 */
+	onServedFile?: (path: string) => void;
 };
 
 /** The Hono environment of an app server. */

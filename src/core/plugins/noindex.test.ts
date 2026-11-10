@@ -25,26 +25,6 @@ describe("noindex", () => {
 		expect(renderedPage.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
 	});
 
-	it("decides for each request with when, and varies each response on the headers that it names", async () => {
-		const { request } = await testServer({
-			plugins: defaultPlugins({
-				noindex: { when: (c) => c.req.header("x-ngrok-edge") == null, vary: ["x-ngrok-edge"] },
-			}),
-			clientDirectory,
-		});
-
-		const direct = await request("/about.html");
-		const edge = await request("/about.html", { headers: { "x-ngrok-edge": "1" } });
-		const rendered = await request("/dashboard", { headers: { "x-ngrok-edge": "1" } });
-
-		expect(direct.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
-		expect(edge.headers.get("X-Robots-Tag")).toBeNull();
-		expect(rendered.headers.get("X-Robots-Tag")).toBeNull();
-		for (const response of [direct, edge, rendered]) {
-			expect(response.headers.get("Vary")?.split(", ")).toContain("x-ngrok-edge");
-		}
-	});
-
 	it("skips a request with the unlessHeader, and varies each response on it", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } }),

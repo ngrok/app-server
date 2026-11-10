@@ -27,22 +27,6 @@ export function answeredByDevServer(context: Context<AppServerEnv>): boolean {
 	return devServerAnswers.has(context);
 }
 
-/** The file of the client build that `prerendered()` sent for each request. */
-const servedFiles = new WeakMap<Request, string>();
-
-/**
- * The URL path of the client build's file that `prerendered()` sent for
- * `request`, such as `/about/index.html`, or `undefined` when it sent none.
- * Why: the build serves a page from a CDN only when the page is a file.
- *
- * @example
- * await app.fetch(request);
- * servedFile(request); // => "/about/index.html"
- */
-export function servedFile(request: Request): string | undefined {
-	return servedFiles.get(request);
-}
-
 /**
  * Serves the hashed files under Vite's `build.assetsDir`, `/assets/` by
  * default, with a one-year immutable cache. The `appServer` Vite plugin
@@ -360,7 +344,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 						: ONE_HOUR;
 				});
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
-				servedFiles.set(context.req.raw, file.path);
+				context.env.onServedFile?.(file.path);
 				const value = cacheControl(file.path);
 				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });
 				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.

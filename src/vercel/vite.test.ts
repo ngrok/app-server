@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -153,6 +154,29 @@ describe("vercel", () => {
 			"app-server.js",
 			"client/robots.txt",
 			"vercel-function.js",
+		]);
+	});
+
+	it("keeps each prerendered page in the function by default, with no start of the server build", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-default-pages-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		// Why a throw: a server build whose plugins need the app's secrets fails when the build starts it.
+		write(join(site, "build/server/app-server.js"), 'throw new Error("no DATABASE_URL");\n');
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel().output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const siteOutput = join(site, ".vercel/output");
+		expect(existsSync(join(siteOutput, "static"))).toBe(false);
+		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			"about/index.html",
 		]);
 	});
 
@@ -334,7 +358,7 @@ describe("vercel", () => {
 		);
 		write(join(site, "build/client/p0/index.html"), "p0");
 
-		vercel().output?.({
+		vercel({ cdnPages: true }).output?.({
 			root: site,
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),

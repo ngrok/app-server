@@ -1,5 +1,3 @@
-import { servedFile } from "./plugins/static.js";
-
 /** What a content delivery network (CDN) sends for a prerendered path that it can serve with no server. */
 export type CdnPage = {
 	/** The URL path of the client build's file that the answer comes from, such as `/about/index.html`. */
@@ -22,8 +20,15 @@ export type CdnPage = {
 /** A prerendered path, with its CDN answer, or with the reason that the server must answer it. */
 export type StaticPage = { path: string } & ({ cdn: CdnPage } | { reason: string });
 
-/** Sends a request through the pipeline as a client at `remoteAddress`. */
-export type PipelineFetch = (request: Request, remoteAddress: string) => Promise<Response>;
+/**
+ * Sends a request through the pipeline as a client at `remoteAddress`. The
+ * pipeline calls `onServedFile` with the URL path of the client build's file
+ * that `prerendered()` sends, if it sends one.
+ */
+export type PipelineFetch = (
+	request: Request,
+	bindings: { remoteAddress: string; onServedFile: (path: string) => void },
+) => Promise<Response>;
 
 /** The headers that change with each request, such as the request ID. A CDN answer drops them. */
 const PER_REQUEST = new Set(["x-request-id", "date"]);
@@ -62,26 +67,38 @@ type Answer = {
 };
 
 /**
- * The two clients of each check. The second differs in each value that a CDN
- * route does not match on: the host, the address, the query, the user agent,
- * an `Accept` with no markdown, and the value of a presence header.
+ * The two clients of each check. The first is an anonymous browser. The
+ * second differs in each value that a CDN route does not match on: the host,
+ * the address, the query, the value of a presence header, and the request
+ * headers that a plugin reads most often to choose an answer. Why a cookie
+ * and `Authorization`: a plugin that sends a signed-in visitor to another
+ * page must keep its pages on the server. Why the geo headers: Vercel adds
+ * them, and a plugin can redirect by country.
  */
 const CLIENTS = [
 	{
 		origin: "https://localhost",
 		query: "",
-		userAgent: "app-server-build",
-		accept: BROWSER_ACCEPT,
 		address: "203.0.113.1",
 		presentValue: "1",
+		headers: { Accept: BROWSER_ACCEPT, "User-Agent": "app-server-build" },
 	},
 	{
 		origin: "https://app-server-check.example",
 		query: "?app-server-check=1",
-		userAgent: "app-server-build-check",
-		accept: "application/json",
 		address: "198.51.100.2",
 		presentValue: "2",
+		headers: {
+			Accept: "application/json",
+			"Accept-Language": "de-DE",
+			Authorization: "Bearer app-server-check",
+			Cookie: "session=app-server-check",
+			Referer: "https://app-server-check.example/",
+			"User-Agent": "app-server-build-check",
+			"X-Vercel-IP-City": "Berlin",
+			"X-Vercel-IP-Country": "DE",
+			"X-Vercel-IP-Country-Region": "BE",
+		},
 	},
 ] as const;
 
@@ -103,11 +120,7 @@ async function answer(
 	},
 ): Promise<Answer> {
 	// Why `Host`: a listener gives it to each request, and a plugin can read it.
-	const headers = new Headers([
-		["Host", new URL(client.origin).host],
-		["Accept", client.accept],
-		["User-Agent", client.userAgent],
-	]);
+	const headers = new Headers({ ...client.headers, Host: new URL(client.origin).host });
 	for (const name of presence) {
 		if (present.includes(name)) {
 			headers.set(name, client.presentValue);
@@ -116,8 +129,13 @@ async function answer(
 		}
 	}
 	const request = new Request(`${client.origin}${path}${client.query}`, { headers });
-	const response = await fetch(request, client.address);
-	const file = servedFile(request);
+	let file: string | undefined;
+	const response = await fetch(request, {
+		remoteAddress: client.address,
+		onServedFile: (served) => {
+			file = served;
+		},
+	});
 	if (file == null) {
 		// Why cancel: only the answer of a file can go on a CDN, and another body can stream with no end.
 		await response.body?.cancel();
@@ -268,17 +286,16 @@ async function staticPage(
  * - is a 200 from a prerendered file, with no cookie and no `private`,
  *   `no-store`, or `no-cache`
  * - is the same, except for the request ID, for a second client with another
- *   host, client address, user agent, query, `Accept` with no markdown, and
- *   value of each presence header. Why: a CDN route matches only the path,
- *   a markdown `Accept`, and the presence of each presence header.
+ *   host, client address, query, and value of each presence header, and with
+ *   a cookie, `Authorization`, `Accept-Language`, and geo headers. Why: a CDN
+ *   route matches only the path, a markdown `Accept`, and the presence of
+ *   each presence header.
  * - varies only on `Accept-Encoding`, on `Accept` for a markdown twin, and on
  *   the presence headers. Each case of the presence headers gets its own
  *   headers, and all cases must send the same body.
  *
  * An auth check that refuses an anonymous request keeps its pages on the
- * server, because the checks send no cookie and no `Authorization`. With
- * `serverOnly`, the reason of a plugin whose answer the build cannot predict,
- * each path stays on the server.
+ * server, because the first client sends no cookie and no `Authorization`.
  *
  * @yields Each path with its CDN answer, or with the reason that the server must answer it, in the order of `paths`.
  * @example
@@ -289,11 +306,9 @@ async function staticPage(
 export async function* staticPages(
 	fetch: PipelineFetch,
 	paths: readonly string[],
-	{ presence, serverOnly }: { presence: readonly string[]; serverOnly?: string | undefined },
+	{ presence }: { presence: readonly string[] },
 ): AsyncGenerator<StaticPage> {
 	for (const path of paths) {
-		yield serverOnly == null
-			? await staticPage(fetch, path, presence)
-			: { path, reason: serverOnly };
+		yield await staticPage(fetch, path, presence);
 	}
 }

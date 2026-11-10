@@ -27,16 +27,18 @@ export type VercelOptions = {
 	/** Headers for each file under `cdnPaths` and Vite's `build.assetsDir`, such as CORS headers. */
 	cdnHeaders?: Readonly<Record<string, string>>;
 	/**
-	 * Which prerendered pages the CDN serves, with no function. After the
-	 * build, `vercel()` starts the server build once and sends each
+	 * Which prerendered pages the CDN serves, with no function. With `true`,
+	 * `vercel()` starts the server build once after the build and sends each
 	 * prerendered path through the pipeline as an anonymous client. The CDN
 	 * serves a page when its answer is a public 200 from its file, and the
-	 * same for another host, client address, and query. The CDN then sends
-	 * the pipeline's body and headers. The function serves each other page,
-	 * and the CDN never keeps its answer. `false` keeps each page in the
-	 * function. A function keeps each path that it refuses in the function,
-	 * such as a page whose answer depends on one query key.
-	 * @default true
+	 * same for a second client with another host, address, query, cookie,
+	 * `Authorization`, language, and country. The CDN then sends the
+	 * pipeline's body and headers. The function serves each other page, and
+	 * the CDN never keeps its answer. A function keeps each path that it
+	 * refuses in the function, such as a page whose answer depends on one
+	 * query key. Why off by default: the build runs each plugin's `setup`,
+	 * and a check that the build cannot see can then reach the CDN.
+	 * @default false
 	 */
 	cdnPages?: boolean | ((path: string) => boolean);
 	/** The Vercel regions of the function, such as `["iad1"]`. @default the project's */
@@ -221,7 +223,7 @@ function findCdnPages(
 		});
 	} catch (error) {
 		throw new Error(
-			"@ngrok/app-server/vercel could not start the server build to find the prerendered pages that the CDN can serve. Give the build the environment of the app, or set `vercel({ cdnPages: false })`.",
+			"@ngrok/app-server/vercel could not start the server build to find the prerendered pages that the CDN can serve. Give the build the environment of the app, or remove `cdnPages`.",
 			{ cause: error },
 		);
 	}
@@ -265,7 +267,7 @@ function reportPages({ cdn, server }: PagesReport): void {
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
 	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
-	{ cdnPaths = [], cdnHeaders = {}, cdnPages = true, regions, memory, maxDuration }: VercelOptions,
+	{ cdnPaths = [], cdnHeaders = {}, cdnPages = false, regions, memory, maxDuration }: VercelOptions,
 ): void {
 	// Why `assetsPath` last: Vercel applies each matched rule in order, so its immutable cache wins
 	// over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
@@ -277,7 +279,9 @@ function writeOutput(
 		// Why one less: the route that sends a request for a page's body to the function.
 		routeBudget: ROUTE_LIMIT - routes(prefixes, { assetsPath, cdnHeaders, pages: [] }).length - 1,
 	});
-	reportPages(pages);
+	if (cdnPages !== false) {
+		reportPages(pages);
+	}
 	const fromRoot = (path: string): string => {
 		const inside = relative(root, path);
 		if (inside.startsWith("..") || isAbsolute(inside)) {
@@ -364,7 +368,7 @@ function checkCdnPaths(paths: readonly string[]): void {
  * - `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default)
  *   and the other `cdnPaths`. The CDN serves them, and each file of
  *   `build.assetsDir` gets a one-year immutable cache. It also holds the
- *   prerendered pages that the CDN serves. See `cdnPages`.
+ *   prerendered pages that the CDN serves, with `cdnPages`.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
  *   each other request, with the whole server build and the rest of the
  *   client build.

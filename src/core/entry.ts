@@ -186,9 +186,9 @@ export function createEntry({
 		async *staticPages() {
 			const runtime = await production();
 			yield* staticPages(
-				async (request, remoteAddress) => app.fetch(request, { remoteAddress, framework: runtime }),
+				async (request, bindings) => app.fetch(request, { ...bindings, framework: runtime }),
 				prerenderedPaths,
-				{ presence: internals.presenceHeaders, serverOnly: internals.serverOnly },
+				{ presence: internals.presenceHeaders },
 			);
 		},
 		stopPlugins: internals.stopPlugins,

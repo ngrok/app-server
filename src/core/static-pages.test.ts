@@ -163,13 +163,38 @@ describe("staticPages", () => {
 		]);
 	});
 
-	it("gives each case of a noindex header its own headers, and keeps a noindex `when` on the server", async () => {
+	it("keeps a page on the server when a plugin answers a signed-in visitor or a country another way", async () => {
+		const signedIn: Plugin = {
+			name: "signed-in",
+			middleware: async (context, next) =>
+				context.req.header("Cookie") == null ? next() : context.redirect("/dashboard", 302),
+		};
+		const bearer: Plugin = {
+			name: "bearer",
+			middleware: async (context, next) =>
+				context.req.header("Authorization") == null ? next() : context.redirect("/app", 302),
+		};
+		const byCountry: Plugin = {
+			name: "by-country",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("Content-Language", context.req.header("x-vercel-ip-country") ?? "US");
+				}),
+		};
+
+		await expect(pagesOf({ beforeStatic: [signedIn] }, ["/about"])).resolves.toStrictEqual([
+			{ path: "/about", reason: "the status or the file changes with the request" },
+		]);
+		await expect(pagesOf({ beforeStatic: [bearer] }, ["/about"])).resolves.toStrictEqual([
+			{ path: "/about", reason: "the status or the file changes with the request" },
+		]);
+		await expect(pagesOf({ beforeStatic: [byCountry] }, ["/about"])).resolves.toStrictEqual([
+			{ path: "/about", reason: "the content-language header changes with the request" },
+		]);
+	});
+
+	it("gives each case of a noindex header its own headers", async () => {
 		const [declared] = await pagesOf({ noindex: { unlessHeader: "x-ngrok-edge" } }, ["/about"]);
-		// Why a `when` that hides each page of the checks: the build cannot see that it shows them on another host.
-		const opaque = await pagesOf(
-			{ noindex: { when: (c) => new URL(c.req.url).hostname !== "example.com", vary: [] } },
-			["/about"],
-		);
 
 		const answers = declared != null && "cdn" in declared ? declared.cdn.answers : [];
 		expect(answers.map(({ present, headers }) => [present, headers["x-robots-tag"]])).toStrictEqual(
@@ -181,7 +206,6 @@ describe("staticPages", () => {
 		expect(answers.every(({ headers }) => headers.vary?.includes("x-ngrok-edge") === true)).toBe(
 			true,
 		);
-		expect(opaque).toStrictEqual([{ path: "/about", reason: "noindex has a `when` function" }]);
 	});
 
 	it("keeps a page on the server when it varies on a value that the CDN routes do not match", async () => {
