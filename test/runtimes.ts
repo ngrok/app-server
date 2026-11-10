@@ -12,7 +12,13 @@ import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { constants, createBrotliDecompress, createGunzip } from "node:zlib";
+import {
+	brotliDecompressSync,
+	constants,
+	createBrotliDecompress,
+	createGunzip,
+	gunzipSync,
+} from "node:zlib";
 import { buildFixtures, commands, startServer } from "./harness.ts";
 
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
@@ -176,18 +182,21 @@ async function check(runtime: string): Promise<void> {
 			await (await fetch(new URL("/release", base))).text();
 		}
 
-		for (const encoding of ["br", "br", "gzip", "gzip"]) {
-			// oxlint-disable-next-line no-await-in-loop -- the second request of each encoding gets a pooled stream.
-			const pooled = await fetch(new URL("/page", base), {
-				headers: { "Accept-Encoding": encoding },
-			});
-			assert.equal(pooled.headers.get("content-encoding"), encoding);
-			// oxlint-disable-next-line no-await-in-loop -- the second request of each encoding gets a pooled stream.
-			assert.equal(
-				await pooled.text(),
-				"<p>page</p>".repeat(200),
-				`each ${encoding} page has its body`,
-			);
+		// Why twice: the second page of each encoding gets a pooled stream, which must give the same bytes.
+		for (const [encoding, decode] of [
+			["br", brotliDecompressSync],
+			["gzip", gunzipSync],
+		] as const) {
+			const bodies: Buffer[] = [];
+			for (let index = 0; index < 2; index += 1) {
+				// oxlint-disable-next-line no-await-in-loop -- the second request must find the stream of the first in the pool.
+				const pooled = await request(new URL("/page", base).href, { "Accept-Encoding": encoding });
+				assert.equal(pooled.headers["content-encoding"], encoding);
+				// oxlint-disable-next-line no-await-in-loop -- the second request must find the stream of the first in the pool.
+				bodies.push(Buffer.concat(await pooled.toArray()));
+			}
+			assert.equal(decode(bodies[0] ?? Buffer.alloc(0)).toString(), "<p>page</p>".repeat(200));
+			assert.deepEqual(bodies[1], bodies[0], `a pooled ${encoding} stream gives the same bytes`);
 		}
 
 		const held = await request(new URL("/hold", base).href);

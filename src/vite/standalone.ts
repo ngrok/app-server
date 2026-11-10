@@ -255,12 +255,23 @@ function removeEmptyDirectories(directory: string): void {
  */
 const RUNTIME_CONDITIONS = [["node"], ["bun", "node"], ["deno", "node"]];
 
-/**
- * Code that finds a file next to its own module in a way that `@vercel/nft`
- * does not follow. Why: the trace then misses the file, so the package keeps
- * each file.
- */
+/** Code that finds a file next to its own module in a way that `@vercel/nft` does not follow. */
 const UNTRACED_OWN_FILE = /import\.meta\.(?:dirname|filename)\b/u;
+
+/**
+ * Whether the trace missed a file of a package, from the files of the
+ * package that it found: a module that finds a file through
+ * {@link UNTRACED_OWN_FILE}, or only a `package.json`, as for a
+ * `require.resolve()` of a subpath in its `exports`.
+ */
+function missesFiles(loaded: readonly string[]): boolean {
+	return (
+		(loaded.length > 0 && loaded.every((file) => basename(file) === "package.json")) ||
+		loaded.some(
+			(file) => /\.[cm]?js$/u.test(file) && UNTRACED_OWN_FILE.test(readFileSync(file, "utf8")),
+		)
+	);
+}
 
 /**
  * Removes each file of a package in `copied` that the server build in
@@ -269,8 +280,8 @@ const UNTRACED_OWN_FILE = /import\.meta\.(?:dirname|filename)\b/u;
  * package for which `whole` is true, and each package that it depends on,
  * keeps each file. Why: a native package can load a library through the
  * system's loader, such as `sharp` loads libvips, and a trace cannot see it.
- * A package with a loaded module that matches {@link UNTRACED_OWN_FILE}
- * keeps each file too.
+ * A package whose files the trace misses ({@link missesFiles}) keeps each
+ * file too, with each package that it depends on.
  *
  * @example
  * await removeUntraced("/app/build/server", copied, (copy) => isNativePackage(copy.source));
@@ -308,17 +319,19 @@ export async function removeUntraced(
 	const traced = new Set(
 		traces.flatMap(({ fileList }) => [...fileList].map((file) => join(serverDirectory, file))),
 	);
-	const pruned = [...copied.keys()].filter(
-		(destination) => !kept.has(destination) && existsSync(destination),
-	);
-	for (const destination of pruned) {
+	const present = [...copied.keys()].filter((destination) => existsSync(destination));
+	for (const destination of present) {
+		if (
+			!kept.has(destination) &&
+			missesFiles(ownFiles(destination).filter((file) => traced.has(file)))
+		) {
+			keep(destination);
+		}
+	}
+	for (const destination of present.filter((each) => !kept.has(each))) {
 		const files = ownFiles(destination);
-		const loaded = files.filter((file) => traced.has(file));
-		const keepsEach = loaded.some(
-			(file) => /\.[cm]?js$/u.test(file) && UNTRACED_OWN_FILE.test(readFileSync(file, "utf8")),
-		);
-		const used = loaded.length > 0;
-		for (const file of keepsEach ? [] : files) {
+		const used = files.some((file) => traced.has(file));
+		for (const file of files) {
 			// Why each `package.json`: Node reads it to find the entry and the module type of a file.
 			if (!traced.has(file) && !(used && basename(file) === "package.json")) {
 				rmSync(file);

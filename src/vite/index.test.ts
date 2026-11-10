@@ -1017,26 +1017,74 @@ describe("appServer in a server build", () => {
 		]);
 	});
 
-	it("copies each file of an external package that finds its own file through `import.meta.dirname`", async () => {
+	it("copies each file of an external package that loads a file through `import.meta.dirname`, and its dependencies", async () => {
 		const { values, server } = await buildAlone(
 			{
 				...ogPackage,
 				"node_modules/og/dist/node.js": [
 					'import { readFileSync } from "node:fs";',
 					'import { join } from "node:path";',
-					'export const word = async () => readFileSync(join(import.meta.dirname, "word.txt"), "utf8");',
+					"export const word = async () =>",
+					'\treadFileSync(join(import.meta.dirname, "word.txt"), "utf8") +',
+					'\t(await import(join(import.meta.dirname, "helper.js"))).suffix;',
 				].join("\n"),
+				"node_modules/og/dist/helper.js":
+					'import bundled from "bundled";\nexport const suffix = " " + bundled;',
 			},
 			{},
 		);
 
-		expect(values).toStrictEqual(["own file"]);
-		expect(filesUnder(join(server, "node_modules/og"))).toStrictEqual([
-			"dist/edge.js",
-			"dist/node.js",
-			"dist/node.js.map",
-			"dist/word.txt",
+		expect(values).toStrictEqual(["own file bundled"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"bundled/index.js",
+			"bundled/package.json",
+			"og/dist/edge.js",
+			"og/dist/helper.js",
+			"og/dist/node.js",
+			"og/dist/node.js.map",
+			"og/dist/word.txt",
+			"og/package.json",
+			"speedy/README.md",
+			"speedy/index.js",
+			"speedy/package.json",
+		]);
+	});
+
+	it("copies each file of a package of which the trace finds only the `package.json`", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: { ".": { node: "./dist/node.js", default: "./dist/edge.js" } },
+					dependencies: { data: "1.0.0" },
+				}),
+				"node_modules/og/dist/node.js": [
+					'import { readFileSync } from "node:fs";',
+					'import data from "./data.cjs";',
+					"export const word = async () => {",
+					'\tconst own = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+					'\treturn own + " " + data;',
+					"};",
+				].join("\n"),
+				"node_modules/og/dist/data.cjs":
+					'module.exports = require("node:fs").readFileSync(require.resolve("data/word.txt"), "utf8");',
+				"node_modules/data/package.json": JSON.stringify({
+					name: "data",
+					exports: { "./word.txt": "./word.txt" },
+				}),
+				"node_modules/data/word.txt": "data file",
+				"node_modules/data/README.md": "docs",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file data file"]);
+		expect(filesUnder(join(server, "node_modules/data"))).toStrictEqual([
+			"README.md",
 			"package.json",
+			"word.txt",
 		]);
 	});
 

@@ -127,8 +127,8 @@ const BROTLI_POOL: Pool = {
 		createBrotliCompress({ flush: constants.BROTLI_OPERATION_FINISH, params: BROTLI_PARAMS }),
 	idle: [],
 	sized: false,
-	// Why not on Deno: after a reset, its brotli encoder gives no bytes for the next body.
-	reuses: !("Deno" in globalThis),
+	// Why not on Bun or Deno: after a reset, a Bun encoder forgets its quality, and a Deno encoder gives no bytes.
+	reuses: !("Bun" in globalThis) && !("Deno" in globalThis),
 };
 
 /**
