@@ -251,9 +251,14 @@ async function checkStart(): Promise<void> {
 	try {
 		const page = await fetch(new URL("/", await url));
 		assert.equal(await page.text(), "rendered");
+		// Why: the `exit` event can come before the last stdout line.
+		const stdoutEnded = new Promise<void>((resolve) => {
+			child.stdout.once("end", resolve);
+		});
 		const exitCode = exited(child, 5_000);
 		child.kill("SIGINT");
 		assert.equal(await exitCode, 0, "`start` exits without waiting for the app's timers");
+		await stdoutEnded;
 		assert.deepEqual(
 			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
 			["vite plugin saw listening", "vite plugin saw close"],

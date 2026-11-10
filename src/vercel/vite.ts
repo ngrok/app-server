@@ -267,7 +267,9 @@ function writeOutput(
 	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, cdnPages = true, regions, memory, maxDuration }: VercelOptions,
 ): void {
-	const prefixes = [assetsPath, ...cdnPaths.filter((path) => path !== assetsPath)];
+	// Why `assetsPath` last: Vercel applies each matched rule in order, so its immutable cache wins
+	// over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
+	const prefixes = [...cdnPaths.filter((path) => path !== assetsPath), assetsPath];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
 	const pages = findCdnPages(entryFile, output, {

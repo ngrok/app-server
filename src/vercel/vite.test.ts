@@ -117,16 +117,16 @@ describe("vercel", () => {
 				{ src: "^/(.*)$", dest: "/index" },
 				{ handle: "hit" },
 				{
+					src: "^/blog-assets/.*$",
+					headers: { "Access-Control-Allow-Origin": "*" },
+					continue: true,
+				},
+				{
 					src: "^/assets/.*$",
 					headers: {
 						"Access-Control-Allow-Origin": "*",
 						"Cache-Control": "public, max-age=31536000, immutable",
 					},
-					continue: true,
-				},
-				{
-					src: "^/blog-assets/.*$",
-					headers: { "Access-Control-Allow-Origin": "*" },
 					continue: true,
 				},
 			],
@@ -165,21 +165,26 @@ describe("vercel", () => {
 		write(join(custom, "build/client/blog-assets/build/app-abc.js"), "app();");
 		write(join(custom, "build/client/blog-assets/post.png"), "png");
 
-		vercel().output?.({
-			root: custom,
-			clientDirectory: join(custom, "build/client"),
-			entryFile: join(custom, "build/server/app-server.js"),
-			assetsPath: "/blog-assets/build/",
-		});
+		vercel({ cdnPaths: ["/blog-assets/"], cdnHeaders: { "Cache-Control": "max-age=60" } }).output?.(
+			{
+				root: custom,
+				clientDirectory: join(custom, "build/client"),
+				entryFile: join(custom, "build/server/app-server.js"),
+				assetsPath: "/blog-assets/build/",
+			},
+		);
 
 		expect(filesUnder(join(custom, ".vercel/output/static"))).toStrictEqual([
 			"blog-assets/build/app-abc.js",
+			"blog-assets/post.png",
 		]);
+		// Why the order: the rule of `build.assetsDir` comes last, so its immutable cache wins.
 		expect(json(join(custom, ".vercel/output/config.json"))).toMatchObject({
 			routes: [
 				{ handle: "filesystem" },
 				{ src: "^/(.*)$", dest: "/index" },
 				{ handle: "hit" },
+				{ src: "^/blog-assets/.*$", headers: { "Cache-Control": "max-age=60" } },
 				{
 					src: String.raw`^/blog-assets/build/.*$`,
 					headers: { "Cache-Control": "public, max-age=31536000, immutable" },
