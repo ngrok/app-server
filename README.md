@@ -229,7 +229,7 @@ The output has two parts:
 After the build, `vercel()` starts the server build once, with no listener, and sends each prerendered path through the pipeline. Each request comes from an anonymous client, with no cookie and no `Authorization`. The CDN serves a page when its answer meets all of these conditions:
 
 - It is a 200 from the page's file.
-- It has no `Set-Cookie` and no `private`, `no-store`, or `no-cache` in `Cache-Control`, in any case.
+- It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
 - It is the same for a second client with another host, client address, user agent, and query. Only `X-Request-Id` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 

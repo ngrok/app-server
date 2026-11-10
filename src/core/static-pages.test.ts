@@ -98,6 +98,13 @@ describe("staticPages", () => {
 					headers.set("Cache-Control", "Private, No-Cache");
 				}),
 		};
+		const cdnNoStore: Plugin = {
+			name: "cdn-no-store",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("Vercel-CDN-Cache-Control", "no-store");
+				}),
+		};
 		const cookie: Plugin = {
 			name: "cookie",
 			middleware: async (context, next) =>
@@ -107,7 +114,10 @@ describe("staticPages", () => {
 		};
 
 		await expect(pagesOf({ beforeStatic: [privatePages] }, ["/about"])).resolves.toStrictEqual([
-			{ path: "/about", reason: "Cache-Control has Private" },
+			{ path: "/about", reason: "the cache-control header has Private" },
+		]);
+		await expect(pagesOf({ beforeStatic: [cdnNoStore] }, ["/about"])).resolves.toStrictEqual([
+			{ path: "/about", reason: "the vercel-cdn-cache-control header has no-store" },
 		]);
 		await expect(pagesOf({ beforeStatic: [cookie] }, ["/about"])).resolves.toStrictEqual([
 			{ path: "/about", reason: "the answer sets a cookie" },
@@ -174,6 +184,18 @@ describe("staticPages", () => {
 		expect(opaque).toStrictEqual([{ path: "/about", reason: "noindex has a `when` function" }]);
 	});
 
+	it("sends no presence header in the case that it is absent, though the checks send it by default", async () => {
+		const [about] = await pagesOf({ noindex: { unlessHeader: "User-Agent" } }, ["/about"]);
+
+		const answers = about != null && "cdn" in about ? about.cdn.answers : [];
+		expect(answers.map(({ present, headers }) => [present, headers["x-robots-tag"]])).toStrictEqual(
+			[
+				[[], "noindex, nofollow"],
+				[["user-agent"], undefined],
+			],
+		);
+	});
+
 	it("names the markdown twin of a page, and serves the twin from the CDN too", async () => {
 		const pages = await pagesOf({ prerendered: { markdownTwins: true } }, ["/about", "/about.md"], {
 			"about/index.html": page,
@@ -187,12 +209,25 @@ describe("staticPages", () => {
 	});
 
 	it("keeps a path on the server when it is not a plain path or not a file", async () => {
-		await expect(pagesOf({}, ["/caf%C3%A9", "/rendered"])).resolves.toStrictEqual([
+		// Why a long segment: the path check must take linear time.
+		const slug = `/blog/${"a".repeat(64)}%C3%A9`;
+		/** A `beforeStatic` plugin that answers `/stream` with a body that never ends. */
+		const endless: Plugin = {
+			name: "endless",
+			middleware: async (context, next) =>
+				context.req.path === "/stream" ? context.body(new ReadableStream()) : next(),
+		};
+
+		await expect(
+			pagesOf({ beforeStatic: [endless] }, ["/caf%C3%A9", slug, "/rendered", "/stream"]),
+		).resolves.toStrictEqual([
 			{
 				path: "/caf%C3%A9",
 				reason: "the path has a character that a CDN route can match two ways",
 			},
+			{ path: slug, reason: "the path has a character that a CDN route can match two ways" },
 			{ path: "/rendered", reason: "the answer does not come from a prerendered file" },
+			{ path: "/stream", reason: "the answer does not come from a prerendered file" },
 		]);
 	});
 });

@@ -45,9 +45,10 @@ const BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/
 /**
  * A URL path that a CDN route matches as it is. Why only these characters: a
  * CDN can match a path before or after it decodes it, and these two forms
- * are the same.
+ * are the same. Why a slash after each segment but the last: the match then
+ * takes linear time.
  */
-const PLAIN_PATH = /^\/(?:[\w.~-]+\/?)*$/u;
+const PLAIN_PATH = /^\/(?:[\w.~-]+\/)*[\w.~-]*$/u;
 
 /** The most presence headers. Why: each one doubles the requests and the CDN routes. */
 const MAX_PRESENCE_HEADERS = 3;
@@ -71,26 +72,48 @@ const CLIENTS = [
 	},
 ] as const;
 
+/**
+ * The answer of the pipeline for `path`. The request has each of `presence`
+ * that is in `present`, and no other of `presence`.
+ */
 async function answer(
 	fetch: PipelineFetch,
 	path: string,
-	{ client, present }: { client: (typeof CLIENTS)[number]; present: readonly string[] },
+	{
+		client,
+		presence,
+		present,
+	}: {
+		client: (typeof CLIENTS)[number];
+		presence: readonly string[];
+		present: readonly string[];
+	},
 ): Promise<Answer> {
-	const request = new Request(`${client.origin}${path}${client.query}`, {
-		// Why `Host`: a listener gives it to each request, and a plugin can read it.
-		headers: [
-			["Host", new URL(client.origin).host],
-			["Accept", BROWSER_ACCEPT],
-			["User-Agent", client.userAgent],
-			...present.map((name): [string, string] => [name, "1"]),
-		],
-	});
+	// Why `Host`: a listener gives it to each request, and a plugin can read it.
+	const headers = new Headers([
+		["Host", new URL(client.origin).host],
+		["Accept", BROWSER_ACCEPT],
+		["User-Agent", client.userAgent],
+	]);
+	for (const name of presence) {
+		if (present.includes(name)) {
+			headers.set(name, "1");
+		} else {
+			headers.delete(name);
+		}
+	}
+	const request = new Request(`${client.origin}${path}${client.query}`, { headers });
 	const response = await fetch(request, client.address);
+	const file = servedFile(request);
+	if (file == null) {
+		// Why cancel: only the answer of a file can go on a CDN, and another body can stream with no end.
+		await response.body?.cancel();
+	}
 	return {
 		status: response.status,
 		headers: response.headers,
-		body: new Uint8Array(await response.arrayBuffer()),
-		file: servedFile(request),
+		body: file == null ? new Uint8Array() : new Uint8Array(await response.arrayBuffer()),
+		file,
 	};
 }
 
@@ -125,11 +148,13 @@ function uncacheable(first: Answer, allowedVary: ReadonlySet<string>): string | 
 	if (first.headers.has("set-cookie")) {
 		return "the answer sets a cookie";
 	}
-	const cacheControl = first.headers.get("cache-control") ?? "";
-	// Why `i`: cache directives are case-insensitive.
-	const blocked = /\b(?:private|no-store|no-cache)\b/iu.exec(cacheControl);
-	if (blocked != null) {
-		return `Cache-Control has ${blocked[0]}`;
+	// Why each `CDN-Cache-Control` field: a CDN obeys it before `Cache-Control` (RFC 9213).
+	for (const [name, value] of first.headers) {
+		// Why `i`: cache directives are case-insensitive.
+		const blocked = /\b(?:private|no-store|no-cache)\b/iu.exec(value);
+		if (blocked != null && (name === "cache-control" || name.endsWith("cdn-cache-control"))) {
+			return `the ${name} header has ${blocked[0]}`;
+		}
 	}
 	if (first.headers.has("content-encoding")) {
 		return "the answer has a Content-Encoding";
@@ -175,7 +200,7 @@ async function staticPage(
 		return { path, reason: "the path has a character that a CDN route can match two ways" };
 	}
 	// Why: the build records a path with no trailing slash, and `trailingSlash: "always"` sends it on.
-	const probe = await answer(fetch, path, { client: CLIENTS[0], present: [] });
+	const probe = await answer(fetch, path, { client: CLIENTS[0], presence, present: [] });
 	if (probe.status === 308 && probe.headers.get("location") === `${path}/`) {
 		return staticPage(fetch, `${path}/`, presence);
 	}
@@ -187,8 +212,8 @@ async function staticPage(
 	let twin: string | undefined;
 	for (const present of subsets(presence)) {
 		const [first, second] = [
-			await answer(fetch, path, { client: CLIENTS[0], present }),
-			await answer(fetch, path, { client: CLIENTS[1], present }),
+			await answer(fetch, path, { client: CLIENTS[0], presence, present }),
+			await answer(fetch, path, { client: CLIENTS[1], presence, present }),
 		];
 		twin = twinIn(first.headers.get("link"));
 		const allowedVary = new Set([
