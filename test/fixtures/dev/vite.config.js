@@ -15,18 +15,23 @@ export default {
 			resolveId: (id) => (id === "virtual:@ngrok/app-server/entry" ? entry : undefined),
 		},
 		{
-			// Why: a plugin that waits for the HTTP server's events, as some apps' plugins do.
+			// Why: a plugin that waits for the HTTP server's events, as some apps' plugins do. Why both
+			// `pre` settings: the hook then runs as early as an app's hook can.
 			name: "http-server-events",
-			configureServer: (server) => {
-				for (const event of ["listening", "close"]) {
-					server.httpServer?.once(event, () => {
-						process.stdout.write(`${JSON.stringify({ message: `vite plugin saw ${event}` })}\n`);
+			enforce: "pre",
+			configureServer: {
+				order: "pre",
+				handler: (server) => {
+					for (const event of ["listening", "close"]) {
+						server.httpServer?.once(event, () => {
+							process.stdout.write(`${JSON.stringify({ message: `vite plugin saw ${event}` })}\n`);
+						});
+					}
+					server.httpServer?.once("listening", () => {
+						const upgrades = server.httpServer?.listenerCount("upgrade");
+						process.stdout.write(`${JSON.stringify({ message: "upgrade listeners", upgrades })}\n`);
 					});
-				}
-				server.httpServer?.once("listening", () => {
-					const upgrades = server.httpServer?.listenerCount("upgrade");
-					process.stdout.write(`${JSON.stringify({ message: "upgrade listeners", upgrades })}\n`);
-				});
+				},
 			},
 		},
 	],

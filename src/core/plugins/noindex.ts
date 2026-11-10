@@ -16,7 +16,9 @@ export type NoindexOptions = {
 /**
  * Sets `X-Robots-Tag: noindex, nofollow` on each response, or on each
  * response to a request with no `unlessHeader`, so a search engine does not
- * index a preview deploy. The `noindex` option of `defaultPlugins()` puts it
+ * index a preview deploy.
+ *
+ * The `noindex` option of `defaultPlugins()` puts it
  * before the static stages, so it also sees prerendered pages.
  *
  * @example

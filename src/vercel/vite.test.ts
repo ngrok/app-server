@@ -342,6 +342,40 @@ describe("vercel", () => {
 		expect(readFileSync(join(pages, "1/index.html"), "utf8")).toBe("CDN /b");
 	});
 
+	it("keeps a page in the function when `cdnPages` refuses its path before a trailing-slash redirect, or a header has a `$`", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-page-filter-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const page = (path: string, headers: Record<string, string> = {}) => ({
+			path,
+			cdn: { file: `${path}index.html`, answers: [{ present: [], headers }] },
+		});
+		write(
+			join(site, "build/server/app-server.js"),
+			entrySource([
+				page("/blog/"),
+				page("/files/", { "content-disposition": 'attachment; filename="$1.txt"' }),
+				page("/about/"),
+			]),
+		);
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel({ cdnPages: (path) => path !== "/blog" }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const { routes } = json(join(site, ".vercel/output/config.json")) as {
+			routes: { src?: string }[];
+		};
+		expect(
+			routes.map(({ src }) => src).filter((src) => src?.endsWith("/$") === true),
+		).toStrictEqual(["^/about/$"]);
+	});
+
 	it("keeps the pages past Vercel's route limit in the function", () => {
 		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-route-limit-"));
 		onTestFinished(() => {

@@ -122,9 +122,16 @@ export async function start(): Promise<void> {
  * vite.createServer({ plugins: [shareHttpServer(httpServer)] });
  */
 function shareHttpServer(httpServer: Server): Plugin {
-	return {
+	const plugin: Plugin = {
 		name: "@ngrok/app-server:http-server",
-		enforce: "pre",
+		// Why first: Vite puts an inline plugin after the config file's plugins, so an app plugin with
+		// `enforce: "pre"` and `order: "pre"` runs its `configureServer` before this one.
+		configResolved: (config) => {
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Vite sorts each hook from this array later.
+			const plugins = config.plugins as Plugin[];
+			plugins.splice(plugins.indexOf(plugin), 1);
+			plugins.unshift(plugin);
+		},
 		configureServer: {
 			order: "pre",
 			handler: (server) => {
@@ -132,6 +139,7 @@ function shareHttpServer(httpServer: Server): Plugin {
 			},
 		},
 	};
+	return plugin;
 }
 
 /** The hostname for Vite's `server.host`: `true` is every interface, and no value is `localhost`. */

@@ -68,6 +68,7 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  *   pattern that it matched, such as `/domains/:domainId`.
  * - In development, a request that Vite answers, such as a source module,
  *   gets no line.
+ * - A request of the build's check of the CDN pages gets no line.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
@@ -93,7 +94,8 @@ export function accessLog({
 						}
 					})
 				: next());
-			if (answeredByDevServer(context)) {
+			// Why skip the build's check of the CDN pages: its requests come from no visitor.
+			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;
 			}
 			// Why a catch: a log line must never change the response or stop its stream. The listener can

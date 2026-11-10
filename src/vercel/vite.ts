@@ -35,9 +35,10 @@ export type VercelOptions = {
 	 * `Authorization`, language, and country. The CDN then sends the
 	 * pipeline's body and headers. The function serves each other page, and
 	 * the CDN never keeps its answer. A function keeps each path that it
-	 * refuses in the function, such as a page whose answer depends on one
-	 * query key. Why off by default: the build runs each plugin's `setup`,
-	 * and a check that the build cannot see can then reach the CDN.
+	 * refuses in either trailing-slash form in the function, such as a page
+	 * whose answer depends on one query key. Why off by default: the build
+	 * runs each plugin's `setup`, and a check that the build cannot see can
+	 * then reach the CDN.
 	 * @default false
 	 */
 	cdnPages?: boolean | ((path: string) => boolean);
@@ -200,6 +201,15 @@ function pageRoutes({ path, file, answers, twin }: CdnPageReport) {
 }
 
 /**
+ * Whether `cdnPages` accepts `path`. Why both trailing-slash forms: with
+ * `trailingSlash: "always"`, the CDN serves `/blog/` for the prerendered
+ * path `/blog`.
+ */
+function accepts(cdnPages: (path: string) => boolean, path: string): boolean {
+	return cdnPages(path) && (path === "/" || !path.endsWith("/") || cdnPages(path.slice(0, -1)));
+}
+
+/**
  * Finds the pages that the CDN serves ({@link VercelOptions.cdnPages}), and
  * writes their bodies under `static/`.
  */
@@ -235,8 +245,15 @@ function findCdnPages(
 	for (const page of report.cdn) {
 		const count = pageRoutes(page).length;
 		let reason: string | undefined;
-		if (cdnPages !== true && !cdnPages(page.path)) {
+		if (cdnPages !== true && !accepts(cdnPages, page.path)) {
 			reason = "`cdnPages` keeps it in the function";
+		} else if (
+			page.answers.some(({ headers }) =>
+				Object.values(headers).some((value) => value.includes("$")),
+			)
+		) {
+			// Why: Vercel reads `$1` or `$name` in a route's header as a capture of its `src`.
+			reason = "a header has a `$`, which a Vercel route reads as a capture";
 		} else if (routeCount + count > routeBudget) {
 			reason = `the CDN routes of the pages reach Vercel's limit of ${ROUTE_LIMIT} routes`;
 		}

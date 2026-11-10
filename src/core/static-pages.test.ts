@@ -13,11 +13,17 @@ import type { Plugin } from "./types.js";
 const page = "<!doctype html><title>About</title>";
 const aboutPage: Readonly<Record<string, string>> = { "about/index.html": page };
 
-/** The static pages of an app over a client build of `files`, with `paths` as the prerendered paths. */
+/**
+ * The static pages of an app over a client build of `files`, with `paths` as
+ * the prerendered paths. `log` gets each log line.
+ */
 async function pagesOf(
 	options: DefaultPluginsOptions,
 	paths: readonly string[],
-	files: Readonly<Record<string, string>> = aboutPage,
+	{
+		files = aboutPage,
+		log = () => {},
+	}: { files?: Readonly<Record<string, string>>; log?: (...line: unknown[]) => void } = {},
 ): Promise<StaticPage[]> {
 	const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-pages-"));
 	onTestFinished(() => {
@@ -28,7 +34,7 @@ async function pagesOf(
 		writeFileSync(join(clientDirectory, path), content);
 	}
 	const entry = createEntry({
-		app: createServer({ plugins: defaultPlugins(options), logger: { log: () => {} } }),
+		app: createServer({ plugins: defaultPlugins(options), logger: { log } }),
 		host,
 		clientDirectory,
 		framework: () => ({
@@ -219,7 +225,7 @@ describe("staticPages", () => {
 				},
 			},
 			["/about"],
-			files,
+			{ files },
 		);
 		const edgeValue: Plugin = {
 			name: "edge-value",
@@ -239,7 +245,7 @@ describe("staticPages", () => {
 				},
 			},
 			["/about"],
-			files,
+			{ files },
 		);
 
 		expect(byAccept).toStrictEqual([
@@ -269,14 +275,35 @@ describe("staticPages", () => {
 
 	it("names the markdown twin of a page, and serves the twin from the CDN too", async () => {
 		const pages = await pagesOf({ prerendered: { markdownTwins: true } }, ["/about", "/about.md"], {
-			"about/index.html": page,
-			"about.md": "# About",
+			files: { "about/index.html": page, "about.md": "# About" },
 		});
 
 		expect(pages.map((each) => ("cdn" in each ? [each.path, each.cdn.twin] : each))).toStrictEqual([
 			["/about", "/about.md"],
 			["/about.md", undefined],
 		]);
+	});
+
+	it("sends two requests for a page with no presence header, and writes no access log line", async () => {
+		const requests: string[] = [];
+		const lines: unknown[] = [];
+		/** A `beforeStatic` plugin that records each request. */
+		const counter: Plugin = {
+			name: "counter",
+			middleware: async (context, next) => {
+				requests.push(context.req.path);
+				return next();
+			},
+		};
+
+		await pagesOf({ beforeStatic: [counter] }, ["/about"], {
+			log: (...line) => {
+				lines.push(line);
+			},
+		});
+
+		expect(requests).toStrictEqual(["/about", "/about"]);
+		expect(lines).toStrictEqual([]);
 	});
 
 	it("keeps a path on the server when it is not a plain path or not a file", async () => {

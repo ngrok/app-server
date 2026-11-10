@@ -238,12 +238,15 @@ async function staticPage(
 	if (presence.length > MAX_PRESENCE_HEADERS) {
 		return { path, reason: `more than ${MAX_PRESENCE_HEADERS} presence headers` };
 	}
+	// Why reuse the probe: it is the first client's answer with no presence header.
+	const firstAnswer = async (present: readonly string[]): Promise<Answer> =>
+		present.length === 0 ? probe : answer(fetch, path, { client: CLIENTS[0], presence, present });
 	const answers: CdnPage["answers"] = [];
 	let base: Answer | undefined;
 	let twin: string | undefined;
 	for (const present of subsets(presence)) {
 		const [first, second] = [
-			await answer(fetch, path, { client: CLIENTS[0], presence, present }),
+			await firstAnswer(present),
 			await answer(fetch, path, { client: CLIENTS[1], presence, present }),
 		];
 		const caseTwin = twinIn(first.headers.get("link"));
@@ -295,7 +298,7 @@ async function staticPage(
  *   headers, and all cases must send the same body.
  *
  * An auth check that refuses an anonymous request keeps its pages on the
- * server, because the first client sends no cookie and no `Authorization`.
+ * server. Why: the first client sends no cookie and no `Authorization`.
  *
  * @yields Each path with its CDN answer, or with the reason that the server must answer it, in the order of `paths`.
  * @example

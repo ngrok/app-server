@@ -13,7 +13,8 @@ After the build, `vercel()` starts the server build once and sends each prerende
 With the option on:
 
 - The build runs each plugin's `setup`, so it needs the app's environment.
-- A page that the CDN serves writes no access log line and sends no `X-Request-Id`.
+- A page that the CDN serves writes no access log line and sends no `X-Request-Id`. The build's requests write no access log line.
+- A page with a `$` in a response header stays in the function, because a Vercel route reads `$1` or `$name` in a header as a capture.
 - The function still keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`.
 
-A function keeps each path that it refuses in the function: `vercel({ cdnPages: (path) => path !== "/" })`.
+A function keeps each path that it refuses in the function: `vercel({ cdnPages: (path) => path !== "/" })`. With `trailingSlash: "always"`, the CDN serves `/blog/` for the prerendered path `/blog`, so a page that the function refuses in either form stays in the function.
