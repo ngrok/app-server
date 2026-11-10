@@ -58,6 +58,33 @@ export function presenceHeaders<P extends Plugin>(headers: readonly string[], pl
 	return plugin;
 }
 
+/** The reason that each plugin keeps each prerendered page on the server, by plugin object. */
+const serverOnly = new WeakMap<Plugin, string>();
+
+/**
+ * Marks `plugin` as one whose changes to a response the build cannot
+ * predict, so a CDN serves no prerendered page. The `reason` goes in the
+ * build log.
+ *
+ * @example
+ * return serverOnlyPlugin("noindex has a `when` function", { name: "noindex", middleware });
+ */
+export function serverOnlyPlugin<P extends Plugin>(reason: string, plugin: P): P {
+	serverOnly.set(plugin, reason);
+	return plugin;
+}
+
+/**
+ * The reason of the first plugin of `plugins` that {@link serverOnlyPlugin}
+ * marked, if any.
+ *
+ * @example
+ * serverOnlyReasonOf(defaultPlugins({ noindex: { when: () => true } })); // => "noindex has a `when` function"
+ */
+export function serverOnlyReasonOf(plugins: readonly Plugin[]): string | undefined {
+	return plugins.map((plugin) => serverOnly.get(plugin)).find((reason) => reason != null);
+}
+
 /**
  * The headers that {@link presenceHeaders} marked on `plugins`, in lowercase,
  * once each.

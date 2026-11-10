@@ -234,14 +234,17 @@ describe("vercel", () => {
 
 		const siteOutput = join(site, ".vercel/output");
 		expect(filesUnder(join(siteOutput, "static"))).toStrictEqual([
-			"_app-server/pages/about/index.html",
-			"_app-server/pages/docs.md",
-			"_app-server/pages/docs/index.html",
+			"_app-server/pages/0/index.html",
+			"_app-server/pages/1/index.html",
+			"_app-server/pages/2/docs.md",
 		]);
-		expect(
-			readFileSync(join(siteOutput, "static/_app-server/pages/about/index.html"), "utf8"),
-		).toBe("CDN /about");
+		expect(readFileSync(join(siteOutput, "static/_app-server/pages/0/index.html"), "utf8")).toBe(
+			"CDN /about",
+		);
+		// Why each file: a request that no page route matches, such as `/about/`, reaches the function.
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			"about/.index.html.br",
+			"about/index.html",
 			"app/index.html",
 			"docs.md",
 			"docs/index.html",
@@ -279,11 +282,72 @@ describe("vercel", () => {
 			),
 		).toStrictEqual([
 			{ src: String.raw`^/_app-server/pages(?:/.*)?$`, dest: "/index" },
-			...cases("/about", "/about/index.html"),
+			...cases("/about", "/0/index.html"),
 			{ src: "^/docs$", has: [accept], dest: "/index" },
-			...cases("/docs", "/docs/index.html"),
-			...cases("/docs.md", "/docs.md"),
+			...cases("/docs", "/1/index.html"),
+			...cases("/docs.md", "/2/docs.md"),
 		]);
+	});
+
+	it("gives each page its own body when two paths have one file", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-shared-file-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const page = (path: string) => ({
+			path,
+			cdn: { file: "/about/index.html", answers: [{ present: [], headers: {} }] },
+		});
+		write(join(site, "build/server/app-server.js"), entrySource([page("/a"), page("/b")]));
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel({ cdnPages: (path) => path !== "/a" }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const pages = join(site, ".vercel/output/static/_app-server/pages");
+		expect(filesUnder(pages)).toStrictEqual(["1/index.html"]);
+		expect(readFileSync(join(pages, "1/index.html"), "utf8")).toBe("CDN /b");
+	});
+
+	it("keeps the pages past Vercel's route limit in the function", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-route-limit-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const answers = [
+			{ present: [], headers: {} },
+			{ present: ["x-ngrok-edge"], headers: {} },
+		];
+		const paths = Array.from({ length: 1100 }, (_, index) => `/p${index}`);
+		write(
+			join(site, "build/server/app-server.js"),
+			entrySource(paths.map((path) => ({ path, cdn: { file: `${path}/index.html`, answers } }))),
+		);
+		write(join(site, "build/client/p0/index.html"), "p0");
+
+		vercel().output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const { routes } = json(join(site, ".vercel/output/config.json")) as {
+			routes: { src?: string }[];
+		};
+		const served = new Set(
+			routes.map(({ src }) => src).filter((src) => src?.startsWith("^/p") === true),
+		);
+		expect(routes.length).toBeLessThanOrEqual(2048);
+		expect(served.size).toBeGreaterThan(1000);
+		expect(served.has(`^/p${paths.length - 1}$`)).toBe(false);
+		expect(filesUnder(join(site, ".vercel/output/static/_app-server/pages"))).toHaveLength(
+			served.size,
+		);
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin, presenceHeaders } from "../plugin-options.js";
+import { optionPlugin, presenceHeaders, serverOnlyPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -66,5 +66,9 @@ export function noindex(options?: NoindexOptions): Plugin {
 			});
 		},
 	});
-	return unlessHeader == null ? plugin : presenceHeaders([unlessHeader], plugin);
+	if (unlessHeader != null) {
+		return presenceHeaders([unlessHeader], plugin);
+	}
+	// Why: the build cannot see what `when` reads, so a CDN copy can send the wrong answer.
+	return when == null ? plugin : serverOnlyPlugin("noindex has a `when` function", plugin);
 }

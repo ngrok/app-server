@@ -229,17 +229,19 @@ The output has two parts:
 After the build, `vercel()` starts the server build once, with no listener, and sends each prerendered path through the pipeline. Each request comes from an anonymous client, with no cookie and no `Authorization`. The CDN serves a page when its answer meets all of these conditions:
 
 - It is a 200 from the page's file.
-- It has no `Set-Cookie` and no `private`, `no-store`, or `no-cache` in `Cache-Control`.
+- It has no `Set-Cookie` and no `private`, `no-store`, or `no-cache` in `Cache-Control`, in any case.
 - It is the same for a second client with another host, client address, user agent, and query. Only `X-Request-Id` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 
-The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function does not carry the page. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason.
+The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason.
 
 The function serves each other prerendered page, and the CDN never keeps its answer:
 
 - A page that an auth check in `beforeStatic` protects stays in the function, because the check refuses the anonymous request. So the CDN never keeps a page behind auth.
 - A page whose answer changes with the query or the host stays in the function, such as with a `prerendered({ rewrite })` that reads the query.
-- A request that names `text/markdown` in `Accept` goes to the function, which negotiates the twin. So the function also carries a page that has a twin, and its twin.
+- A request that names `text/markdown` in `Accept` goes to the function, which negotiates the twin.
+- With `noindex: { when }`, each page stays in the function, because the build cannot see what `when` reads.
+- Vercel allows 2,048 routes for each deployment. A page uses one route for each case of the `unlessHeader` header, and one more for a twin. If the pages need more routes, the function serves the rest.
 - A request with another method, such as a form's `POST`, goes to the function.
 
 The build cannot see a check that the anonymous request passes but another client fails, such as an allowlist of client addresses, or a rule on one query key. Keep such a page in the function with `cdnPages`. The build also needs the app's environment, because it runs each plugin's `setup`.

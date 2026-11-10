@@ -7,12 +7,17 @@
 // plugin's `setup` can also leave a socket or a timer, so the process exits when the step ends.
 // Why no relative import: the build runs this file from `src` in the tests of this package.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** A prerendered path that the CDN serves, as `vercel()` writes it. */
 export type CdnPageReport = {
 	path: string;
+	/**
+	 * The URL path of the page's body under the static directory, such as
+	 * `/0/index.html`. Why not the page's file: two paths can have one file,
+	 * such as with `prerendered({ rewrite })`, and different bodies.
+	 */
 	file: string;
 	answers: { present: readonly string[]; headers: Readonly<Record<string, string>> }[];
 	twin?: string;
@@ -72,7 +77,8 @@ export async function writePages(
 	try {
 		for await (const page of entry.staticPages()) {
 			if ("cdn" in page) {
-				const { file, body, answers, twin } = page.cdn;
+				const { body, answers, twin } = page.cdn;
+				const file = `/${report.cdn.length}/${basename(page.cdn.file)}`;
 				const target = join(staticDirectory, file);
 				mkdirSync(dirname(target), { recursive: true });
 				writeFileSync(target, body);

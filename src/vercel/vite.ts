@@ -9,9 +9,8 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, posix as posixPath, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
 import type { CdnPageReport, PagesReport } from "./pages.js";
@@ -53,6 +52,9 @@ export type VercelOptions = {
 };
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
+
+/** The most routes of a deployment. See https://vercel.com/docs/limits. */
+const ROUTE_LIMIT = 2048;
 
 /**
  * The URL path under `static/` of the bodies of the pages that the CDN
@@ -202,7 +204,10 @@ function pageRoutes({ path, file, answers, twin }: CdnPageReport) {
 function findCdnPages(
 	entryFile: string,
 	output: string,
-	cdnPages: NonNullable<VercelOptions["cdnPages"]>,
+	{
+		cdnPages,
+		routeBudget,
+	}: { cdnPages: NonNullable<VercelOptions["cdnPages"]>; routeBudget: number },
 ): PagesReport {
 	if (cdnPages === false) {
 		return { cdn: [], server: [] };
@@ -223,49 +228,25 @@ function findCdnPages(
 	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the step of this package wrote the file.
 	const report = JSON.parse(readFileSync(reportFile, "utf8")) as PagesReport;
 	rmSync(reportFile);
-	if (cdnPages === true) {
-		return report;
+	const pages: PagesReport = { cdn: [], server: [...report.server] };
+	let routeCount = 0;
+	for (const page of report.cdn) {
+		const count = pageRoutes(page).length;
+		let reason: string | undefined;
+		if (cdnPages !== true && !cdnPages(page.path)) {
+			reason = "`cdnPages` keeps it in the function";
+		} else if (routeCount + count > routeBudget) {
+			reason = `the CDN routes of the pages reach Vercel's limit of ${ROUTE_LIMIT} routes`;
+		}
+		if (reason == null) {
+			pages.cdn.push(page);
+			routeCount += count;
+		} else {
+			rmSync(join(pagesDirectory, page.file));
+			pages.server.push({ path: page.path, reason });
+		}
 	}
-	const refused = report.cdn.filter((page) => !cdnPages(page.path));
-	for (const page of refused) {
-		rmSync(join(pagesDirectory, page.file));
-	}
-	return {
-		cdn: report.cdn.filter((page) => !refused.includes(page)),
-		server: [
-			...report.server,
-			...refused.map(({ path }) => ({ path, reason: "`cdnPages` keeps it in the function" })),
-		],
-	};
-}
-
-/**
- * The URL path of each file that the function does not need, with its
- * compressed copies: the file of each page that the CDN serves. Why keep the
- * files of a page with a twin: the function answers its markdown requests.
- */
-function cdnOnlyFiles(pages: readonly CdnPageReport[]): Set<string> {
-	const byPath = new Map(pages.map((page) => [page.path, page]));
-	const kept = new Set(
-		pages.flatMap(({ file, twin }) => {
-			const twinFile = twin == null ? undefined : byPath.get(twin)?.file;
-			return twin == null ? [] : [file, ...(twinFile == null ? [] : [twinFile])];
-		}),
-	);
-	return new Set(
-		pages
-			.map(({ file }) => file)
-			.filter((file) => !kept.has(file))
-			.flatMap((file) => {
-				const directory = posixPath.dirname(file);
-				const name = posixPath.basename(file);
-				return [
-					file,
-					posixPath.join(directory, copyName(name, "br")),
-					posixPath.join(directory, copyName(name, "gzip")),
-				];
-			}),
-	);
+	return pages;
 }
 
 /** Writes the paths that the function serves, and why, so the build log shows them. */
@@ -289,9 +270,12 @@ function writeOutput(
 	const prefixes = [assetsPath, ...cdnPaths.filter((path) => path !== assetsPath)];
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
-	const pages = findCdnPages(entryFile, output, cdnPages);
+	const pages = findCdnPages(entryFile, output, {
+		cdnPages,
+		// Why one less: the route that sends a request for a page's body to the function.
+		routeBudget: ROUTE_LIMIT - routes(prefixes, { assetsPath, cdnHeaders, pages: [] }).length - 1,
+	});
 	reportPages(pages);
-	const cdnOnly = cdnOnlyFiles(pages.cdn);
 	const fromRoot = (path: string): string => {
 		const inside = relative(root, path);
 		if (inside.startsWith("..") || isAbsolute(inside)) {
@@ -305,10 +289,10 @@ function writeOutput(
 
 	for (const file of filesUnder(clientDirectory)) {
 		const from = join(clientDirectory, file);
+		// Why the function keeps the file of a page that the CDN serves: a request that no page route
+		// matches, such as the other trailing slash form, or a markdown request, reaches the function.
 		if (!isCdnFile(file)) {
-			if (!cdnOnly.has(`/${posix(file)}`)) {
-				copyFile(from, join(functionDirectory, fromRoot(from)));
-			}
+			copyFile(from, join(functionDirectory, fromRoot(from)));
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
 			// send no dotfile, such as a compressed copy, and no file in a dot directory.

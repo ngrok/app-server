@@ -431,21 +431,21 @@ async function checkVercel(): Promise<void> {
 	);
 	try {
 		const base = await url;
-		const html = readFileSync(join(output, "static/_app-server/pages/index.html"), "utf8");
-		assert.match(html, /React Router home/u, "the CDN has the prerendered page");
-		assert.ok(
-			!existsSync(join(copy, "build/client/index.html")),
-			"the function does not carry the prerendered page",
-		);
 		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
 		const { routes } = JSON.parse(readFileSync(join(output, "config.json"), "utf8")) as {
 			routes: { src?: string; dest?: string; headers?: Record<string, string> }[];
 		};
 		const route = (src: string) => routes.find((each) => each.src === src);
-		assert.deepEqual(
-			[route("^/$")?.dest, route("^/$")?.headers?.["x-content-type-options"]],
-			["/_app-server/pages/index.html", "nosniff"],
+		assert.equal(
+			route("^/$")?.headers?.["x-content-type-options"],
+			"nosniff",
 			"the CDN sends the prerendered page with the pipeline's headers",
+		);
+		const html = readFileSync(join(output, "static", route("^/$")?.dest ?? "/none"), "utf8");
+		assert.match(html, /React Router home/u, "the CDN has the prerendered page");
+		assert.ok(
+			existsSync(join(copy, "build/client/index.html")),
+			"the function keeps the page's file, for a request that no CDN route matches",
 		);
 		assert.equal(
 			route(String.raw`^/hello\.txt$`)?.headers?.["cache-control"],

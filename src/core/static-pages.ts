@@ -77,7 +77,9 @@ async function answer(
 	{ client, present }: { client: (typeof CLIENTS)[number]; present: readonly string[] },
 ): Promise<Answer> {
 	const request = new Request(`${client.origin}${path}${client.query}`, {
+		// Why `Host`: a listener gives it to each request, and a plugin can read it.
 		headers: [
+			["Host", new URL(client.origin).host],
 			["Accept", BROWSER_ACCEPT],
 			["User-Agent", client.userAgent],
 			...present.map((name): [string, string] => [name, "1"]),
@@ -124,7 +126,8 @@ function uncacheable(first: Answer, allowedVary: ReadonlySet<string>): string | 
 		return "the answer sets a cookie";
 	}
 	const cacheControl = first.headers.get("cache-control") ?? "";
-	const blocked = /\b(?:private|no-store|no-cache)\b/u.exec(cacheControl);
+	// Why `i`: cache directives are case-insensitive.
+	const blocked = /\b(?:private|no-store|no-cache)\b/iu.exec(cacheControl);
 	if (blocked != null) {
 		return `Cache-Control has ${blocked[0]}`;
 	}
@@ -229,20 +232,24 @@ async function staticPage(
  *   headers, and all cases must send the same body.
  *
  * An auth check that refuses an anonymous request keeps its pages on the
- * server, because the checks send no cookie and no `Authorization`.
+ * server, because the checks send no cookie and no `Authorization`. With
+ * `serverOnly`, the reason of a plugin whose answer the build cannot predict,
+ * each path stays on the server.
  *
  * @yields Each path with its CDN answer, or with the reason that the server must answer it, in the order of `paths`.
  * @example
- * for await (const page of staticPages(fetch, ["/", "/about"], ["x-ngrok-edge"])) {
+ * for await (const page of staticPages(fetch, ["/", "/about"], { presence: ["x-ngrok-edge"] })) {
  * 	console.log(page.path, "cdn" in page ? "CDN" : page.reason);
  * }
  */
 export async function* staticPages(
 	fetch: PipelineFetch,
 	paths: readonly string[],
-	presence: readonly string[],
+	{ presence, serverOnly }: { presence: readonly string[]; serverOnly?: string | undefined },
 ): AsyncGenerator<StaticPage> {
 	for (const path of paths) {
-		yield await staticPage(fetch, path, presence);
+		yield serverOnly == null
+			? await staticPage(fetch, path, presence)
+			: { path, reason: serverOnly };
 	}
 }

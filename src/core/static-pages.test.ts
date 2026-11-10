@@ -94,7 +94,8 @@ describe("staticPages", () => {
 			name: "private",
 			middleware: async (context, next) =>
 				withHeaderHook(context, next, (headers) => {
-					headers.set("Cache-Control", "private, no-cache");
+					// Why the capitals: cache directives are case-insensitive.
+					headers.set("Cache-Control", "Private, No-Cache");
 				}),
 		};
 		const cookie: Plugin = {
@@ -106,7 +107,7 @@ describe("staticPages", () => {
 		};
 
 		await expect(pagesOf({ beforeStatic: [privatePages] }, ["/about"])).resolves.toStrictEqual([
-			{ path: "/about", reason: "Cache-Control has private" },
+			{ path: "/about", reason: "Cache-Control has Private" },
 		]);
 		await expect(pagesOf({ beforeStatic: [cookie] }, ["/about"])).resolves.toStrictEqual([
 			{ path: "/about", reason: "the answer sets a cookie" },
@@ -130,6 +131,13 @@ describe("staticPages", () => {
 					headers.set("Link", `<${new URL(context.req.url).origin}/about>; rel="canonical"`);
 				}),
 		};
+		const byHostHeader: Plugin = {
+			name: "canonical-host",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("Link", `<https://${context.req.header("Host")}/about>; rel="canonical"`);
+				}),
+		};
 
 		expect(byQuery).toStrictEqual([
 			{
@@ -140,12 +148,16 @@ describe("staticPages", () => {
 		await expect(pagesOf({ beforeStatic: [byHost] }, ["/about"])).resolves.toStrictEqual([
 			{ path: "/about", reason: "the link header changes with the request" },
 		]);
+		await expect(pagesOf({ beforeStatic: [byHostHeader] }, ["/about"])).resolves.toStrictEqual([
+			{ path: "/about", reason: "the link header changes with the request" },
+		]);
 	});
 
 	it("gives each case of a noindex header its own headers, and keeps a noindex `when` on the server", async () => {
 		const [declared] = await pagesOf({ noindex: { unlessHeader: "x-ngrok-edge" } }, ["/about"]);
+		// Why a `when` that hides each page of the checks: the build cannot see that it shows them on another host.
 		const opaque = await pagesOf(
-			{ noindex: { when: (c) => c.req.header("x-ngrok-edge") == null, vary: ["x-ngrok-edge"] } },
+			{ noindex: { when: (c) => new URL(c.req.url).hostname !== "example.com", vary: [] } },
 			["/about"],
 		);
 
@@ -159,7 +171,7 @@ describe("staticPages", () => {
 		expect(answers.every(({ headers }) => headers.vary?.includes("x-ngrok-edge") === true)).toBe(
 			true,
 		);
-		expect(opaque).toStrictEqual([{ path: "/about", reason: "the answer varies on x-ngrok-edge" }]);
+		expect(opaque).toStrictEqual([{ path: "/about", reason: "noindex has a `when` function" }]);
 	});
 
 	it("names the markdown twin of a page, and serves the twin from the CDN too", async () => {
