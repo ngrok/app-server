@@ -1,6 +1,6 @@
 // Test helper: a prepared app server with a recording log sink and a stub framework.
 import { onTestFinished } from "vitest";
-import { readBuildManifest } from "./core/build-manifest.js";
+import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./core/build-manifest.js";
 import { createServer, serverInternals } from "./core/create-server.js";
 import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
 import type { FrameworkRuntime, LogLevel, LogSink, Plugin, SetupInfo } from "./core/types.js";
@@ -59,7 +59,8 @@ export async function productionSetup({
 	logger: LogSink;
 }): Promise<SetupInfo> {
 	const files = nodeFiles(clientDirectory);
-	const { prerendered, headers, scriptHashes, buildId } = await readBuildManifest(files);
+	const { prerendered, headers, scriptHashes, buildId, assetsPath } =
+		await readBuildManifest(files);
 	return {
 		mode: "production",
 		files,
@@ -67,6 +68,7 @@ export async function productionSetup({
 		capturedHeaders: new Map(Object.entries(headers)),
 		scriptHashes: new Map(Object.entries(scriptHashes)),
 		buildId,
+		assetsPath: assetsPath ?? DEFAULT_ASSETS_PATH,
 		isDataRequest: framework.isDataRequest ?? (() => false),
 		contentTypes: framework.contentTypes ?? {},
 		gzip: gzipStream,

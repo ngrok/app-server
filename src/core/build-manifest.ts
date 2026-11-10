@@ -7,6 +7,9 @@ import type { StaticFiles } from "./types.js";
  */
 export const BUILD_MANIFEST_FILE = ".app-server.json";
 
+/** The URL path of the hashed files of a build that records none: Vite's default `build.assetsDir`. */
+export const DEFAULT_ASSETS_PATH = "/assets/";
+
 /** What the Vite plugin records about the client build. */
 export type BuildManifest = {
 	/**
@@ -14,6 +17,12 @@ export type BuildManifest = {
 	 * writes. The `buildId` plugin sends it by default.
 	 */
 	buildId?: string;
+	/**
+	 * The URL path of Vite's `build.assetsDir`, such as `/assets/`. It starts
+	 * and ends with `/`. The `assets` plugin serves its files with a one-year
+	 * immutable cache.
+	 */
+	assetsPath?: string;
 	/** The URL paths that answered with a 2xx, sorted. */
 	prerendered: string[];
 	/** The headers of each prerendered file that is not an HTML document, by URL path. */
@@ -62,6 +71,25 @@ function buildIdOf(manifest: object): Pick<BuildManifest, "buildId"> {
 	return { buildId: manifest.buildId };
 }
 
+/** The `assetsPath` of a parsed manifest, which can have none. A value that is not a URL path prefix throws. */
+function assetsPathOf(manifest: object): Pick<BuildManifest, "assetsPath"> {
+	if (!("assetsPath" in manifest)) {
+		return {};
+	}
+	const { assetsPath } = manifest;
+	if (
+		typeof assetsPath !== "string" ||
+		assetsPath === "/" ||
+		!assetsPath.startsWith("/") ||
+		!assetsPath.endsWith("/")
+	) {
+		throw new TypeError(
+			`${BUILD_MANIFEST_FILE}: the "assetsPath" must be a URL path that starts and ends with "/".`,
+		);
+	}
+	return { assetsPath };
+}
+
 /**
  * Reads the build manifest of a client build. A build with no file has an
  * empty one. A file in any other shape throws, so a bad build stops startup.
@@ -104,6 +132,7 @@ export async function readBuildManifest(files: StaticFiles): Promise<BuildManife
 	}
 	return {
 		...buildIdOf(parsed),
+		...assetsPathOf(parsed),
 		prerendered: parsed.prerendered,
 		headers,
 		scriptHashes,

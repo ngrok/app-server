@@ -15,12 +15,29 @@ import { noindex } from "../core/plugins/noindex.js";
 import { contentSecurityPolicy, securityHeaders } from "../core/plugins/security-headers.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { assets } from "../core/plugins/static.js";
+import { onResponseSent } from "../core/response-edge.js";
 import type { Listener, Plugin } from "../core/types.js";
 import type { LoggedLine } from "../test-server.js";
 import { productionSetup, stubFramework } from "../test-server.js";
 import { devServerStage } from "./dev-server.js";
 import type { NodeMiddleware } from "./dev-server.js";
 import { tcp } from "./tcp.js";
+
+/** What a listener reported for a response, as the access log reads it. */
+type Report = { status: number; bytes: number; requestId: string | null };
+
+/** A stage that records the report of each response into `reports`. */
+function sentRecorder(reports: Report[]): Plugin {
+	return {
+		name: "sent-recorder",
+		middleware: async (context, next) => {
+			await next();
+			onResponseSent(context, ({ status, bytes, headers }) => {
+				reports.push({ status, bytes, requestId: headers.get("X-Request-Id") });
+			});
+		},
+	};
+}
 
 /**
  * A listener that gives each request its Node.js request and response but no
@@ -146,16 +163,11 @@ describe("devServerStage", () => {
 		expect(passed.headers.get("Content-Security-Policy")).toMatch(/^script-src 'nonce-/u);
 	});
 
-	it("sends the request ID with the middleware's answer and logs its status and length", async () => {
+	it("sends the request ID with the middleware's answer, reports its status and length, and writes no access line", async () => {
 		const lines: LoggedLine[] = [];
+		const reports: Report[] = [];
 		const app = createServer({
-			plugins: [
-				requestId(),
-				accessLog({
-					attributes: (_, sent) => ({ "test.request_id": sent.headers.get("X-Request-Id") }),
-				}),
-				assets(),
-			],
+			plugins: [requestId(), accessLog(), sentRecorder(reports), assets()],
 			logger: {
 				log: (level, message, attributes) => {
 					lines.push({ level, message, attributes });
@@ -185,33 +197,20 @@ describe("devServerStage", () => {
 		expect(response.status).toBe(418);
 		await expect(response.text()).resolves.toBe("teapot");
 		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
-		expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
-			"http.status_code": 418,
-			"network.bytes_written": 6,
-			"test.request_id": "abc-123",
-		});
+		expect(reports).toStrictEqual([{ status: 418, bytes: 6, requestId: "abc-123" }]);
+		expect(lines.filter((line) => line.message === "request")).toStrictEqual([]);
 	});
 
 	it.each([
 		{ host: "the node host", listener: () => tcp({ port: 0, host: "127.0.0.1" }) },
 		{ host: "a listener with no edge, as on Bun and Deno", listener: noEdgeListener },
 	])(
-		"logs the headers that the middleware sent and no body bytes for HEAD, with $host",
+		"reports the headers that the middleware sent and no body bytes for HEAD, with $host",
 		async ({ listener }) => {
-			const lines: LoggedLine[] = [];
+			const reports: Report[] = [];
 			const app = createServer({
-				plugins: [
-					requestId(),
-					accessLog({
-						attributes: (_, sent) => ({ "test.request_id": sent.headers.get("X-Request-Id") }),
-					}),
-					assets(),
-				],
-				logger: {
-					log: (level, message, attributes) => {
-						lines.push({ level, message, attributes });
-					},
-				},
+				plugins: [requestId(), sentRecorder(reports), assets()],
+				logger: { log: () => {} },
 				listeners: [listener()],
 			});
 			const middleware: NodeMiddleware = (_, response) => {
@@ -235,11 +234,7 @@ describe("devServerStage", () => {
 
 			expect([head.status, head.headers.get("X-Request-Id")]).toStrictEqual([418, "abc-123"]);
 			await vi.waitFor(() => {
-				expect(lines.find((line) => line.message === "request")?.attributes).toMatchObject({
-					"http.status_code": 418,
-					"network.bytes_written": 0,
-					"test.request_id": "abc-123",
-				});
+				expect(reports).toStrictEqual([{ status: 418, bytes: 0, requestId: "abc-123" }]);
 			});
 		},
 	);

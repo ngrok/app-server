@@ -239,18 +239,36 @@ async function check(runtime: string): Promise<void> {
 	}
 }
 
-/** `app-server start` on Node: Ctrl+C stops the server at once, though the app left a timer. */
+/**
+ * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
+ * server at once, though the app left a timer.
+ */
 async function checkStart(): Promise<void> {
-	const { child, url } = startServer("node", [cliPath, "start", "--port", "0"], {
+	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
 		cwd: devDirectory,
 		env: { HOST: "127.0.0.1" },
 	});
 	try {
 		const page = await fetch(new URL("/", await url));
 		assert.equal(await page.text(), "rendered");
+		// Why: the `exit` event can come before the last stdout line.
+		const stdoutEnded = new Promise<void>((resolve) => {
+			child.stdout.once("end", resolve);
+		});
 		const exitCode = exited(child, 5_000);
 		child.kill("SIGINT");
 		assert.equal(await exitCode, 0, "`start` exits without waiting for the app's timers");
+		await stdoutEnded;
+		assert.deepEqual(
+			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
+			["vite plugin saw listening", "vite plugin saw close"],
+			"a Vite plugin gets the HTTP server's events",
+		);
+		assert.deepEqual(
+			lines.filter((line) => line.message === "upgrade listeners").map((line) => line.upgrades),
+			[1],
+			"the HTTP server has only the HMR `upgrade` listener, because a Vite restart does not remove a proxy's",
+		);
 		process.stdout.write("ok node start\n");
 	} finally {
 		child.kill("SIGKILL");
@@ -423,13 +441,26 @@ async function checkVercel(): Promise<void> {
 	);
 	try {
 		const base = await url;
-		const page = await fetch(new URL("/", base));
-		const html = await page.text();
-		assert.match(html, /React Router home/u, "the function sends the prerendered page");
-		assert.match(
-			page.headers.get("etag") ?? "",
-			/^W\//u,
-			"the prerendered page comes from its file",
+		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
+		const { routes } = JSON.parse(readFileSync(join(output, "config.json"), "utf8")) as {
+			routes: { src?: string; dest?: string; headers?: Record<string, string> }[];
+		};
+		const route = (src: string) => routes.find((each) => each.src === src);
+		assert.equal(
+			route("^/$")?.headers?.["x-content-type-options"],
+			"nosniff",
+			"the CDN sends the prerendered page with the pipeline's headers",
+		);
+		const html = readFileSync(join(output, "static", route("^/$")?.dest ?? "/none"), "utf8");
+		assert.match(html, /React Router home/u, "the CDN has the prerendered page");
+		assert.ok(
+			existsSync(join(copy, "build/client/index.html")),
+			"the function keeps the page's file, for a request that no CDN route matches",
+		);
+		assert.equal(
+			route(String.raw`^/hello\.txt$`)?.headers?.["cache-control"],
+			"max-age=60",
+			"the build's headers replay on the CDN",
 		);
 		const scripts = [...html.matchAll(/"(?<path>\/assets\/[^"]+\.js)"/gu)].map(
 			(match) => match.groups?.path ?? "",
@@ -443,9 +474,6 @@ async function checkVercel(): Promise<void> {
 		assert.equal(missing.headers.get("cache-control"), "no-store");
 		await missing.text();
 
-		const hello = await fetch(new URL("/hello.txt", base));
-		assert.equal(await hello.text(), "hello");
-		assert.equal(hello.headers.get("cache-control"), "max-age=60", "the build's headers replay");
 		const whoami = await fetch(new URL("/whoami", base), {
 			headers: { "X-Request-Id": "abc-123" },
 		});

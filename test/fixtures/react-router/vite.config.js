@@ -12,6 +12,6 @@ export default {
 	plugins: [
 		reactRouter(),
 		// Why an env switch: `test/runtimes.ts` builds this app once for each host.
-		appServer(process.env.APP_SERVER_HOST === "vercel" ? { host: vercel() } : {}),
+		appServer(process.env.APP_SERVER_HOST === "vercel" ? { host: vercel({ cdnPages: true }) } : {}),
 	],
 };

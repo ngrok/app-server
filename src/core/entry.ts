@@ -1,9 +1,11 @@
 import type { MiddlewareHandler } from "hono";
-import { readBuildManifest } from "./build-manifest.js";
+import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { errorAttributes } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
+import { staticPages } from "./static-pages.js";
+import type { StaticPage } from "./static-pages.js";
 import { keptFiles } from "./static-files.js";
 import type {
 	AppServerEnv,
@@ -44,6 +46,13 @@ export type AppServerEntry = {
 		bindings: ListenerBindings,
 		devServer: MiddlewareHandler<AppServerEnv>,
 	) => Promise<Response>;
+	/**
+	 * Production, for a build step: each prerendered path, with the answer
+	 * that a content delivery network (CDN) can send with no server, or the
+	 * reason that the server must answer it. The first call runs each
+	 * plugin's `setup`. See `staticPages`.
+	 */
+	staticPages: () => AsyncGenerator<StaticPage>;
 	/** Runs each plugin's `onShutdown` once, up to the shutdown deadline. */
 	stopPlugins: () => Promise<void>;
 	/** Aborts `shutdownSignal()` of this copy of the package. */
@@ -103,6 +112,7 @@ export function createEntry({
 			logger: internals.logger,
 		};
 	};
+	let prerenderedPaths: readonly string[] = [];
 	/** Runs each plugin's `setup` for production, and gives the framework's run side. */
 	const prepareProduction = async (): Promise<FrameworkRuntime> => {
 		const runtime = framework("production");
@@ -119,8 +129,10 @@ export function createEntry({
 			capturedHeaders: new Map(Object.entries(manifest.headers)),
 			scriptHashes: new Map(Object.entries(manifest.scriptHashes)),
 			buildId: manifest.buildId,
+			assetsPath: manifest.assetsPath ?? DEFAULT_ASSETS_PATH,
 		};
 		await internals.prepare(info);
+		({ prerenderedPaths } = info);
 		return runtime;
 	};
 	let preparing: Promise<FrameworkRuntime> | undefined;
@@ -170,6 +182,14 @@ export function createEntry({
 				buildId: undefined,
 			});
 			return app.fetch(request, { ...bindings, framework: development });
+		},
+		async *staticPages() {
+			const runtime = await production();
+			yield* staticPages(
+				async (request, bindings) => app.fetch(request, { ...bindings, framework: runtime }),
+				prerenderedPaths,
+				{ presence: internals.presenceHeaders },
+			);
 		},
 		stopPlugins: internals.stopPlugins,
 		abortShutdownSignal,

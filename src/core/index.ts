@@ -123,6 +123,10 @@ export type {
 } from "./plugins/build-id.js";
 export type {
 	//,
+	NoindexOptions,
+} from "./plugins/noindex.js";
+export type {
+	//,
 	HealthOptions,
 } from "./plugins/health.js";
 export type {

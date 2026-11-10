@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -35,6 +36,23 @@ function filesUnder(directory: string): string[] {
 		.toSorted();
 }
 
+/**
+ * The source of a server entry whose `staticPages` gives `pages`. The body of
+ * each page that the CDN serves is `CDN <path>`.
+ */
+function entrySource(pages: readonly object[] = []): string {
+	return [
+		`const pages = ${JSON.stringify(pages)};`,
+		"export const appServer = {",
+		"\tstaticPages: async function* () {",
+		'\t\tfor (const page of pages) yield "cdn" in page ? { ...page, cdn: { ...page.cdn, body: new TextEncoder().encode("CDN " + page.path) } } : page;',
+		"\t},",
+		"\tstopPlugins: async () => {},",
+		"};",
+		"",
+	].join("\n");
+}
+
 function json(path: string): unknown {
 	return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -50,7 +68,7 @@ write(join(clientDirectory, "about/index.html"), "<h1>About</h1>");
 symlinkSync("..", join(clientDirectory, "about/up"));
 write(join(clientDirectory, "robots.txt"), "User-agent: *");
 write(join(clientDirectory, ".app-server.json"), "{}");
-write(entryFile, `import "./chunk.js";\nexport const appServer = {};\n`);
+write(entryFile, `import "./chunk.js";\n${entrySource()}`);
 write(join(root, "build/server/chunk.js"), "export {};\n");
 write(join(output, "stale.txt"), "from an earlier build");
 
@@ -62,7 +80,7 @@ describe("vercel", () => {
 			regions: ["iad1"],
 		});
 
-		host.output?.({ root, clientDirectory, entryFile });
+		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/" });
 
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
@@ -100,16 +118,16 @@ describe("vercel", () => {
 				{ src: "^/(.*)$", dest: "/index" },
 				{ handle: "hit" },
 				{
+					src: "^/blog-assets/.*$",
+					headers: { "Access-Control-Allow-Origin": "*" },
+					continue: true,
+				},
+				{
 					src: "^/assets/.*$",
 					headers: {
 						"Access-Control-Allow-Origin": "*",
 						"Cache-Control": "public, max-age=31536000, immutable",
 					},
-					continue: true,
-				},
-				{
-					src: "^/blog-assets/.*$",
-					headers: { "Access-Control-Allow-Origin": "*" },
 					continue: true,
 				},
 			],
@@ -121,7 +139,7 @@ describe("vercel", () => {
 		onTestFinished(() => {
 			rmSync(nested, { recursive: true, force: true });
 		});
-		write(join(nested, "dist/app-server.js"), "export const appServer = {};\n");
+		write(join(nested, "dist/app-server.js"), entrySource());
 		write(join(nested, "dist/client/assets/app-abc.js"), "app();");
 		write(join(nested, "dist/client/robots.txt"), "User-agent: *");
 
@@ -129,6 +147,7 @@ describe("vercel", () => {
 			root: nested,
 			clientDirectory: join(nested, "dist/client"),
 			entryFile: join(nested, "dist/app-server.js"),
+			assetsPath: "/assets/",
 		});
 
 		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
@@ -136,6 +155,262 @@ describe("vercel", () => {
 			"client/robots.txt",
 			"vercel-function.js",
 		]);
+	});
+
+	it("keeps each prerendered page in the function by default, with no start of the server build", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-default-pages-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		// Why a throw: a server build whose plugins need the app's secrets fails when the build starts it.
+		write(join(site, "build/server/app-server.js"), 'throw new Error("no DATABASE_URL");\n');
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel().output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const siteOutput = join(site, ".vercel/output");
+		expect(existsSync(join(siteOutput, "static"))).toBe(false);
+		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			"about/index.html",
+		]);
+	});
+
+	it("puts the files of Vite's build.assetsDir on the CDN with the immutable cache", () => {
+		const custom = mkdtempSync(join(tmpdir(), "app-server-vercel-assets-dir-"));
+		onTestFinished(() => {
+			rmSync(custom, { recursive: true, force: true });
+		});
+		write(join(custom, "build/server/app-server.js"), entrySource());
+		write(join(custom, "build/client/blog-assets/build/app-abc.js"), "app();");
+		write(join(custom, "build/client/blog-assets/post.png"), "png");
+
+		vercel({ cdnPaths: ["/blog-assets/"], cdnHeaders: { "Cache-Control": "max-age=60" } }).output?.(
+			{
+				root: custom,
+				clientDirectory: join(custom, "build/client"),
+				entryFile: join(custom, "build/server/app-server.js"),
+				assetsPath: "/blog-assets/build/",
+			},
+		);
+
+		expect(filesUnder(join(custom, ".vercel/output/static"))).toStrictEqual([
+			"blog-assets/build/app-abc.js",
+			"blog-assets/post.png",
+		]);
+		// Why the order: the rule of `build.assetsDir` comes last, so its immutable cache wins.
+		expect(json(join(custom, ".vercel/output/config.json"))).toMatchObject({
+			routes: [
+				{ handle: "filesystem" },
+				{ src: "^/(.*)$", dest: "/index" },
+				{ handle: "hit" },
+				{ src: "^/blog-assets/.*$", headers: { "Cache-Control": "max-age=60" } },
+				{
+					src: String.raw`^/blog-assets/build/.*$`,
+					headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+				},
+			],
+		});
+	});
+
+	it("serves each page that the server build marks from the CDN, with a route for each case and the twin's requests to the function", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-pages-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const page = (path: string, file: string, extra: object = {}) => ({
+			path,
+			cdn: {
+				file,
+				answers: [
+					{ present: [], headers: { "x-robots-tag": "noindex, nofollow", vary: "x-ngrok-edge" } },
+					{ present: ["x-ngrok-edge"], headers: { vary: "x-ngrok-edge" } },
+				],
+				...extra,
+			},
+		});
+		write(
+			join(site, "build/server/app-server.js"),
+			entrySource([
+				page("/about", "/about/index.html"),
+				page("/docs", "/docs/index.html", { twin: "/docs.md" }),
+				page("/docs.md", "/docs.md"),
+				page("/drafts", "/drafts/index.html"),
+				{ path: "/app", reason: "the status is 302" },
+			]),
+		);
+		for (const file of [
+			"about/index.html",
+			"about/.index.html.br",
+			"docs/index.html",
+			"docs.md",
+			"drafts/index.html",
+			"app/index.html",
+		]) {
+			write(join(site, "build/client", file), file);
+		}
+
+		vercel({ cdnPages: (path) => path !== "/drafts" }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const siteOutput = join(site, ".vercel/output");
+		expect(filesUnder(join(siteOutput, "static"))).toStrictEqual([
+			"_app-server/pages/0/index.html",
+			"_app-server/pages/1/index.html",
+			"_app-server/pages/2/docs.md",
+		]);
+		expect(readFileSync(join(siteOutput, "static/_app-server/pages/0/index.html"), "utf8")).toBe(
+			"CDN /about",
+		);
+		// Why each file: a request that no page route matches, such as `/about/`, reaches the function.
+		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			"about/.index.html.br",
+			"about/index.html",
+			"app/index.html",
+			"docs.md",
+			"docs/index.html",
+			"drafts/index.html",
+		]);
+		const { routes } = json(join(siteOutput, "config.json")) as { routes: object[] };
+		const accept = {
+			type: "header",
+			key: "accept",
+			value: { re: "[tT][eE][xX][tT]/[mM][aA][rR][kK][dD][oO][wW][nN]" },
+		};
+		const edge = [{ type: "header", key: "x-ngrok-edge" }];
+		const cases = (path: string, file: string) => [
+			{
+				src: `^${path.replaceAll(".", String.raw`\.`)}$`,
+				caseSensitive: true,
+				methods: ["GET", "HEAD"],
+				missing: edge,
+				headers: { "x-robots-tag": "noindex, nofollow", vary: "x-ngrok-edge" },
+				dest: `/_app-server/pages${file}`,
+			},
+			{
+				src: `^${path.replaceAll(".", String.raw`\.`)}$`,
+				caseSensitive: true,
+				methods: ["GET", "HEAD"],
+				has: edge,
+				headers: { vary: "x-ngrok-edge" },
+				dest: `/_app-server/pages${file}`,
+			},
+		];
+		expect(
+			routes.slice(
+				0,
+				routes.findIndex((route) => "handle" in route),
+			),
+		).toStrictEqual([
+			{ src: String.raw`^/_app-server/pages(?:/.*)?$`, dest: "/index" },
+			...cases("/about", "/0/index.html"),
+			{ src: "^/docs$", has: [accept], dest: "/index" },
+			...cases("/docs", "/1/index.html"),
+			...cases("/docs.md", "/2/docs.md"),
+		]);
+	});
+
+	it("gives each page its own body when two paths have one file", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-shared-file-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const page = (path: string) => ({
+			path,
+			cdn: { file: "/about/index.html", answers: [{ present: [], headers: {} }] },
+		});
+		write(join(site, "build/server/app-server.js"), entrySource([page("/a"), page("/b")]));
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel({ cdnPages: (path) => path !== "/a" }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const pages = join(site, ".vercel/output/static/_app-server/pages");
+		expect(filesUnder(pages)).toStrictEqual(["1/index.html"]);
+		expect(readFileSync(join(pages, "1/index.html"), "utf8")).toBe("CDN /b");
+	});
+
+	it("keeps a page in the function when `cdnPages` refuses its path before a trailing-slash redirect, or a header has a `$`", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-page-filter-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const page = (path: string, headers: Record<string, string> = {}) => ({
+			path,
+			cdn: { file: `${path}index.html`, answers: [{ present: [], headers }] },
+		});
+		write(
+			join(site, "build/server/app-server.js"),
+			entrySource([
+				page("/blog/"),
+				page("/files/", { "content-disposition": 'attachment; filename="$1.txt"' }),
+				page("/about/"),
+			]),
+		);
+		write(join(site, "build/client/about/index.html"), "about");
+
+		vercel({ cdnPages: (path) => path !== "/blog" }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const { routes } = json(join(site, ".vercel/output/config.json")) as {
+			routes: { src?: string }[];
+		};
+		expect(
+			routes.map(({ src }) => src).filter((src) => src?.endsWith("/$") === true),
+		).toStrictEqual(["^/about/$"]);
+	});
+
+	it("keeps the pages past Vercel's route limit in the function", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-route-limit-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const answers = [
+			{ present: [], headers: {} },
+			{ present: ["x-ngrok-edge"], headers: {} },
+		];
+		const paths = Array.from({ length: 1100 }, (_, index) => `/p${index}`);
+		write(
+			join(site, "build/server/app-server.js"),
+			entrySource(paths.map((path) => ({ path, cdn: { file: `${path}/index.html`, answers } }))),
+		);
+		write(join(site, "build/client/p0/index.html"), "p0");
+
+		vercel({ cdnPages: true }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+		});
+
+		const { routes } = json(join(site, ".vercel/output/config.json")) as {
+			routes: { src?: string }[];
+		};
+		const served = new Set(
+			routes.map(({ src }) => src).filter((src) => src?.startsWith("^/p") === true),
+		);
+		expect(routes.length).toBeLessThanOrEqual(2048);
+		expect(served.size).toBeGreaterThan(1000);
+		expect(served.has(`^/p${paths.length - 1}$`)).toBe(false);
+		expect(filesUnder(join(site, ".vercel/output/static/_app-server/pages"))).toHaveLength(
+			served.size,
+		);
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

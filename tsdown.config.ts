@@ -31,6 +31,7 @@ export default defineConfig({
 		"tanstack-start-vite": "./src/tanstack-start/vite.ts",
 		testing: "./src/testing/index.ts",
 		vercel: "./src/vercel/index.ts",
+		"vercel-pages": "./src/vercel/pages.ts",
 		"vercel-vite": "./src/vercel/vite.ts",
 		vite: "./src/vite/index.ts",
 	},

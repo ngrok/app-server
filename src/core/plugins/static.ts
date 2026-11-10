@@ -11,11 +11,28 @@ import { trimTrailingSlashes } from "./trailing-slash.js";
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/** The requests that the dev server answered. */
+const devServerAnswers = new WeakSet<Context<AppServerEnv>>();
+
 /**
- * Serves the hashed files under `/assets/` with a one-year immutable cache.
- * A missing asset gets a plain 404 with `Cache-Control: no-store`, not a
- * rendered page. In development, the dev server serves the source modules,
- * the HMR client, and the CSS here instead.
+ * Whether the dev server answered the request, such as for a source module.
+ * Why: the access log writes no line for such a request, because one page
+ * load in development makes hundreds of them.
+ *
+ * @example
+ * await next();
+ * if (answeredByDevServer(context)) return;
+ */
+export function answeredByDevServer(context: Context<AppServerEnv>): boolean {
+	return devServerAnswers.has(context);
+}
+
+/**
+ * Serves the hashed files under Vite's `build.assetsDir`, `/assets/` by
+ * default, with a one-year immutable cache. The `appServer` Vite plugin
+ * records the directory. A missing asset gets a plain 404 with
+ * `Cache-Control: no-store`, not a rendered page. In development, the dev
+ * server serves the source modules, the HMR client, and the CSS here instead.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets(), prerendered()] });
@@ -26,13 +43,24 @@ export function assets(): Plugin {
 		name: "assets",
 		setup: (info) => {
 			if (info.mode === "development") {
-				stage = info.devServer;
+				const { devServer } = info;
+				stage = async (context, next) => {
+					let passed = false;
+					const answer = await devServer(context, async () => {
+						passed = true;
+						await next();
+					});
+					if (!passed) {
+						devServerAnswers.add(context);
+					}
+					return answer;
+				};
 				return;
 			}
-			const { files, contentTypes } = info;
+			const { files, contentTypes, assetsPath } = info;
 			stage = async (context, next) => {
 				const { method, path } = context.req;
-				if (!path.startsWith("/assets/") || (method !== "GET" && method !== "HEAD")) {
+				if (!path.startsWith(assetsPath) || (method !== "GET" && method !== "HEAD")) {
 					return next();
 				}
 				const file = await findStaticFile(files, path);
@@ -316,6 +344,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 						: ONE_HOUR;
 				});
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
+				context.env.onServedFile?.(file.path);
 				const value = cacheControl(file.path);
 				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });
 				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.

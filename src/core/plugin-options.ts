@@ -40,3 +40,35 @@ export function checkOptionPlugins(plugins: readonly Plugin[]): void {
 		}
 	}
 }
+
+/** The request headers whose presence alone changes the answer of each plugin, by plugin object. */
+const presence = new WeakMap<Plugin, readonly string[]>();
+
+/**
+ * Marks `plugin` as one whose changes to a response depend only on whether
+ * each of `headers` is present in the request. Why: the build can then put
+ * one static answer for each case on a CDN, which picks the answer by the
+ * same headers.
+ *
+ * @example
+ * return presenceHeaders(["x-ngrok-edge"], { name: "noindex", middleware });
+ */
+export function presenceHeaders<P extends Plugin>(headers: readonly string[], plugin: P): P {
+	presence.set(plugin, headers);
+	return plugin;
+}
+
+/**
+ * The headers that {@link presenceHeaders} marked on `plugins`, in lowercase,
+ * once each.
+ *
+ * @example
+ * presenceHeadersOf(defaultPlugins({ noindex: { unlessHeader: "X-Ngrok-Edge" } })); // => ["x-ngrok-edge"]
+ */
+export function presenceHeadersOf(plugins: readonly Plugin[]): string[] {
+	return [
+		...new Set(
+			plugins.flatMap((plugin) => presence.get(plugin) ?? []).map((name) => name.toLowerCase()),
+		),
+	];
+}

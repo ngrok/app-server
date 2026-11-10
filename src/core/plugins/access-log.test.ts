@@ -8,6 +8,7 @@ import { withHeaderHook } from "../header-hook.js";
 import type { FrameworkRuntime, LogSink, Plugin } from "../types.js";
 import { accessLog, loggedUrl } from "./access-log.js";
 import { requestId } from "./request-id.js";
+import { assets } from "./static.js";
 import { streamingCompress } from "./streaming-compress.js";
 
 const encoder = new TextEncoder();
@@ -188,6 +189,49 @@ describe("accessLog", () => {
 			["error", "access log attributes failed", "no user"],
 			["error", "access log attributes failed", "no user"],
 		]);
+	});
+
+	it("logs a 5xx at error, and a 4xx at info", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			render: async (rendered) =>
+				new Response("x", { status: Number(new URL(rendered.url).pathname.slice(1)) }),
+		});
+
+		for (const status of [503, 500, 404, 200]) {
+			await (await request(`/${status}`)).text();
+		}
+
+		expect(lines.map((line) => [line.attributes["http.status_code"], line.level])).toStrictEqual([
+			[503, "error"],
+			[500, "error"],
+			[404, "info"],
+			[200, "info"],
+		]);
+	});
+
+	it("logs no line in development for a request that the dev server answers", async () => {
+		const lines: string[] = [];
+		const logger: LogSink = {
+			log: (_level, message, attributes) => {
+				lines.push(`${message} ${String(attributes["http.url"])}`);
+			},
+		};
+		const app = createServer({ plugins: [accessLog(), assets()], logger });
+		const framework = stubFramework();
+		await serverInternals(app)?.prepare({
+			...(await productionSetup({ logger })),
+			mode: "development",
+			devServer: async (context, next) =>
+				context.req.path.startsWith("/@vite/") ? context.text("module") : next(),
+			prerenderedPaths: [],
+		});
+
+		for (const path of ["/@vite/client", "/page"]) {
+			await (await app.request(path, undefined, { framework })).text();
+		}
+
+		expect(lines).toStrictEqual(["request /page"]);
 	});
 
 	it("redacts the query of the Referer", async () => {

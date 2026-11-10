@@ -179,6 +179,12 @@ export type ListenerBindings = {
 /** The Hono bindings of an app server: the listener's values and the framework. */
 export type ServerBindings = ListenerBindings & {
 	framework: FrameworkRuntime;
+	/**
+	 * Gets the URL path of the client build's file that `prerendered()` sends,
+	 * such as `/about/index.html`. Only the build's check of the CDN pages
+	 * gives it. Why a binding: each other request then pays one property read.
+	 */
+	onServedFile?: (path: string) => void;
 };
 
 /** The Hono environment of an app server. */
@@ -201,6 +207,12 @@ export type AppServerEnv = {
 		 * dev server stage sets it, for a 304 too.
 		 */
 		documentScriptHashes?: readonly string[];
+		/**
+		 * The route pattern that the framework matched, such as
+		 * `/domains/:domainId`. The framework adapter sets it, and the access log
+		 * writes it as `http.route`.
+		 */
+		routePattern?: string;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
@@ -285,6 +297,8 @@ export type SetupInfo = {
 			mode: "production";
 			/** The URL paths that the build prerendered. */
 			prerenderedPaths: readonly string[];
+			/** The URL path of the hashed files of the client build, such as `/assets/`. */
+			assetsPath: string;
 	  }
 	| {
 			mode: "development";

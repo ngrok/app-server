@@ -7,7 +7,9 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	readdirSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -357,7 +359,9 @@ describe("appServer", () => {
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
 			{} as never,
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
-			{ config: { root, build: { outDir }, environments: {} } } as unknown as ViteBuilder,
+			{
+				config: { root, build: { outDir, assetsDir: "assets" }, environments: {} },
+			} as unknown as ViteBuilder,
 		);
 		const server = await preview({
 			root,
@@ -376,7 +380,7 @@ describe("appServer", () => {
 		expect(seen).toMatchObject([{ prerendered: [] }, { prerendered: ["/agents.txt"] }]);
 	});
 
-	it("writes a build ID from the client bundle, which changes with its code and outlasts the prerender pass", async () => {
+	it("writes a build ID from the client bundle and the URL path of build.assetsDir, which outlast the prerender pass", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-build-id-"));
 		const client = join(directory, "build/client");
@@ -385,7 +389,9 @@ describe("appServer", () => {
 		const writeBundle = async (code: string) =>
 			(typeof hook === "object" ? hook.handler : hook)?.call(
 				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
-				{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+				{
+					environment: { name: "client", config: { build: { assetsDir: "blog-assets/build" } } },
+				} as never,
 				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
 				{ dir: client } as never,
 				// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
@@ -415,7 +421,11 @@ describe("appServer", () => {
 		expect(first).toMatch(/^[0-9a-f]{16}$/u);
 		expect(same).toBe(first);
 		expect(changed).not.toBe(first);
-		expect(written()).toMatchObject({ buildId: changed, prerendered: ["/llms.txt"] });
+		expect(written()).toMatchObject({
+			buildId: changed,
+			assetsPath: "/blog-assets/build/",
+			prerendered: ["/llms.txt"],
+		});
 		rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -653,6 +663,36 @@ describe("appServer", () => {
 		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
 		expect(readFileSync(join(client, "data.json.gz"), "utf8")).toBe("app data");
 		expect(readFileSync(join(client, "data.json.br"), "utf8")).toBe("app data");
+	});
+
+	it("writes no copy through a linked directory, so each copy stays in the client build", async () => {
+		const client = join(root, "linked-build");
+		const outside = join(root, "linked-public");
+		const text = "<svg></svg>\n".repeat(200);
+		mkdirSync(join(outside, "post"), { recursive: true });
+		writeFileSync(join(outside, "post/diagram.svg"), text);
+		mkdirSync(client, { recursive: true });
+		writeFileSync(join(client, "page.svg"), text);
+		symlinkSync(outside, join(client, "blog-assets"), "dir");
+		const [, copies] = appServer({ framework: reactRouterAdapter(), host: node() });
+		const hook = copies?.buildApp;
+		const builder = {
+			config: {
+				root,
+				build: { outDir: "build/client" },
+				environments: { client: { build: { outDir: "linked-build" } } },
+			},
+		};
+
+		await (typeof hook === "object" ? hook.handler : hook)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			builder as unknown as ViteBuilder,
+		);
+
+		expect(readdirSync(join(outside, "post"))).toStrictEqual(["diagram.svg"]);
+		expect(existsSync(join(client, ".page.svg.br"))).toBe(true);
 	});
 });
 

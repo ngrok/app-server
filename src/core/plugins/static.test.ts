@@ -420,6 +420,49 @@ describe("assets", () => {
 		expect(response.headers.get("Cache-Control")).toBe("no-store");
 		await expect(response.text()).resolves.toBe("Not Found");
 	});
+
+	it("serves the assets directory that the build recorded with the immutable cache", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-assets-dir-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		mkdirSync(join(directory, "blog-assets/build"), { recursive: true });
+		writeFileSync(join(directory, "blog-assets/build/entry-abc123.js"), "export {};");
+		writeFileSync(
+			join(directory, ".app-server.json"),
+			JSON.stringify({
+				assetsPath: "/blog-assets/build/",
+				prerendered: [],
+				headers: {},
+				scriptHashes: {},
+			}),
+		);
+		const { request } = await testServer({
+			plugins: [assets(), prerendered()],
+			clientDirectory: directory,
+		});
+
+		const hashed = await request("/blog-assets/build/entry-abc123.js");
+		const missing = await request("/blog-assets/build/entry-old.js");
+
+		expect(hashed.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+		expect([missing.status, missing.headers.get("Cache-Control")]).toStrictEqual([404, "no-store"]);
+	});
+
+	it("stops startup for a recorded assets path that is not a URL path prefix", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-bad-assets-dir-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		writeFileSync(
+			join(directory, ".app-server.json"),
+			JSON.stringify({ assetsPath: "/", prerendered: [], headers: {}, scriptHashes: {} }),
+		);
+
+		await expect(testServer({ plugins: [assets()], clientDirectory: directory })).rejects.toThrow(
+			'the "assetsPath" must be a URL path that starts and ends with "/"',
+		);
+	});
 });
 
 describe("compressed copies from the build", () => {

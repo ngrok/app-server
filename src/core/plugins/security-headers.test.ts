@@ -22,12 +22,14 @@ describe("securityHeaders", () => {
 			"Referrer-Policy",
 			"Cross-Origin-Opener-Policy",
 			"Content-Security-Policy",
+			"Permissions-Policy",
 		];
 		expect(Object.fromEntries(names.map((name) => [name, http.headers.get(name)]))).toStrictEqual({
 			"X-Content-Type-Options": "nosniff",
 			"Referrer-Policy": "strict-origin-when-cross-origin",
 			"Cross-Origin-Opener-Policy": "same-origin",
 			"Content-Security-Policy": null,
+			"Permissions-Policy": null,
 		});
 		expect(http.headers.get("Strict-Transport-Security")).toBeNull();
 		expect(https.headers.get("Strict-Transport-Security")).toBe("max-age=31536000");
@@ -54,6 +56,28 @@ describe("securityHeaders", () => {
 		expect(response.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin-allow-popups");
 		expect(response.headers.get("X-Content-Type-Options")).toBeNull();
 		expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+	});
+
+	it("sets a Permissions-Policy, and keeps the policy of a response that has one", async () => {
+		const { request } = await testServer({
+			plugins: [
+				securityHeaders({
+					headers: { "Permissions-Policy": "camera=(), microphone=(), geolocation=()" },
+				}),
+			],
+			render: async (rendered) =>
+				new Response("x", {
+					headers:
+						new URL(rendered.url).pathname === "/call"
+							? { "Permissions-Policy": "camera=(self)" }
+							: {},
+				}),
+		});
+
+		expect((await request("/")).headers.get("Permissions-Policy")).toBe(
+			"camera=(), microphone=(), geolocation=()",
+		);
+		expect((await request("/call")).headers.get("Permissions-Policy")).toBe("camera=(self)");
 	});
 
 	it("adds a set Content-Security-Policy next to the policy of the response", async () => {

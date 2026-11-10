@@ -4,6 +4,19 @@ A composable Hono app server for React Router and TanStack Start. It runs one re
 
 This file follows the [AGENTS.md standard](https://agents.md) and is canonical for every harness. `CLAUDE.md` is a symlink to it; edit `AGENTS.md` only. Every task loads this file, so it holds only what every task needs. [Guard the context window](./docs/principles/guard-the-context-window.md) before you add to it.
 
+## North star
+
+Each change meets all six goals, at all times, for humans and agents alike. They are not negotiable, and they have no order. [docs/north-star.md](./docs/north-star.md) says what each goal means, which principles serve it, and what to do when two goals pull apart.
+
+- **Correct:** right on each host and framework, in development and production, and at the edges. Never trade it.
+- **Least surprising:** safe defaults, one way for each job, and no change in behavior without a word in the changeset.
+- **Fast:** the least work for each request. Measure React Router on Node and on Vercel first.
+- **Delightful:** for the visitor, the app developer, and the operator.
+- **Clean:** the smallest change that reads in one pass.
+- **Efficient:** few bytes, little memory, a small deploy, a short build, and a small context window.
+
+Do a north-star pass before you finish: for each goal, one line on how the change meets it. A goal that a change fails is a blocking finding in review.
+
 ## Route by task
 
 Read the files for your task before the first edit. Work is incomplete until you check your diff against them.
@@ -19,7 +32,7 @@ Read the files for your task before the first edit. Work is incomplete until you
 
 ## Principles
 
-Short, named rules for how to work. Each name links to its full rule. Use the names to steer work and in review. When you apply a principle, name it and the decision it changed. [docs/principles/README.md](./docs/principles/README.md) explains the format.
+Short, named rules for how to work. They are the methods that meet the [north star](#north-star). Each name links to its full rule. Use the names to steer work and in review. When you apply a principle, name it and the decision it changed. [docs/principles/README.md](./docs/principles/README.md) explains the format.
 
 - [Write less code](./docs/principles/write-less-code.md) (code, prose): the smallest change that meets the task. Each export is API.
 - [Subtract before you add](./docs/principles/subtract-before-you-add.md) (code, prose): remove a cause before you guard it.
@@ -67,7 +80,7 @@ Run checks when a coherent unit of work is done and again before the final respo
 2. Run `pnpm run fmt`, `pnpm run lint`, `pnpm run typecheck`, and `pnpm run test`, and make them pass.
 3. Stop each process you start: a dev server, a built server, or a test watcher.
 4. A published change has a changeset with the bump from [Rules](#rules).
-5. Name the principles you applied and the decision each one changed. End with a `Conventions pass:` note that says what you checked. If you did not run a check, say why.
+5. Do the [north-star pass](#north-star), and put it in the PR description. Name the principles you applied and the decision each one changed. End with a `Conventions pass:` note that says what you checked. If you did not run a check, say why.
 
 ## Commands
 

@@ -1,8 +1,9 @@
+import type { Context } from "hono";
 import { createContext, createRequestHandler, RouterContextProvider } from "react-router";
-import type { ServerBuild } from "react-router";
+import type { MiddlewareFunction, ServerBuild } from "react-router";
 import { jsonSink, sinkLogger } from "../core/log.js";
 import { requestContextValues } from "../core/request-context.js";
-import type { FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
+import type { AppServerEnv, FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
 
 /** What the server puts in React Router's context for each request. */
 export type AppServerContext = RequestContext;
@@ -25,6 +26,43 @@ export const appServerContext = createContext<AppServerContext>({
 	clientAddress: undefined,
 });
 
+/** The Hono context of the request, for {@link recordRoutePattern}. */
+const honoContext = createContext<Context<AppServerEnv>>();
+
+/**
+ * Sets `routePattern` on the Hono context to the route pattern that React
+ * Router matched, such as `/domains/:domainId`, so the access log writes
+ * `http.route`. Why a root middleware: it runs for each document, data, and
+ * resource request, and it costs less for each request than a request
+ * handler instrumentation.
+ */
+const recordRoutePattern: MiddlewareFunction<Response> = async ({ pattern, context }, next) => {
+	if (pattern !== "") {
+		// Why the slash: React Router joins the relative paths of the routes, such as `domains/:domainId`.
+		context.get(honoContext).set("routePattern", pattern.startsWith("/") ? pattern : `/${pattern}`);
+	}
+	return next();
+};
+
+/** `build` with {@link recordRoutePattern} before the middleware of each root route. */
+function withRoutePattern(build: ServerBuild): ServerBuild {
+	const routes = Object.fromEntries(
+		Object.entries(build.routes).map(([id, route]) => [
+			id,
+			route == null || route.parentId != null
+				? route
+				: {
+						...route,
+						module: {
+							...route.module,
+							middleware: [recordRoutePattern, ...(route.module.middleware ?? [])],
+						},
+					},
+		]),
+	);
+	return { ...build, routes };
+}
+
 /**
  * Whether a module is a React Router server build.
  *
@@ -44,7 +82,8 @@ export function isServerBuild(value: unknown): value is ServerBuild {
 
 /**
  * The run side of the React Router adapter, for a server build. Each request
- * gets a `RouterContextProvider` that holds {@link appServerContext}.
+ * gets a `RouterContextProvider` that holds {@link appServerContext}. The
+ * access log gets the route pattern that React Router matched.
  *
  * @example
  * const framework = runtime(build, { mode: "production" });
@@ -59,7 +98,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 			`@ngrok/app-server serves a build at "/" only, and this build has the publicPath "${build.publicPath}".`,
 		);
 	}
-	const handler = createRequestHandler(build, mode);
+	const handler = createRequestHandler(withRoutePattern(build), mode);
 	// Why: lazy route discovery fetches this exact path, so a redirect breaks it.
 	const manifestPath =
 		build.routeDiscovery.mode === "lazy"
@@ -76,6 +115,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();
 			routerContext.set(appServerContext, requestContextValues(context));
+			routerContext.set(honoContext, context);
 			return handler(request, routerContext);
 		},
 	};

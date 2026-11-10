@@ -276,7 +276,7 @@ describe("createServer", () => {
 					}),
 				},
 				{
-					level: "info",
+					level: "error",
 					message: "request",
 					attributes: expect.objectContaining({ "http.status_code": 500 }),
 				},

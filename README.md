@@ -158,7 +158,7 @@ Run it:
 
 `appServer` adds `server/app-server.js` to the server build, next to the framework's own entry, which does not change. The file bundles `server.ts` with the framework's server module, so the server gets the app's path aliases and its one copy of the framework. The build also bundles the dependencies, so the build directory runs with no install. See [Deploy](#deploy).
 
-After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) and a brotli copy (`.<file>.br`) next to each text file of 1 kibibyte (KiB) or more in the client build, HTML pages included. It writes the gzip copy when it is smaller than the file, and the brotli copy when it is smaller than the gzip copy. `app-server serve` sends the copy that the client's `Accept-Encoding` prefers, brotli before gzip, so it does not compress the file for each request. Each copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copies. The build does not change a `.gz` or `.br` file of the app. The copies include the prerendered files, in any plugin order. The brotli copies use quality 9, not 11: on a docs build with 70 megabytes (MB) of text, quality 11 adds 46 s to the build, and quality 9 adds 0.6 s for copies that are 9% larger. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
+After the build and after the prerender pass, `appServer` writes a gzip copy (`.<file>.gz`) and a brotli copy (`.<file>.br`) next to each text file of 1 kibibyte (KiB) or more in the client build, HTML pages included. It writes the gzip copy when it is smaller than the file, and the brotli copy when it is smaller than the gzip copy. `app-server serve` sends the copy that the client's `Accept-Encoding` prefers, brotli before gzip, so it does not compress the file for each request. Each copy is a dotfile, so it has no URL of its own: a `skip` rule or an auth check for the file also blocks its copies. The build does not change a `.gz` or `.br` file of the app. A link, and a file in a linked directory, get no copy, so the build writes only inside the client build. The copies include the prerendered files, in any plugin order. The brotli copies use quality 9, not 11: on a docs build with 70 megabytes (MB) of text, quality 11 adds 46 s to the build, and quality 9 adds 0.6 s for copies that are 9% larger. `appServer` gives a list of Vite plugins, so put it in `plugins` as it is.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
@@ -166,7 +166,7 @@ A React Router app with no Vite plugin also works: `app-server serve build/serve
 
 ## Commands
 
-- `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
+- `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. A Vite plugin gets the CLI's HTTP server as `server.httpServer` in its `configureServer` hook, so it can wait for `listening` and `close`. A Vite restart, such as after an edit to `vite.config.ts`, keeps that server open. So a new plugin instance gets no `listening`, and the old instance gets `close` only at exit. To clean up for each instance, use Vite's `closeServer` hook. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
 - `node build/server/app-server.js`: production, with no install. Use `dist/server/app-server.js` for TanStack Start. It reads `PORT` and `HOST`, and it drains on `SIGTERM` or `SIGINT`, as `app-server serve` does. It has no `--port`. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value.
 - `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. A server process serves the client build that was there at start. A deploy starts a new process.
 
@@ -206,7 +206,7 @@ For TanStack Start, copy `dist`, and run `dist/server/app-server.js`.
 
 ## Deploy to Vercel
 
-The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files.
+The `vercel` host runs the pipeline in one Node.js Vercel Function. Vercel's content delivery network (CDN) serves the hashed files, and with `cdnPages`, each public prerendered page.
 
 Use `vercel()` as the host:
 
@@ -221,16 +221,39 @@ After the build, `vercel()` writes `.vercel/output` (the Build Output API, versi
 
 The output has two parts:
 
-- `static/`: the files under `/assets/` and the other `cdnPaths`. The CDN serves them. Each file under `/assets/` gets `Cache-Control: public, max-age=31536000, immutable`. A request under `/assets/` with no file goes to the function, which sends a 404 with `Cache-Control: no-store`. A request under another CDN path with no file goes through the pipeline, as on the node host.
+- `static/`: the files of Vite's `build.assetsDir` (`/assets/` by default), the other `cdnPaths`, and with `cdnPages`, the public prerendered pages. The CDN serves them. Each file of `build.assetsDir` gets `Cache-Control: public, max-age=31536000, immutable`. A request under `build.assetsDir` with no file goes to the function, which sends a 404 with `Cache-Control: no-store`. A request under another CDN path with no file goes through the pipeline, as on the node host.
 - `functions/index.func/`: the function for each other request. It has the whole server build, which runs with no install (see [Deploy](#deploy)), and the rest of the client build. The Node.js version of the function is the version that ran the build.
 
-Prerendered pages come from the function, so they get the same pipeline as rendered pages: the security headers, the CSP, the redirects, and the markdown twins. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
+### Prerendered pages on the CDN
+
+By default, the function serves each prerendered page, so a page gets the same pipeline as a rendered page. To let the CDN keep a page, send `s-maxage` or `CDN-Cache-Control` in its headers, such as with the `headers` option of [`prerendered`](#prerendered-headers). Then a page calls the function only on a CDN miss.
+
+With `vercel({ cdnPages: true })`, the CDN serves each public prerendered page with no function. After the build, `vercel()` starts the server build once, with no listener, and sends each prerendered path through the pipeline. The first request comes from an anonymous client, with no cookie and no `Authorization`. The CDN serves a page when its answer meets all of these conditions:
+
+- It is a 200 from the page's file.
+- It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
+- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only `X-Request-Id` and `Date` can change.
+- It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
+
+The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason.
+
+The function serves each other prerendered page, and the CDN never keeps its answer:
+
+- A page that an auth check in `beforeStatic` protects stays in the function, because the check refuses the anonymous request. So the CDN never keeps a page behind auth.
+- A page whose answer changes with the query or the host stays in the function, such as with a `prerendered({ rewrite })` that reads the query.
+- A request that names `text/markdown` in `Accept` goes to the function, which negotiates the twin.
+- Vercel allows 2,048 routes for each deployment. A page uses one route for each case of the `unlessHeader` header, and one more for a twin. If the pages need more routes, the function serves the rest.
+- A page with a `$` in a response header stays in the function, because a Vercel route reads `$1` or `$name` in a header as a capture.
+- A request with another method, such as a form's `POST`, goes to the function.
+
+The build cannot see a check that both clients pass but another client fails, such as a check of a real session, an allowlist of client addresses, or a rule on one query key. Keep such a page in the function with a `cdnPages` function. A page that the CDN serves writes no access log line, and neither do the build's requests. The build also needs the app's environment, because it runs each plugin's `setup`.
 
 `vercel()` takes:
 
 - `cdnPaths`: more URL path prefixes for the CDN, such as `["/blog-assets/"]`. Each starts and ends with `/`. Their files skip the pipeline, and the function does not carry them. Vercel limits a function to 250 MB, so put a large directory of the client build here. Default none.
-- `cdnHeaders`: headers for each CDN file, such as CORS headers. Default none.
-- `regions`, `memory`, and `maxDuration`: the function's Vercel config. Default the project's.
+- `cdnHeaders`: headers for each file of `cdnPaths` and `build.assetsDir`, such as CORS headers. Default none.
+- `cdnPages`: which prerendered pages the CDN can serve. `true` gives the CDN each page that qualifies. A function gives the CDN each page that qualifies and that it accepts, such as `(path) => path !== "/"` for a page that renders a filtered view for one query key. A page that it refuses in either trailing-slash form stays in the function. Default `false`: the function serves each page.
+- `regions`, `memory`, and `maxDuration`: the function's Vercel config. Default the project's. One function serves each route, so the values apply to each request. A route module's `config` export, such as `export const config = { maxDuration: 60 }` for `@vercel/react-router`, does nothing.
 
 The function differs from a long-lived process:
 
@@ -246,17 +269,17 @@ The function differs from a long-lived process:
 
 1. `health()`: the liveness and readiness probes at `/livez` and `/readyz`. A probe skips the access log. `defaultPlugins({ health })` changes them, and `false` turns them off. See [Health checks](#health-checks).
 2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it.
-3. `accessLog({ redactQuery })`: one line per request when the response ends, for the response that leaves the server, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default.
+3. `accessLog({ redactQuery })`: one line per request when the response ends, for the response that leaves the server, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default. A 5xx line has the level `error`, and each other line has the level `info`. With React Router, a line for a request that React Router answers has the route pattern that it matched as `http.route`, such as `/domains/:domainId`. A prerendered page that the server sends from its file has no `http.route`. In development, a request that Vite answers, such as a source module or `/@vite/client`, gets no line. A request of the `vercel` build's check of the CDN pages gets no line.
 4. `streamingCompress()`: gzip that flushes after each chunk. Chunks that the body has queued together go out as one, up to 16 KiB, so a rendered page costs fewer flushes. When the body ends by the time the gzip stream finishes its last chunk, that chunk and the gzip trailer go out together. On the node host, a body that ends with its first chunk, up to 64 KiB, uses a zlib stream from a pool, so a small page costs no new zlib stream. The pool keeps up to 16 streams between responses, about 4.3 MiB in all. A stream takes only such a body, and only one at least as long as each earlier body of that stream, so the gzip bytes of a body depend on that body alone. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a type that it can gzip. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses gzip. The host gives the gzip stream. On a host with none, the plugin does nothing.
 5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
 6. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
 7. The plugins of the named options. They see every response, prerendered pages included:
-   - `noindex()`, with `defaultPlugins({ noindex: true })`. See [Preview deploys](#preview-deploys).
+   - `noindex()`, with `defaultPlugins({ noindex })`. See [Preview deploys](#preview-deploys).
    - `buildId()`, on by default. `defaultPlugins({ buildId })` changes it, and `false` turns it off. See [Deploys and open tabs](#deploys-and-open-tabs).
    - `contentSecurityPolicy()`, with `defaultPlugins({ contentSecurityPolicy })`. See [A CSP for each document](#a-csp-for-each-document).
    - The plugin from `runtimeEnv()`, with `defaultPlugins({ env })`. See [Environment](#environment).
 8. The `beforeStatic` plugins: the app's own plugins that see every response, prerendered pages included, such as an auth check. They come after the plugins of the named options, so they get the CSP nonce, and their responses get the headers of those plugins.
-9. `assets()`: `/assets/*` with a one-year immutable cache. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
+9. `assets()`: the files of Vite's `build.assetsDir` (`/assets/*` by default) with a one-year immutable cache. The `appServer` Vite plugin records the directory in `.app-server.json`. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 10. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
 11. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
 12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. A `no-transform` response never gets a copy, and an HTML page gets none when `runtimeEnv` adds values to it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework.
@@ -342,7 +365,7 @@ export default createServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) 
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
 
-A response that has one of these headers keeps its own value. `false` turns a header off, and `defaultPlugins({ securityHeaders: false })` turns them all off.
+`Content-Security-Policy` and `Permissions-Policy` have no default. A response that has one of these headers keeps its own value. `false` turns a header off, and `defaultPlugins({ securityHeaders: false })` turns them all off.
 
 ```ts
 defaultPlugins({
@@ -351,6 +374,7 @@ defaultPlugins({
 			"Cross-Origin-Opener-Policy": "same-origin-allow-popups",
 			"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 		},
 	},
 });
@@ -433,7 +457,7 @@ export function getRouter() {
 
 After a deploy, an open tab still runs the old build. Two things can then go wrong:
 
-- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the `/assets/*` files of each build, with their `.<file>.gz` and `.<file>.br` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
+- **Old assets.** The tab asks for a chunk of its own build, such as `/assets/route-3f9a1c.js`, and the new server does not have it. Keep the files of Vite's `build.assetsDir` (`/assets/*` by default) of each build, with their `.<file>.gz` and `.<file>.br` copies, in storage that a deploy never deletes, such as an object store behind the CDN. File names are content hashes, so the builds never collide. The server sends `Cache-Control: no-store` with a missing asset, so a CDN does not keep the 404.
 - **New data for old code.** The router fetches data from the new server, such as a React Router `.data` file or a TanStack Start server function, and the old code renders it. A changed loader can break the page.
 
 `buildId()` and the client module fix the second problem at the next navigation, and the page that the visitor reads never reloads. For React Router, create the module once, and give its three hooks to the router:
@@ -600,6 +624,14 @@ defaultPlugins({
 defaultPlugins({ noindex: process.env.PREVIEW === "1" });
 ```
 
+To allow indexing only for a request with a header, give `unlessHeader`. Each response gets the header in `Vary`, so a CDN keeps one answer for each case. For example, to allow indexing only for a request through the ngrok edge, which adds `x-ngrok-edge`:
+
+```ts
+defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } });
+```
+
+On the `vercel` host with `cdnPages`, the CDN serves the page and picks the answer by the header. See [Prerendered pages on the CDN](#prerendered-pages-on-the-cdn).
+
 ## Content negotiation
 
 One URL can answer HTML to a browser and markdown to an agent, per [acceptmarkdown.com](https://acceptmarkdown.com). `prefersMarkdown(request)` decides which answer a request gets. Use it in the server, in a plugin, and in the app, so each place answers one request the same way.
@@ -708,7 +740,7 @@ A resource route, or a TanStack Start server route, gets the same `Request`. Cal
 
 During the framework's prerender pass, `appServer` records each prerendered path and the response headers of each prerendered file that is not an HTML document into `.app-server.json` in the client build. `prerendered()` replays the headers. It leaves out `Set-Cookie`, `Vary`, and the headers of one transfer, such as `Content-Length`. When the framework does not list its prerendered paths, as with TanStack Start, the server reads them from this file.
 
-A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. The file also records the hash of each inline script of each HTML file in the client build, so `contentSecurityPolicy()` can give a prerendered page a CSP. See [A CSP for each document](#a-csp-for-each-document). It also holds the build ID. See [Deploys and open tabs](#deploys-and-open-tabs).
+A document's headers are not recorded, because the framework sets them for each request (a CSP nonce, the host). Set the headers of a prerendered page with the `headers` option or a plugin. The file also records the hash of each inline script of each HTML file in the client build, so `contentSecurityPolicy()` can give a prerendered page a CSP. See [A CSP for each document](#a-csp-for-each-document). It also holds the build ID (see [Deploys and open tabs](#deploys-and-open-tabs)) and the URL path of Vite's `build.assetsDir`.
 
 ## Logs
 
@@ -860,8 +892,8 @@ const html = await withRequestContext({ cspNonce: "test-nonce" }, () => renderTo
 A framework adapter or a host adapter is two small objects. A third-party adapter uses the same contract.
 
 - `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config.
-- `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`.
-- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output after the build, such as `.vercel/output`.
+- `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`. To give the access log `http.route`, `fetch` sets `routePattern` on the Hono context to the route pattern that the request matched.
+- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output after the build, such as `.vercel/output`. `output` gets the paths of the build and the URL path of Vite's `build.assetsDir`.
 - `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, a gzip stream, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
 - `ResponseEdge` (from `@ngrok/app-server`): for a listener that writes each response itself. The listener makes one for each request and gives it as the `edge` binding. The server runs the header hooks on a list of the headers and keeps the list in the edge, so it copies no response for them. The listener writes `edge.headersFor(response)` in place of the headers of the response, adds each body byte to `edge.bytes`, gives an error that stops the response to `edge.fail`, and calls `edge.close(status, aborted, head)` once, with the status and the header list that it sent. The access log takes its line from that report. Only the first request that gets an edge uses it: a request that the app sends through itself again with `c.env` changes its own response. The node host's listener on Node.js and the vercel handler give one. Without it, as on Bun and Deno, the server makes one new response with the headers after the hooks and a body that counts its bytes.
 
@@ -885,3 +917,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 - One server process uses one CPU core. To use more cores, run one replica or one container for each core behind the load balancer.
 - The package has two host adapters, `node` and `vercel`. Another host, such as Cloudflare Workers, needs its own adapter. See `HostRuntime` and `HostBuild`. A serverless host calls the `fetch` of the build's `appServer` export for each request. The build also exports `hostModule`, the host's run-side module, so a function file can call it through the bundle's copy.
 - On Deno, `Deno.serve` logs a notice about its legacy `request.signal` behavior.
+
+## Contributing
+
+Each change meets the six goals of the [north star](./docs/north-star.md): correct, least surprising, fast, delightful, clean, and efficient. [AGENTS.md](./AGENTS.md) is the guide for humans and agents. It lists the goals, the [principles](./docs/principles/README.md) that serve them, and the checks to run before a pull request.
