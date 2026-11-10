@@ -7,6 +7,8 @@ const entry = join(import.meta.dirname, "entry.js");
 export default {
 	cacheDir: join(import.meta.dirname, "../../../node_modules/.vite-dev-fixture"),
 	logLevel: "silent",
+	// Why: a WebSocket proxy route, so the check sees whether Vite adds an `upgrade` listener.
+	server: { proxy: { "/proxied": { target: "ws://127.0.0.1:9", ws: true } } },
 	plugins: [
 		{
 			name: "@ngrok/app-server",
@@ -21,6 +23,10 @@ export default {
 						process.stdout.write(`${JSON.stringify({ message: `vite plugin saw ${event}` })}\n`);
 					});
 				}
+				server.httpServer?.once("listening", () => {
+					const upgrades = server.httpServer?.listenerCount("upgrade");
+					process.stdout.write(`${JSON.stringify({ message: "upgrade listeners", upgrades })}\n`);
+				});
 			},
 		},
 	],

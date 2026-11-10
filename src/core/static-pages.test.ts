@@ -152,7 +152,7 @@ describe("staticPages", () => {
 		expect(byQuery).toStrictEqual([
 			{
 				path: "/about",
-				reason: "the answer changes with the host, the client address, or the query",
+				reason: "the status or the file changes with the request",
 			},
 		]);
 		await expect(pagesOf({ beforeStatic: [byHost] }, ["/about"])).resolves.toStrictEqual([
@@ -182,6 +182,53 @@ describe("staticPages", () => {
 			true,
 		);
 		expect(opaque).toStrictEqual([{ path: "/about", reason: "noindex has a `when` function" }]);
+	});
+
+	it("keeps a page on the server when it varies on a value that the CDN routes do not match", async () => {
+		const files = { ...aboutPage, "about.md": "# About", "about.json": "{}" };
+		const byAccept = await pagesOf(
+			{
+				prerendered: {
+					markdownTwins: true,
+					rewrite: (path, context) =>
+						context.req.header("Accept") === "application/json" ? "/about.json" : path,
+				},
+			},
+			["/about"],
+			files,
+		);
+		const edgeValue: Plugin = {
+			name: "edge-value",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (headers) => {
+					headers.set("X-Edge", context.req.header("x-ngrok-edge") ?? "none");
+				}),
+		};
+		const twinWithoutEdge = await pagesOf(
+			{
+				noindex: { unlessHeader: "x-ngrok-edge" },
+				prerendered: {
+					markdownTwins: {
+						twinOf: (path, context) =>
+							context.req.header("x-ngrok-edge") == null ? `${path}.md` : undefined,
+					},
+				},
+			},
+			["/about"],
+			files,
+		);
+
+		expect(byAccept).toStrictEqual([
+			{ path: "/about", reason: "the status or the file changes with the request" },
+		]);
+		await expect(
+			pagesOf({ noindex: { unlessHeader: "x-ngrok-edge" }, beforeStatic: [edgeValue] }, ["/about"]),
+		).resolves.toStrictEqual([
+			{ path: "/about", reason: "the x-edge header changes with the request" },
+		]);
+		expect(twinWithoutEdge).toStrictEqual([
+			{ path: "/about", reason: "the markdown twin changes with a presence header" },
+		]);
 	});
 
 	it("sends no presence header in the case that it is absent, though the checks send it by default", async () => {

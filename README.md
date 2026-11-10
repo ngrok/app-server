@@ -230,7 +230,7 @@ After the build, `vercel()` starts the server build once, with no listener, and 
 
 - It is a 200 from the page's file.
 - It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
-- It is the same for a second client with another host, client address, user agent, and query. Only `X-Request-Id` and `Date` can change.
+- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. Only `X-Request-Id` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 
 The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason.

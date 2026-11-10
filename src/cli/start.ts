@@ -27,7 +27,9 @@ export async function start(): Promise<void> {
 	const vite = await import("vite");
 	const httpServer = createHttpServer();
 	const viteServer = await vite.createServer({
-		server: { middlewareMode: { server: httpServer }, ws: { server: httpServer } },
+		// Why `true`, not `{ server }`: Vite then adds a proxy `upgrade` listener to the server, and a
+		// restart does not remove it.
+		server: { middlewareMode: true, ws: { server: httpServer } },
 		appType: "custom",
 		plugins: [shareHttpServer(httpServer)],
 	});

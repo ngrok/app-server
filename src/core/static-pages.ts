@@ -61,14 +61,27 @@ type Answer = {
 	file: string | undefined;
 };
 
-/** The two clients of each check. The second differs in each value that a CDN route cannot see. */
+/**
+ * The two clients of each check. The second differs in each value that a CDN
+ * route does not match on: the host, the address, the query, the user agent,
+ * an `Accept` with no markdown, and the value of a presence header.
+ */
 const CLIENTS = [
-	{ origin: "https://localhost", query: "", userAgent: "app-server-build", address: "203.0.113.1" },
+	{
+		origin: "https://localhost",
+		query: "",
+		userAgent: "app-server-build",
+		accept: BROWSER_ACCEPT,
+		address: "203.0.113.1",
+		presentValue: "1",
+	},
 	{
 		origin: "https://app-server-check.example",
 		query: "?app-server-check=1",
 		userAgent: "app-server-build-check",
+		accept: "application/json",
 		address: "198.51.100.2",
+		presentValue: "2",
 	},
 ] as const;
 
@@ -92,12 +105,12 @@ async function answer(
 	// Why `Host`: a listener gives it to each request, and a plugin can read it.
 	const headers = new Headers([
 		["Host", new URL(client.origin).host],
-		["Accept", BROWSER_ACCEPT],
+		["Accept", client.accept],
 		["User-Agent", client.userAgent],
 	]);
 	for (const name of presence) {
 		if (present.includes(name)) {
-			headers.set(name, "1");
+			headers.set(name, client.presentValue);
 		} else {
 			headers.delete(name);
 		}
@@ -169,7 +182,7 @@ function uncacheable(first: Answer, allowedVary: ReadonlySet<string>): string | 
 /** Why `second` differs from `first`, or `undefined` when they match. */
 function difference(first: Answer, second: Answer): string | undefined {
 	if (first.status !== second.status || first.file !== second.file) {
-		return "the answer changes with the host, the client address, or the query";
+		return "the status or the file changes with the request";
 	}
 	const names = new Set(
 		[...keptHeaders(first.headers), ...keptHeaders(second.headers)].map(([name]) => name),
@@ -215,11 +228,11 @@ async function staticPage(
 			await answer(fetch, path, { client: CLIENTS[0], presence, present }),
 			await answer(fetch, path, { client: CLIENTS[1], presence, present }),
 		];
-		twin = twinIn(first.headers.get("link"));
+		const caseTwin = twinIn(first.headers.get("link"));
 		const allowedVary = new Set([
 			"accept-encoding",
 			...presence,
-			...(twin == null ? [] : ["accept"]),
+			...(caseTwin == null ? [] : ["accept"]),
 		]);
 		const reason = uncacheable(first, allowedVary) ?? difference(first, second);
 		if (reason != null) {
@@ -228,7 +241,12 @@ async function staticPage(
 		if (base != null && (base.file !== first.file || !sameBytes(base.body, first.body))) {
 			return { path, reason: "the body changes with a presence header" };
 		}
+		// Why: the CDN routes send each markdown request of a page to the server, or none.
+		if (base != null && caseTwin !== twin) {
+			return { path, reason: "the markdown twin changes with a presence header" };
+		}
 		base ??= first;
+		twin = caseTwin;
 		answers.push({ present, headers: Object.fromEntries(keptHeaders(first.headers)) });
 	}
 	if (base?.file == null) {
@@ -250,8 +268,9 @@ async function staticPage(
  * - is a 200 from a prerendered file, with no cookie and no `private`,
  *   `no-store`, or `no-cache`
  * - is the same, except for the request ID, for a second client with another
- *   host, client address, user agent, and query. Why: a CDN route sees only
- *   the path and the request headers.
+ *   host, client address, user agent, query, `Accept` with no markdown, and
+ *   value of each presence header. Why: a CDN route matches only the path,
+ *   a markdown `Accept`, and the presence of each presence header.
  * - varies only on `Accept-Encoding`, on `Accept` for a markdown twin, and on
  *   the presence headers. Each case of the presence headers gets its own
  *   headers, and all cases must send the same body.

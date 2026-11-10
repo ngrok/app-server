@@ -259,6 +259,11 @@ async function checkStart(): Promise<void> {
 			["vite plugin saw listening", "vite plugin saw close"],
 			"a Vite plugin gets the HTTP server's events",
 		);
+		assert.deepEqual(
+			lines.filter((line) => line.message === "upgrade listeners").map((line) => line.upgrades),
+			[1],
+			"the HTTP server has only the HMR `upgrade` listener, because a Vite restart does not remove a proxy's",
+		);
 		process.stdout.write("ok node start\n");
 	} finally {
 		child.kill("SIGKILL");
