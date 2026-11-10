@@ -1,5 +1,58 @@
 # @ngrok/app-server
 
+## 0.3.3
+
+### Patch Changes
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `accessLog()` changes three things:
+  
+  - A line with a 5xx status has the level `error`, so Datadog shows the request as an error, and a monitor on error logs finds it. A line with another status keeps the level `info`.
+  - With React Router, a line has the route pattern that the request matched as `http.route`, such as `/domains/:domainId`. A request that matches no route has no `http.route`. A framework adapter gives the pattern with `c.set("routePattern", pattern)`.
+  - In development, a request that Vite answers, such as a source module, a CSS file, or `/@vite/client`, gets no line. The dev terminal shows the requests that the app answers.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `assets()` and the `vercel` host use Vite's `build.assetsDir`. The `appServer` Vite plugin records its URL path in `.app-server.json`, so the hashed files get `Cache-Control: public, max-age=31536000, immutable` wherever `build.assetsDir` puts them. With `build.assetsDir: "blog-assets/build"`, `/blog-assets/build/*` gets the immutable cache, and on Vercel the CDN serves it with no `cdnPaths` entry. A build from an earlier version keeps `/assets/`.
+  
+  A host's `output` also gets `assetsPath`, the URL path of `build.assetsDir`.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The build writes the compressed copies (`.<file>.gz` and `.<file>.br`) only inside the client build. Before, a directory link in the client build, such as `build/client/blog-assets` to `public/blog-assets`, got the copies in the link's target. A link and a file in a linked directory now get no copy. The server compresses such a file for each request, as it does for any file with no copy.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `defaultPlugins({ noindex })` and `noindex()` take `unlessHeader`. A request with this header gets no `X-Robots-Tag`, and each response gets the header in `Vary`, so a CDN keeps one answer for each case. For example, to allow indexing only for a request through the ngrok edge:
+  
+  ```ts
+  defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } });
+  ```
+  
+  On the `vercel` host with `cdnPages`, the CDN serves a prerendered page and picks the answer by the header. `noindex: true` still sets `X-Robots-Tag: noindex, nofollow` on each response.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `securityHeaders()` takes `Permissions-Policy`, with no default. A response that has its own `Permissions-Policy` keeps it:
+  
+  ```ts
+  defaultPlugins({
+  	securityHeaders: { headers: { "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } },
+  });
+  ```
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Under `app-server start`, a Vite plugin gets the CLI's HTTP server as `server.httpServer` in its `configureServer` hook, also when the hook has `order: "pre"`. Before, Vite's middleware mode gave `null`, so a plugin that waits for `listening` or `close` did nothing, with no error. A Vite restart keeps the server open, so to clean up for each plugin instance, use Vite's `closeServer` hook.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the `vercel` host, `vercel({ cdnPages: true })` lets Vercel's CDN serve each public prerendered page, so a page view does not run the function. The default is `false`, so an app that does not set the option gets no change.
+  
+  ```ts
+  appServer({ host: vercel({ cdnPages: true }) });
+  ```
+  
+  After the build, `vercel()` starts the server build once and sends each prerendered path through the pipeline. The CDN serves a page when the answer is a 200 from its file, has no cookie and no `private`, `no-store`, or `no-cache`, and is the same for a second client. The second client has another host, address, and query, and it sends a cookie, `Authorization`, `Accept-Language`, and Vercel's geo headers. So a page behind an auth check, or a page that a plugin answers another way for a signed-in visitor or a country, stays in the function. The CDN sends the pipeline's body and headers, so the security headers, the CSP, and the build ID do not change. If the pages need more than Vercel's 2,048 routes, the function serves the rest. The build log names each path that the function serves, with the reason.
+  
+  With the option on:
+  
+  - The build runs each plugin's `setup`, so it needs the app's environment.
+  - A page that the CDN serves writes no access log line and sends no `X-Request-Id`. The build's requests write no access log line.
+  - A page with a `$` in a response header stays in the function, because a Vercel route reads `$1` or `$name` in a header as a capture.
+  - The function still keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`.
+  
+  A function keeps each path that it refuses in the function: `vercel({ cdnPages: (path) => path !== "/" })`. With `trailingSlash: "always"`, the CDN serves `/blog/` for the prerendered path `/blog`, so a page that the function refuses in either form stays in the function.
+
+- [#50](https://github.com/ngrok/app-server/pull/50) [`266acd7`](https://github.com/ngrok/app-server/commit/266acd737b8915fd77663b8f941df044d0f6860b) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The README and the JSDoc of `vercel({ maxDuration })` say that a route module's `config` export, such as `export const config = { maxDuration: 60 }`, does nothing on the `vercel` host. One function serves each route, so `regions`, `memory`, and `maxDuration` apply to each request.
+
 ## 0.3.2
 
 ### Patch Changes
