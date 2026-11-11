@@ -1,5 +1,32 @@
 # @ngrok/app-server
 
+## 0.3.4
+
+### Patch Changes
+
+- [#57](https://github.com/ngrok/app-server/pull/57) [`857a228`](https://github.com/ngrok/app-server/commit/857a228226a00d91017b64847cb8e607bca446a5) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The server and the build now compress more types. `streamingCompress()` compresses them, and the build writes a `.gz` and a `.br` copy of such a static file. The new types are each type with a `+json` or `+xml` suffix (such as `application/rss+xml`, `application/atom+xml`, and `application/ld+json`), `image/x-icon`, `image/vnd.microsoft.icon`, `image/bmp`, `font/ttf`, `font/otf`, `application/vnd.ms-fontobject`, `application/wasm`, `application/yaml`, `application/x-yaml`, and `application/x-sh`. For example, a browser asks for `favicon.ico` on each first visit, and the icon now gets a compressed copy. `font/woff` and `font/woff2` are compressed already and stay as they are.
+
+- [#57](https://github.com/ngrok/app-server/pull/57) [`857a228`](https://github.com/ngrok/app-server/commit/857a228226a00d91017b64847cb8e607bca446a5) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The static stages now send the type that `express.static` sent for more file extensions. Before, such a file went out as `application/octet-stream`, so a browser downloaded it, and the server did not compress it:
+  
+  - `.sh`: `application/x-sh`
+  - `.yaml` and `.yml`: `text/yaml; charset=utf-8`
+  - `.rss`: `application/rss+xml`
+  - `.atom`: `application/atom+xml`
+  - `.pem`: `application/x-pem-file`
+
+- [#57](https://github.com/ngrok/app-server/pull/57) [`857a228`](https://github.com/ngrok/app-server/commit/857a228226a00d91017b64847cb8e607bca446a5) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `streamingCompress()` now sends brotli, at quality 4, to a client whose `Accept-Encoding` ranks `br` at least as high as `gzip`, as each browser does. Before, a rendered page always got gzip. Brotli at quality 4 is smaller for the same CPU time: a page of 149 KiB takes 0.60 ms and 7.7 KiB as brotli, and 0.68 ms and 10.6 KiB as gzip. It still flushes after each chunk. On the node host, a page that ends with its first chunk, up to 64 KiB, takes a pooled brotli encoder, as gzip does. On Bun and Deno, each brotli body takes a new encoder, because a reset encoder there loses its quality or gives no bytes.
+  
+  `HostRuntime` and `SetupInfo` have a new optional `brotli` stream, next to `gzip`. The node host gives both, on Node.js, Bun, and Deno. A host with no `brotli` stream sends gzip, as before.
+
+- [#57](https://github.com/ngrok/app-server/pull/57) [`857a228`](https://github.com/ngrok/app-server/commit/857a228226a00d91017b64847cb8e607bca446a5) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The server build now copies only the files of an external package that the build can load. Before, it copied each external package whole, with each of its installed dependencies. The build traces the server build with `@vercel/nft`, with the export conditions of Node, Bun, and Deno, and removes each other copied file, such as a source map or a dependency that the package bundled into its own file. For `@vercel/og` 1.0.1, the copy goes from 42.9 MB to 23.6 MB.
+  
+  Some packages still keep each file: a native package and each package that it depends on, a package in `ssr.external`, and a package that the app gives to `require.resolve()` or `import.meta.resolve()`. Two new `appServer` options change the copy:
+  
+  - `externals.whole`: packages that keep each file, for a package that reads a file whose path the trace cannot find.
+  - `externals.omit`: packages that the build does not copy, such as an optional dependency that a package loads in a `try`. With `appServer({ externals: { omit: ["sharp"] } })`, the copy for `@vercel/og` is 3.0 MB, and `@vercel/og` uses `resvg.wasm`.
+
+- [#57](https://github.com/ngrok/app-server/pull/57) [`857a228`](https://github.com/ngrok/app-server/commit/857a228226a00d91017b64847cb8e607bca446a5) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the `vercel` host, the function now keeps only the `.br` copy of a client-build file that has one. Before, it kept the file, its `.gz` copy, and its `.br` copy, and each one counted toward Vercel's 250 MB function limit. For a blog with 265 prerendered pages, that makes the function about 50 MB smaller. A client that accepts brotli gets the copy, as before. For any other client, the function decompresses the copy, and Vercel's CDN compresses the response.
+
 ## 0.3.3
 
 ### Patch Changes
