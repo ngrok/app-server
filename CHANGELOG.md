@@ -1,5 +1,30 @@
 # @ngrok/app-server
 
+## 0.3.5
+
+### Patch Changes
+
+- [#60](https://github.com/ngrok/app-server/pull/60) [`4be601a`](https://github.com/ngrok/app-server/commit/4be601a925c6c832a6be8efd4b5ac7fff1fbc172) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `streamingCompress()` sends brotli with a 256 KiB window, not 4 MiB, on the node host. Why: Node.js tells V8 the full window of each open encoder, and under load V8 then runs a full garbage collection for every few responses. A rendered page of 19 KB to 67 KB under brotli now gets the same requests per second as under gzip, with about 30% more requests per second than before. A page under 256 KiB gets the same bytes, and a page of 2.7 MB gets about 5% more. Fixes [#59](https://github.com/ngrok/app-server/issues/59).
+
+- [#60](https://github.com/ngrok/app-server/pull/60) [`4be601a`](https://github.com/ngrok/app-server/commit/4be601a925c6c832a6be8efd4b5ac7fff1fbc172) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `streamingCompress()` joins the chunks that a body has queued up to 64 KiB, not 16 KiB. Each zlib write costs a trip to the thread pool. So a rendered page of 19 KB that the body queues at once now costs one zlib call, not three. On the node host, that page under brotli gets 23% more requests per second and 39% less CPU for each request. The source can now be read up to 64 KiB ahead of the client.
+
+- [#61](https://github.com/ngrok/app-server/pull/61) [`93e9aea`](https://github.com/ngrok/app-server/commit/93e9aeae2324efd1fffad6e4fc4b015d521d0401) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server start` prints its URLs as `vite dev` does, in place of a JSON `listening` line:
+  
+  ```
+    ➜  Local:   http://localhost:3000/
+    ➜  Network: http://192.168.4.33:3000/  en0
+  ```
+  
+  When the host is every interface, such as `server.host: true`, it prints a `Network` line for each IPv4 (Internet Protocol version 4) interface. Each URL ends with Vite's `base`. The lines go through Vite's logger, so Vite's `logLevel` and `customLogger` apply.
+  
+  The other log lines of `start`, such as a port in use or a failed request, use the text format of Go's `log/slog`, not JSON:
+  
+  ```
+  time=2026-11-11T16:50:44.050Z level=INFO msg="port in use, trying the next port" server.port=3333
+  ```
+  
+  `app-server serve` and the production server still write JSON.
+
 ## 0.3.4
 
 ### Patch Changes
