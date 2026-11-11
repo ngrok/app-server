@@ -225,4 +225,15 @@ describe("brotliStream", () => {
 		expect(after.equals(before)).toBe(true);
 		expect(brotliDecompressSync(after)).toStrictEqual(Buffer.from(page));
 	});
+
+	it("sends a 256 KiB window, for a one-chunk and a streamed body", async () => {
+		// Why the low 4 bits: a brotli stream starts with its window size (RFC 7932, section 9.1),
+		// and 0b0011 is a window of 2^18 bytes.
+		const outputs = await Promise.all([
+			bytes(brotliStream(queued(page))),
+			bytes(brotliStream(pulled([page, page]))),
+		]);
+
+		expect(outputs.map((output) => (output[0] ?? 0) % 16)).toStrictEqual([0b0011, 0b0011]);
+	});
 });
