@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { flushLogs, jsonSink } from "./log.js";
+import { flushLogs, jsonSink, textSink } from "./log.js";
 
 /** A spy on stdout that keeps each write out of the test output. */
 function spyStdout() {
@@ -101,6 +101,29 @@ describe("jsonSink", () => {
 			"2026-11-03T12:00:00.000Z",
 			"2026-11-03T12:00:00.001Z",
 			"2026-11-03T11:59:59.999Z",
+		]);
+	});
+});
+
+describe("textSink", () => {
+	it("writes the text format of Go's log/slog, and quotes a value only when it must", () => {
+		const lines: string[] = [];
+		const sink = textSink((line) => {
+			lines.push(line);
+		});
+
+		sink.log("info", "port in use, trying the next port", { "server.port": 3000 });
+		sink.log("error", "failed", { "error.message": 'a "quote"\nand a line', ok: true, empty: "" });
+		sink.log("error", "failed", { "error.message": "\u001B[2J" });
+
+		expect(lines).toStrictEqual([
+			expect.stringMatching(
+				/^time=\S+Z level=INFO msg="port in use, trying the next port" server\.port=3000\n$/u,
+			),
+			expect.stringMatching(
+				/ level=ERROR msg=failed error\.message="a \\"quote\\"\\nand a line" ok=true empty=""\n$/u,
+			),
+			expect.stringMatching(/ error\.message="\\u001b\[2J"\n$/u),
 		]);
 	});
 });

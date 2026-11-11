@@ -6,7 +6,8 @@ const entry = join(import.meta.dirname, "entry.js");
 
 export default {
 	cacheDir: join(import.meta.dirname, "../../../node_modules/.vite-dev-fixture"),
-	logLevel: "silent",
+	// Why `info`: `app-server start` prints its URL at this level, and the check reads it.
+	logLevel: "info",
 	// Why: a WebSocket proxy route, so the check sees whether Vite adds an `upgrade` listener.
 	server: { proxy: { "/proxied": { target: "ws://127.0.0.1:9", ws: true } } },
 	plugins: [

@@ -55,6 +55,7 @@ Short, named rules for how to work. They are the methods that meet the [north st
 - [Keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md) (code): do work once, at setup. Per request, start independent work together and parse once.
 - [Redesign before you cache](./docs/principles/redesign-before-you-cache.md) (code): a cache must beat the best design with no cache, in a benchmark.
 - [One pipeline for development and production](./docs/principles/one-pipeline.md) (code): a stage differs only where its job differs.
+- [Stay close to Vite](./docs/principles/stay-close-to-vite.md) (code, prose): `app-server start` acts and prints as `vite dev` does.
 - [Add no round trips to a client navigation](./docs/principles/no-added-round-trips.md) (code): a client navigation makes only the router's requests.
 
 ## Rules
