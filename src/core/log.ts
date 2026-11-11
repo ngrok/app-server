@@ -72,6 +72,40 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	};
 }
 
+/**
+ * A log sink that writes one line of `key=value` pairs per event, in the text
+ * format of Go's `log/slog`. A value with a space, a quote, or `=` is quoted.
+ * `app-server start` uses it, because a person reads those lines.
+ *
+ * @param write - Where each line goes. Defaults to stdout, at once. Why not
+ * one write for each turn: the lines then keep their order with Vite's lines.
+ *
+ * @example
+ * textSink().log("info", "port in use, trying the next port", { "server.port": 3000 });
+ * // time=2026-11-11T12:00:00.000Z level=INFO msg="port in use, trying the next port" server.port=3000
+ */
+export function textSink(
+	write: (line: string) => void = (line) => {
+		process.stdout.write(line);
+	},
+): LogSink {
+	return {
+		log: (level, message, attributes) => {
+			let line = `time=${isoNow()} level=${level.toUpperCase()} msg=${textValue(message)}`;
+			for (const [key, value] of Object.entries(attributes)) {
+				line += ` ${key}=${textValue(value)}`;
+			}
+			write(`${line}\n`);
+		},
+	};
+}
+
+/** A value of a {@link textSink} line: quoted when it is empty or has a space, a quote, or `=`. */
+function textValue(value: unknown): string {
+	const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+	return /^[^\s"=]+$/u.test(text) ? text : JSON.stringify(text);
+}
+
 /** The millisecond of the last `time`, and its ISO string. */
 let lastMs = Number.NaN;
 let lastTime = "";

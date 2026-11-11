@@ -6,7 +6,8 @@ import viteReact from "@vitejs/plugin-react";
 import { appServer } from "../../../dist/vite.js";
 
 export default {
-	logLevel: "warn",
+	// Why `info`: `app-server start` prints its URL at this level, and the check reads it.
+	logLevel: "info",
 	plugins: [
 		tanstackStart({
 			prerender: { enabled: true, crawlLinks: false, autoStaticPathsDiscovery: false },

@@ -4,6 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { stripVTControlCharacters } from "node:util";
 
 export const packageDirectory = join(import.meta.dirname, "..");
 
@@ -33,7 +34,7 @@ export const commands: Record<string, (args: string[]) => [string, string[]]> = 
 export type Line = { level: string; message: string; [attribute: string]: unknown };
 
 /**
- * Starts the CLI and resolves with its URL once it logs `listening`. `prefix`
+ * Starts the CLI and resolves with its URL once it logs it. `prefix`
  * goes before the runtime's command, such as `taskset`. With `record: false`,
  * the lines after `listening` are not kept, so a long load test does not fill
  * the memory.
@@ -78,6 +79,13 @@ export function startServer(
 			buffered += chunk.toString();
 			const parts = buffered.split("\n");
 			buffered = parts.pop() ?? "";
+			for (const part of parts) {
+				// Why: `start` prints its URL as `vite dev` does, not as a JSON line.
+				const local = /Local:\s+(?<url>\S+)/u.exec(stripVTControlCharacters(part))?.groups?.url;
+				if (local != null) {
+					resolve(local);
+				}
+			}
 			// Why the filter: Vite in `start` and the fixture at shutdown write lines that are not JSON.
 			for (const part of parts.filter((candidate) => candidate.startsWith("{"))) {
 				const line: Line = JSON.parse(part);

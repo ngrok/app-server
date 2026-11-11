@@ -1,13 +1,13 @@
 import { createServer as createHttpServer } from "node:http";
 import type { Server } from "node:http";
 import type { Plugin } from "vite";
-import { errorAttributes, jsonSink } from "../core/log.js";
+import { errorAttributes, textSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
-import { listenerUrl } from "../node/runtimes/listen-options.js";
 import { requestListener } from "../node/response-writer.js";
 import { parsePort } from "../node/tcp.js";
 import { SERVER_ENTRY_ID } from "../vite/index.js";
+import { devUrlLines } from "./dev-urls.js";
 import { loadEntry } from "./load-entry.js";
 import { servedApps } from "./served-apps.js";
 import { listenFromPort } from "./start-port.js";
@@ -51,7 +51,7 @@ export async function start(): Promise<void> {
 	const devServer = devServerStage(viteServer.middlewares, {
 		publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
 	});
-	const sink = jsonSink();
+	const sink = textSink();
 	const apps = servedApps();
 
 	const listener = requestListener(async (request, bindings) => {
@@ -92,7 +92,11 @@ export async function start(): Promise<void> {
 			});
 		},
 	});
-	sink.log("info", "listening", { "app_server.urls": [listenerUrl(hostname, boundPort)] });
+	// Why Vite's logger: the lines then follow the app's `logLevel` and `customLogger`, as in `vite dev`.
+	viteServer.config.logger.info("");
+	for (const line of devUrlLines(hostname, boundPort)) {
+		viteServer.config.logger.info(line);
+	}
 
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
 		process.once(signal, () => {
