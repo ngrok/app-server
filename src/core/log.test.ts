@@ -114,6 +114,7 @@ describe("textSink", () => {
 
 		sink.log("info", "port in use, trying the next port", { "server.port": 3000 });
 		sink.log("error", "failed", { "error.message": 'a "quote"\nand a line', ok: true, empty: "" });
+		sink.log("error", "failed", { "error.message": "\u001B[2J" });
 
 		expect(lines).toStrictEqual([
 			expect.stringMatching(
@@ -122,6 +123,7 @@ describe("textSink", () => {
 			expect.stringMatching(
 				/ level=ERROR msg=failed error\.message="a \\"quote\\"\\nand a line" ok=true empty=""\n$/u,
 			),
+			expect.stringMatching(/ error\.message="\\u001b\[2J"\n$/u),
 		]);
 	});
 });

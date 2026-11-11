@@ -80,10 +80,11 @@ export function startServer(
 			const parts = buffered.split("\n");
 			buffered = parts.pop() ?? "";
 			for (const part of parts) {
-				// Why: `start` prints its URL as `vite dev` does, not as a JSON line.
-				const local = /Local:\s+(?<url>\S+)/u.exec(stripVTControlCharacters(part))?.groups?.url;
-				if (local != null) {
-					resolve(local);
+				// Why: `start` prints its URLs as `vite dev` does, not as a JSON line. The first URL wins.
+				const printed = /(?:Local|Network):\s+(?<url>\S+)/u.exec(stripVTControlCharacters(part))
+					?.groups?.url;
+				if (printed != null) {
+					resolve(printed);
 				}
 			}
 			// Why the filter: Vite in `start` and the fixture at shutdown write lines that are not JSON.

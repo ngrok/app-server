@@ -21,7 +21,9 @@ const interfaces: Record<string, NetworkInterfaceInfo[]> = {
 };
 
 function lines(hostname: string | undefined): string[] {
-	return devUrlLines(hostname, 3000, interfaces).map((line) => stripVTControlCharacters(line));
+	return devUrlLines({ hostname, port: 3000, base: "/" }, interfaces).map((line) =>
+		stripVTControlCharacters(line),
+	);
 }
 
 describe("devUrlLines", () => {
@@ -38,6 +40,23 @@ describe("devUrlLines", () => {
 		];
 		expect(lines(undefined)).toStrictEqual(expected);
 		expect(lines("0.0.0.0")).toStrictEqual(expected);
+	});
+
+	it("prints the local URL for a wildcard host with no IPv4 interface", () => {
+		const ipv6Only = { lo0: [{ ...ipv4("::1"), family: "IPv6" as const, scopeid: 0 }] };
+		expect(
+			devUrlLines({ hostname: "::", port: 3000, base: "/" }, ipv6Only).map((line) =>
+				stripVTControlCharacters(line),
+			),
+		).toStrictEqual(["  ➜  Local:   http://localhost:3000/"]);
+	});
+
+	it("ends each URL with Vite's base", () => {
+		expect(
+			devUrlLines({ hostname: "localhost", port: 3000, base: "/docs/" }, interfaces).map((line) =>
+				stripVTControlCharacters(line),
+			),
+		).toStrictEqual(["  ➜  Local:   http://localhost:3000/docs/"]);
 	});
 
 	it("prints a network URL with its interface for a specific host", () => {

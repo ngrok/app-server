@@ -94,7 +94,7 @@ export async function start(): Promise<void> {
 	});
 	// Why Vite's logger: the lines then follow the app's `logLevel` and `customLogger`, as in `vite dev`.
 	viteServer.config.logger.info("");
-	for (const line of devUrlLines(hostname, boundPort)) {
+	for (const line of devUrlLines({ hostname, port: boundPort, base: viteServer.config.base })) {
 		viteServer.config.logger.info(line);
 	}
 

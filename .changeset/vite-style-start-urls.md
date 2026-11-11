@@ -9,7 +9,7 @@
   ➜  Network: http://192.168.4.33:3000/  en0
 ```
 
-When the host is every interface, such as `server.host: true`, it prints a `Network` line for each IPv4 interface. The lines go through Vite's logger, so Vite's `logLevel` and `customLogger` apply.
+When the host is every interface, such as `server.host: true`, it prints a `Network` line for each IPv4 (Internet Protocol version 4) interface. Each URL ends with Vite's `base`. The lines go through Vite's logger, so Vite's `logLevel` and `customLogger` apply.
 
 The other log lines of `start`, such as a port in use or a failed request, use the text format of Go's `log/slog`, not JSON:
 

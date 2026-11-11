@@ -74,7 +74,8 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 
 /**
  * A log sink that writes one line of `key=value` pairs per event, in the text
- * format of Go's `log/slog`. A value with a space, a quote, or `=` is quoted.
+ * format of Go's `log/slog`. A value with a space, a quote, `=`, or a control
+ * character is quoted, so an escape sequence cannot reach the terminal.
  * `app-server start` uses it, because a person reads those lines.
  *
  * @param write - Where each line goes. Defaults to stdout, at once. Why not
@@ -100,10 +101,10 @@ export function textSink(
 	};
 }
 
-/** A value of a {@link textSink} line: quoted when it is empty or has a space, a quote, or `=`. */
+/** A value of a {@link textSink} line. `JSON.stringify` escapes each control character. */
 function textValue(value: unknown): string {
 	const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
-	return /^[^\s"=]+$/u.test(text) ? text : JSON.stringify(text);
+	return /^[^\s"=\p{Cc}]+$/u.test(text) ? text : JSON.stringify(text);
 }
 
 /** The millisecond of the last `time`, and its ISO string. */
