@@ -14,11 +14,13 @@ import { withVary } from "../vary.js";
 type Queued = { chunks: Uint8Array[]; done: boolean; pending: Promise<ReadResult> | undefined };
 
 /**
- * The most bytes that one pull of {@link replay} joins. Why 16 KiB: a source
+ * The most bytes that one pull of {@link replay} joins. Why 64 KiB: each
+ * zlib write costs a trip to the thread pool, and the node host compresses a
+ * body of one chunk up to 64 KiB with a pooled stream in one trip. A source
  * that makes a chunk on each read looks queued, so the join can read ahead of
- * the client by this size, the default read-ahead of a Node.js stream.
+ * the client by this size.
  */
-export const MAX_JOINED_BYTES = 16 * 1024;
+export const MAX_JOINED_BYTES = 64 * 1024;
 
 /**
  * Reads at most two chunks that `reader` has queued, and never waits for
@@ -153,7 +155,7 @@ function compressed(
  * chunk, so a streamed page shell or a server-sent event reaches the client
  * at once. A client gets brotli when its `Accept-Encoding` ranks `br` at
  * least as high as `gzip`. Chunks that the body has queued together are one
- * chunk, up to 16 KiB. `hono/compress` holds a stream until it ends. Skips a
+ * chunk, up to 64 KiB. `hono/compress` holds a stream until it ends. Skips a
  * response that is already encoded, a partial response, one marked
  * `no-transform`, and one whose `Content-Length` is under 1 KiB. It adds
  * `Accept-Encoding` to the `Vary` of each response that it can compress. The

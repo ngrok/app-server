@@ -320,8 +320,8 @@ describe("streamingCompress", () => {
 		}
 	});
 
-	it("sends a chunk that does not fit in 16 KiB after the chunks before it, with no join", async () => {
-		const sizes = [1024, 1024, 32 * 1024];
+	it("joins queued chunks up to 64 KiB, and sends a chunk that does not fit after them", async () => {
+		const sizes = [1024, 32 * 1024, 64 * 1024];
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
 				for (const size of sizes) {
@@ -341,8 +341,8 @@ describe("streamingCompress", () => {
 		const inflate = (bytes: Uint8Array) =>
 			gunzipSync(bytes, { finishFlush: constants.Z_SYNC_FLUSH }).byteLength;
 
-		expect(inflate(first)).toBe(2048);
-		expect(inflate(new Uint8Array([...first, ...second]))).toBe(2048 + 32 * 1024);
+		expect(inflate(first)).toBe(1024 + 32 * 1024);
+		expect(inflate(new Uint8Array([...first, ...second]))).toBe(1024 + 96 * 1024);
 	});
 
 	it("sends the shell before a run of empty chunks ends", async () => {
@@ -376,7 +376,7 @@ describe("streamingCompress", () => {
 		expect(pulls).toBeLessThan(10);
 	});
 
-	it("reads the source at most 16 KiB ahead of the client", async () => {
+	it("reads the source at most 64 KiB ahead of the client", async () => {
 		const chunk = new TextEncoder().encode("<p>chunk</p>");
 		const total = 10_000;
 		let pulls = 0;
