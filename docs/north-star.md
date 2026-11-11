@@ -22,7 +22,7 @@ Each response is right on each host (Node, Bun, Deno, and Vercel), with each fra
 
 The server does what an app developer expects from the name of an option and from the README. A safe default is on, and a feature that can change who sees which response is off until the app turns it on. One job has one way to do it. An upgrade never changes the behavior of an app with no word in the changeset, and a breaking change gets a `minor` bump.
 
-- **Served by:** [experience first](./principles/experience-first.md), [one pipeline](./principles/one-pipeline.md), [migrate callers, then delete](./principles/migrate-callers-then-delete.md), and [derive, don't sync](./principles/derive-dont-sync.md).
+- **Served by:** [experience first](./principles/experience-first.md), [one pipeline](./principles/one-pipeline.md), [stay close to Vite](./principles/stay-close-to-vite.md), [migrate callers, then delete](./principles/migrate-callers-then-delete.md), and [derive, don't sync](./principles/derive-dont-sync.md).
 - **Signs you missed it:** two options that do the same job but act differently, a default that changes what a visitor gets, or a changeset that a developer must read twice.
 
 ## Fast
