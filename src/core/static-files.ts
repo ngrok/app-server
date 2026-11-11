@@ -16,7 +16,14 @@ export type StaticFile = {
 
 /** The content types that `mime` lacks and that no framework owns. */
 const CORE_CONTENT_TYPES: Readonly<Record<string, string>> = {
+	".atom": "application/atom+xml",
 	".md": "text/markdown; charset=utf-8",
+	".pem": "application/x-pem-file",
+	".rss": "application/rss+xml",
+	".sh": "application/x-sh",
+	// Why `text/yaml`: a browser shows a text type, and `express.static` sends it.
+	".yaml": "text/yaml; charset=utf-8",
+	".yml": "text/yaml; charset=utf-8",
 };
 
 /**

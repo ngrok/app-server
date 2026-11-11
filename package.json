@@ -88,6 +88,7 @@
   },
   "dependencies": {
     "@hono/node-server": "2.1.5",
+    "@vercel/nft": "1.11.0",
     "hono": "4.13.14"
   },
   "devDependencies": {

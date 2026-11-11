@@ -154,10 +154,15 @@ export type HostRuntime = {
 	/** The storage for {@link requestContext}. Without it, `requestContext()` gives `undefined`. */
 	storage?: RequestStore;
 	/**
-	 * Gzips a byte stream and flushes after each chunk. Without it,
-	 * `streamingCompress` sends each response as it is.
+	 * Gzips a byte stream and flushes after each chunk. Without it and
+	 * `brotli`, `streamingCompress` sends each response as it is.
 	 */
 	gzip?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	/**
+	 * Compresses a byte stream with brotli and flushes after each chunk.
+	 * `streamingCompress` uses it for a client that prefers brotli to gzip.
+	 */
+	brotli?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
 	lifecycle?: Lifecycle;
 };
 
@@ -291,6 +296,8 @@ export type SetupInfo = {
 	contentTypes: Readonly<Record<string, string>>;
 	/** The host's gzip stream, when it has one. */
 	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	/** The host's brotli stream, when it has one. */
+	brotli?: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
 	logger: LogSink;
 } & (
 	| {

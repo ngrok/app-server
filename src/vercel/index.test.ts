@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { brotliCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
@@ -13,6 +14,7 @@ import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestContext } from "../core/request-context.js";
 import type { Plugin } from "../core/types.js";
 import { heldStream, stubFramework } from "../test-server.js";
+import { brotliOnlyFiles } from "./brotli-only.js";
 import { handler, host } from "./index.js";
 
 let close: (() => Promise<void>) | undefined;
@@ -296,5 +298,84 @@ describe("host", () => {
 
 		expect(first).toMatch(/^W\//u);
 		expect(second).not.toBe(first);
+	});
+
+	it("serves a file that the function keeps only as a brotli copy, also to a client with no brotli and for a range", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vercel-brotli-only-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		const page = `<h1>Blog</h1>${"<p>post</p>".repeat(200)}`;
+		const text = "0123456789".repeat(200);
+		mkdirSync(join(directory, "blog"));
+		writeFileSync(join(directory, "blog/.index.html.br"), brotliCompressSync(page));
+		writeFileSync(join(directory, ".notes.txt.br"), brotliCompressSync(text));
+		writeFileSync(
+			join(directory, ".app-server-brotli.json"),
+			JSON.stringify({ "/blog/index.html": page.length, "/notes.txt": text.length }),
+		);
+		const entry = createEntry({
+			app: createServer(),
+			host,
+			clientDirectory: directory,
+			framework: () => stubFramework(),
+		});
+		const request = async (path: string, headers: Record<string, string>) =>
+			entry.fetch(new Request(`http://localhost${path}`, { headers }), {});
+
+		const brotli = await request("/blog", { "Accept-Encoding": "br" });
+		const plain = await request("/blog", { "Accept-Encoding": "identity" });
+		const range = await request("/notes.txt", {
+			"Accept-Encoding": "identity",
+			Range: "bytes=3-6",
+		});
+		const list = await request("/.app-server-brotli.json", {});
+
+		expect({
+			brotli: [brotli.headers.get("Content-Encoding"), Buffer.from(await brotli.arrayBuffer())],
+			plain: [plain.headers.get("Content-Length"), await plain.text()],
+			range: [range.status, await range.text()],
+			list: await list.text(),
+		}).toStrictEqual({
+			brotli: ["br", brotliCompressSync(page)],
+			plain: [String(page.length), page],
+			range: [206, "3456"],
+			list: "rendered",
+		});
+	});
+
+	it("opens the brotli copy of a file only when the body is read, and cancels it with the body", async () => {
+		const compressed = brotliCompressSync("a".repeat(4096));
+		let opens = 0;
+		let cancels = 0;
+		const files = brotliOnlyFiles({
+			stat: async (path) =>
+				path === "/page.html" ? undefined : { kind: "file", size: 1, mtimeMs: 0 },
+			open: async (path) => {
+				if (path === "/.app-server-brotli.json") {
+					return Response.json({ "/page.html": 4096 }).body ?? new ReadableStream();
+				}
+				opens += 1;
+				return new ReadableStream<Uint8Array>({
+					pull(controller) {
+						controller.enqueue(compressed);
+					},
+					cancel() {
+						cancels += 1;
+					},
+				});
+			},
+		});
+
+		const reader = (await files.open("/page.html")).getReader();
+		const unread = opens;
+		const first = await reader.read();
+		await reader.cancel();
+
+		expect({ unread, first: first.value?.byteLength }).toStrictEqual({ unread: 0, first: 4096 });
+		// Why poll: the pipe cancels its source after the cancel returns.
+		await vi.waitFor(() => {
+			expect(cancels).toBe(1);
+		});
 	});
 });

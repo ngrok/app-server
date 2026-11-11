@@ -5,6 +5,7 @@ import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
 import { host as nodeHost } from "../node/index.js";
 import { requestListener } from "../node/response-writer.js";
+import { brotliOnlyFiles } from "./brotli-only.js";
 
 /**
  * `files` that give each file and directory the modification time
@@ -31,7 +32,8 @@ function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
  * from the function's files and keeps `requestContext()` in
  * `AsyncLocalStorage`, as the node host does. It has no listeners and no
  * lifecycle: Vercel starts and stops the function, and {@link handler} calls
- * the entry's `fetch`.
+ * the entry's `fetch`. It reads a file that the function keeps only as a
+ * brotli copy through that copy (see `vercel()`).
  *
  * Why no gzip: Vercel's CDN compresses each response, with Brotli when the
  * client accepts it.
@@ -42,7 +44,7 @@ function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
 export const host: HostRuntime = {
 	name: "vercel",
 	files: (clientDirectory) => {
-		const files = nodeHost.files(clientDirectory);
+		const files = brotliOnlyFiles(nodeHost.files(clientDirectory));
 		const builtAt = Number(process.env.APP_SERVER_BUILT_AT);
 		return Number.isFinite(builtAt) ? withModifiedTime(files, builtAt) : files;
 	},

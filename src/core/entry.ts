@@ -109,6 +109,7 @@ export function createEntry({
 			isDataRequest: runtime.isDataRequest ?? (() => false),
 			contentTypes: runtime.contentTypes ?? {},
 			gzip: host.gzip,
+			brotli: host.brotli,
 			logger: internals.logger,
 		};
 	};

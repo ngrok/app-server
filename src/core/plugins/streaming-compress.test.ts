@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { constants, gunzipSync } from "node:zlib";
+import { brotliDecompressSync, constants, gunzipSync } from "node:zlib";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
@@ -35,6 +35,28 @@ describe("streamingCompress", () => {
 		expect(
 			gunzipSync(first?.value ?? new Uint8Array(), {
 				finishFlush: constants.Z_SYNC_FLUSH,
+			}).toString(),
+		).toBe("<html>shell");
+	});
+
+	it("sends brotli to a client that prefers it, and its first chunk before the stream ends", async () => {
+		const held = heldStream("<html>shell");
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => held.response,
+		});
+
+		const response = await request("/streamed", {
+			headers: { "Accept-Encoding": "gzip, deflate, br" },
+		});
+		const reader = response.body?.getReader();
+		const first = await reader?.read();
+		held.release();
+
+		expect(response.headers.get("Content-Encoding")).toBe("br");
+		expect(
+			brotliDecompressSync(first?.value ?? new Uint8Array(), {
+				finishFlush: constants.BROTLI_OPERATION_FLUSH,
 			}).toString(),
 		).toBe("<html>shell");
 	});
@@ -219,6 +241,46 @@ describe("streamingCompress", () => {
 		expect(noGzip.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
+	it("gzips each compressible type, such as an icon, a feed, and a font, but not a WOFF2 font", async () => {
+		const types = [
+			"image/x-icon",
+			"application/rss+xml",
+			"application/linkset+json",
+			"font/ttf",
+			"application/wasm",
+			"application/x-sh",
+			"font/woff2",
+			"application/x-shockwave-flash",
+		];
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async (incoming) =>
+				new Response("a".repeat(2048), {
+					headers: { "Content-Type": new URL(incoming.url).searchParams.get("type") ?? "" },
+				}),
+		});
+
+		const encodings = await Promise.all(
+			types.map(async (type) => {
+				const response = await request(`/?type=${encodeURIComponent(type)}`, {
+					headers: { "Accept-Encoding": "gzip" },
+				});
+				return [type, response.headers.get("Content-Encoding")];
+			}),
+		);
+
+		expect(Object.fromEntries(encodings)).toStrictEqual({
+			"image/x-icon": "gzip",
+			"application/rss+xml": "gzip",
+			"application/linkset+json": "gzip",
+			"font/ttf": "gzip",
+			"application/wasm": "gzip",
+			"application/x-sh": "gzip",
+			"font/woff2": null,
+			"application/x-shockwave-flash": null,
+		});
+	});
+
 	it("leaves a partial response alone, so its Content-Range still matches the bytes", async () => {
 		const { request } = await testServer({
 			plugins: [streamingCompress()],
@@ -245,8 +307,10 @@ describe("streamingCompress", () => {
 			"gzip;q=0, identity;q=1": null,
 			"identity, gzip;q=0.5": null,
 			"*;q=0": null,
-			"*": "gzip",
-			"br, gzip;q=0.1": "gzip",
+			"*": "br",
+			"gzip, br": "br",
+			"br;q=0.5, gzip": "gzip",
+			"br;q=0, *": "gzip",
 		};
 
 		for (const [header, encoding] of Object.entries(encodings)) {
@@ -408,17 +472,38 @@ describe("streamingCompress", () => {
 		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
 	});
 
-	it("sends the response as it is on a host with no gzip stream", async () => {
+	it("gzips for a client that prefers brotli on a host with no brotli stream", async () => {
+		const logger = { log: () => {} };
+		const app = createServer({ plugins: [streamingCompress()], logger });
+		// Why no `brotli` key: a host from before brotli builds its setup with no such key.
+		const { brotli: _brotli, ...setup } = await productionSetup({ logger });
+		await serverInternals(app)?.prepare(setup);
+
+		const response = await app.request(
+			"/",
+			{ headers: { "Accept-Encoding": "br, gzip" } },
+			{
+				framework: stubFramework(
+					async () => new Response("a".repeat(2048), { headers: { "Content-Type": "text/html" } }),
+				),
+			},
+		);
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+	});
+
+	it("sends the response as it is on a host with no compression stream", async () => {
 		const logger = { log: () => {} };
 		const app = createServer({ plugins: [streamingCompress()], logger });
 		await serverInternals(app)?.prepare({
 			...(await productionSetup({ logger })),
 			gzip: undefined,
+			brotli: undefined,
 		});
 
 		const response = await app.request(
 			"/",
-			{ headers: { "Accept-Encoding": "gzip" } },
+			{ headers: { "Accept-Encoding": "br, gzip" } },
 			{ framework: stubFramework() },
 		);
 

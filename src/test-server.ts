@@ -5,7 +5,7 @@ import { createServer, serverInternals } from "./core/create-server.js";
 import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
 import type { FrameworkRuntime, LogLevel, LogSink, Plugin, SetupInfo } from "./core/types.js";
 import { nodeFiles } from "./node/files.js";
-import { gzipStream } from "./node/gzip.js";
+import { brotliStream, gzipStream } from "./node/compress.js";
 
 /** One line that the recording sink got. */
 export type LoggedLine = {
@@ -72,6 +72,7 @@ export async function productionSetup({
 		isDataRequest: framework.isDataRequest ?? (() => false),
 		contentTypes: framework.contentTypes ?? {},
 		gzip: gzipStream,
+		brotli: brotliStream,
 		logger,
 	};
 }

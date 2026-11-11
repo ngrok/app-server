@@ -12,7 +12,13 @@ import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { constants, createGunzip } from "node:zlib";
+import {
+	brotliDecompressSync,
+	constants,
+	createBrotliDecompress,
+	createGunzip,
+	gunzipSync,
+} from "node:zlib";
 import { buildFixtures, commands, startServer } from "./harness.ts";
 
 const serveArgs = ["dist/cli.js", "serve", "test/fixtures/runtime-entry.js"];
@@ -150,17 +156,48 @@ async function check(runtime: string): Promise<void> {
 
 		// The stream sends its shell and holds the rest until `/release`, so this read hangs if
 		// compression holds the stream back.
-		const streamed = await request(new URL("/stream", base).href, { "Accept-Encoding": "gzip" });
-		assert.equal(streamed.headers["content-encoding"], "gzip");
-		const gunzip = createGunzip({ flush: constants.Z_SYNC_FLUSH });
-		streamed.pipe(gunzip);
-		const shell = await new Promise<string>((resolve) => {
-			gunzip.once("data", (chunk: Buffer) => {
-				resolve(chunk.toString());
+		const decoders = {
+			gzip: () => createGunzip({ flush: constants.Z_SYNC_FLUSH }),
+			br: () => createBrotliDecompress({ flush: constants.BROTLI_OPERATION_FLUSH }),
+		};
+		for (const [encoding, decoder] of Object.entries(decoders)) {
+			// oxlint-disable-next-line no-await-in-loop -- each check holds one stream of the fixture.
+			const streamed = await request(new URL("/stream", base).href, {
+				"Accept-Encoding": encoding,
 			});
-		});
-		assert.equal(shell, "<html>shell", "the first gzip chunk arrives before the stream ends");
-		await (await fetch(new URL("/release", base))).text();
+			assert.equal(streamed.headers["content-encoding"], encoding);
+			const decoded = streamed.pipe(decoder());
+			// oxlint-disable-next-line no-await-in-loop -- each check holds one stream of the fixture.
+			const shell = await new Promise<string>((resolve) => {
+				decoded.once("data", (chunk: Buffer) => {
+					resolve(chunk.toString());
+				});
+			});
+			assert.equal(
+				shell,
+				"<html>shell",
+				`the first ${encoding} chunk arrives before the stream ends`,
+			);
+			// oxlint-disable-next-line no-await-in-loop -- each check holds one stream of the fixture.
+			await (await fetch(new URL("/release", base))).text();
+		}
+
+		// Why twice: the second page of each encoding gets a pooled stream, which must give the same bytes.
+		for (const [encoding, decode] of [
+			["br", brotliDecompressSync],
+			["gzip", gunzipSync],
+		] as const) {
+			const bodies: Buffer[] = [];
+			for (let index = 0; index < 2; index += 1) {
+				// oxlint-disable-next-line no-await-in-loop -- the second request must find the stream of the first in the pool.
+				const pooled = await request(new URL("/page", base).href, { "Accept-Encoding": encoding });
+				assert.equal(pooled.headers["content-encoding"], encoding);
+				// oxlint-disable-next-line no-await-in-loop -- the second request must find the stream of the first in the pool.
+				bodies.push(Buffer.concat(await pooled.toArray()));
+			}
+			assert.equal(decode(bodies[0] ?? Buffer.alloc(0)).toString(), "<p>page</p>".repeat(200));
+			assert.deepEqual(bodies[1], bodies[0], `a pooled ${encoding} stream gives the same bytes`);
+		}
 
 		const held = await request(new URL("/hold", base).href);
 		await new Promise<void>((resolve) => {
@@ -454,8 +491,15 @@ async function checkVercel(): Promise<void> {
 		const html = readFileSync(join(output, "static", route("^/$")?.dest ?? "/none"), "utf8");
 		assert.match(html, /React Router home/u, "the CDN has the prerendered page");
 		assert.ok(
-			existsSync(join(copy, "build/client/index.html")),
-			"the function keeps the page's file, for a request that no CDN route matches",
+			existsSync(join(copy, "build/client/.index.html.br")) &&
+				!existsSync(join(copy, "build/client/index.html")),
+			"the function keeps only the brotli copy of the page, for a request that no CDN route matches",
+		);
+		const plain = await fetch(new URL("/", base), { headers: { "Accept-Encoding": "identity" } });
+		assert.match(
+			await plain.text(),
+			/React Router home/u,
+			"the function decompresses the page for a client with no brotli",
 		);
 		assert.equal(
 			route(String.raw`^/hello\.txt$`)?.headers?.["cache-control"],

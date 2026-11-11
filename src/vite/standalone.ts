@@ -1,5 +1,6 @@
-import { cpSync, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { cpSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { nodeFileTrace } from "@vercel/nft";
 
 /**
  * A package name: an optional scope and a name, each with no `/` or `\` and
@@ -153,33 +154,49 @@ function lookupDirectories(destination: string, target: string): string[] {
 	}
 }
 
+/** A package that {@link copyPackages} copied, by the directory of its copy. */
+export type CopiedPackage = {
+	name: string;
+	/** The directory that the package came from. */
+	source: string;
+	/** The directories of the copies of its dependencies. */
+	dependencies: string[];
+};
+
 /**
  * Copies each package, whole, with the installed packages of its
  * `dependencies`, `optionalDependencies`, and `peerDependencies`, into the
- * `node_modules` directory `target`. Node then finds each package from a file
- * next to `target`, with no install. The copy follows symbolic links. A
- * dependency goes to the top of `target`. If another copy of that package is
- * nearer in the lookup path of the package that needs it, the dependency goes
- * into that package's own `node_modules`.
+ * `node_modules` directory `target`, except the packages in `omit`. Node then
+ * finds each package from a file next to `target`, with no install. The copy
+ * follows symbolic links. A dependency goes to the top of `target`. If another
+ * copy of that package is nearer in the lookup path of the package that needs
+ * it, the dependency goes into that package's own `node_modules`.
  *
  * @example
  * copyPackages(new Map([["oxc-parser", "/app/node_modules/oxc-parser"]]), "/app/build/server/node_modules");
  */
-export function copyPackages(packages: ReadonlyMap<string, string>, target: string): void {
+export function copyPackages(
+	packages: ReadonlyMap<string, string>,
+	target: string,
+	{ omit = new Set() }: { omit?: ReadonlySet<string> } = {},
+): Map<string, CopiedPackage> {
 	// Why a map of destinations: a later lookup must know which copy is at each path.
-	const sources = new Map<string, string>();
-	const queue: string[] = [];
-	const add = (destination: string, source: string) => {
-		sources.set(destination, source);
-		queue.push(destination);
+	const copied = new Map<string, CopiedPackage>();
+	const queue: (readonly [string, CopiedPackage])[] = [];
+	const add = (destination: string, name: string, source: string) => {
+		const copy: CopiedPackage = { name, source, dependencies: [] };
+		copied.set(destination, copy);
+		queue.push([destination, copy]);
 	};
 	for (const [name, source] of packages) {
-		add(join(target, name), source);
+		if (!omit.has(name)) {
+			add(join(target, name), name, source);
+		}
 	}
 	// Why breadth first: a package places all its own dependencies before a dependency looks up
 	// its own, so a later copy never hides an earlier lookup.
-	for (const destination of queue) {
-		const source = sources.get(destination) ?? "";
+	for (const [destination, copy] of queue) {
+		const { source } = copy;
 		cpSync(source, destination, {
 			recursive: true,
 			dereference: true,
@@ -193,10 +210,156 @@ export function copyPackages(packages: ReadonlyMap<string, string>, target: stri
 			const dependency = findPackage(name, source);
 			const found = lookupDirectories(destination, target)
 				.map((directory) => join(directory, name))
-				.find((path) => sources.has(path));
-			if (dependency != null && (found == null || sources.get(found) !== dependency)) {
-				add(join(found == null ? target : join(destination, "node_modules"), name), dependency);
+				.find((path) => copied.has(path));
+			if (dependency != null && !omit.has(name)) {
+				if (found == null || copied.get(found)?.source !== dependency) {
+					const placed = join(found == null ? target : join(destination, "node_modules"), name);
+					add(placed, name, dependency);
+					copy.dependencies.push(placed);
+				} else {
+					copy.dependencies.push(found);
+				}
 			}
 		}
 	}
+	return copied;
+}
+
+/** Each file under `directory`, except in a `node_modules` directory. */
+function ownFiles(directory: string): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(entry.parentPath, entry.name);
+		if (entry.isDirectory()) {
+			return entry.name === "node_modules" ? [] : ownFiles(path);
+		}
+		return [path];
+	});
+}
+
+/** Removes each empty directory in `directory`, and `directory` when it is then empty. */
+function removeEmptyDirectories(directory: string): void {
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		if (entry.isDirectory()) {
+			removeEmptyDirectories(join(directory, entry.name));
+		}
+	}
+	if (readdirSync(directory).length === 0) {
+		rmSync(directory, { recursive: true });
+	}
+}
+
+/**
+ * The export conditions of each runtime that the server runs on, besides
+ * `import`, `require`, and `default`. Why each: Bun and Deno take their own
+ * entry of a package before its `node` entry.
+ */
+const RUNTIME_CONDITIONS = [["node"], ["bun", "node"], ["deno", "node"]];
+
+/**
+ * A `require.resolve()` or an `import.meta.resolve()` of a string literal.
+ * The `source` group is the string.
+ */
+export const RESOLVE_CALL =
+	/\b(?:require|import\.meta)\.resolve\(\s*(?<quote>["'`])(?<source>[^"'`$]+)\k<quote>/gu;
+
+/** Code that finds a file next to its own module in a way that `@vercel/nft` does not follow. */
+const UNTRACED_OWN_FILE = /import\.meta\.(?:dirname|filename)\b/u;
+
+/** The warning of `@vercel/nft` for a module that it cannot parse, such as a TypeScript file, so it finds no import of it. */
+const UNPARSED = /^Failed to parse (?<file>.+) as module:/u;
+
+/**
+ * Removes each file of a package in `copied` that the server build in
+ * `serverDirectory` cannot load, as `@vercel/nft` traces it from each module
+ * of the build. A package that no traced file is in goes away whole. Each
+ * package for which `whole` is true, and each package that it depends on,
+ * keeps each file. Why: a native package can load a library through the
+ * system's loader, such as `sharp` loads libvips, and a trace cannot see it.
+ * The trace misses the files that a module loads through
+ * {@link UNTRACED_OWN_FILE}, the imports of a module that it cannot parse,
+ * and a file that {@link RESOLVE_CALL} finds through the `exports` of a
+ * package. So the package of such a module, or the package that it
+ * resolves, keeps each file, with each package that it depends on.
+ *
+ * @example
+ * await removeUntraced("/app/build/server", copied, (copy) => isNativePackage(copy.source));
+ */
+export async function removeUntraced(
+	serverDirectory: string,
+	copied: ReadonlyMap<string, CopiedPackage>,
+	whole: (copy: CopiedPackage) => boolean,
+): Promise<void> {
+	const kept = new Set<string>();
+	const keep = (destination: string) => {
+		if (!kept.has(destination)) {
+			kept.add(destination);
+			for (const dependency of copied.get(destination)?.dependencies ?? []) {
+				keep(dependency);
+			}
+		}
+	};
+	for (const [destination, copy] of copied) {
+		if (whole(copy)) {
+			keep(destination);
+		}
+	}
+	if (kept.size === copied.size) {
+		return;
+	}
+	const modules = ownFiles(serverDirectory).filter((file) => /\.[cm]?js$/u.test(file));
+	// Why a cache: the traces share the parse of each module.
+	const cache = {};
+	const traces = await Promise.all(
+		RUNTIME_CONDITIONS.map(async (conditions) =>
+			nodeFileTrace(modules, { base: serverDirectory, mixedModules: true, conditions, cache }),
+		),
+	);
+	const traced = new Set(
+		traces.flatMap(({ fileList }) => [...fileList].map((file) => join(serverDirectory, file))),
+	);
+	// Why relative: the warning names the real path, and `/tmp` on macOS is a symbolic link.
+	const real = realpathSync(serverDirectory);
+	const unparsed = new Set(
+		traces.flatMap(({ warnings }) =>
+			[...warnings].flatMap(({ message }) => {
+				const file = UNPARSED.exec(message)?.groups?.file;
+				return file == null ? [] : [join(serverDirectory, relative(real, file))];
+			}),
+		),
+	);
+	const present = [...copied.keys()].filter((destination) => existsSync(destination));
+	for (const destination of present.filter((each) => !kept.has(each))) {
+		const loaded = ownFiles(destination).filter((file) => traced.has(file));
+		const code = loaded
+			.filter((file) => /\.[cm]?js$/u.test(file))
+			.map((file) => readFileSync(file, "utf8"));
+		if (
+			loaded.some((file) => unparsed.has(file)) ||
+			code.some((each) => UNTRACED_OWN_FILE.test(each))
+		) {
+			keep(destination);
+		}
+		const resolved = new Set(
+			code.flatMap((each) =>
+				[...each.matchAll(RESOLVE_CALL)].map(({ groups }) => packageName(groups?.source ?? "")),
+			),
+		);
+		for (const each of [destination, ...(copied.get(destination)?.dependencies ?? [])]) {
+			if (resolved.has(copied.get(each)?.name ?? "")) {
+				keep(each);
+			}
+		}
+	}
+	for (const destination of present.filter((each) => !kept.has(each))) {
+		const files = ownFiles(destination);
+		const used = files.some((file) => traced.has(file));
+		for (const file of files) {
+			// Why each `package.json`: Node reads it to find the entry and the module type of a file.
+			if (!traced.has(file) && !(used && basename(file) === "package.json")) {
+				rmSync(file);
+			}
+		}
+	}
+	// Why the whole `node_modules`: a scope directory, such as `@resvg`, can be empty now too.
+	removeEmptyDirectories(join(serverDirectory, "node_modules"));
 }

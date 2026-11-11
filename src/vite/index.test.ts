@@ -13,7 +13,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
@@ -711,6 +711,14 @@ describe("appServer in a server build", () => {
 		}
 	}
 
+	/** Each file under `directory`, relative to it, in code unit order. */
+	function filesUnder(directory: string): string[] {
+		return readdirSync(directory, { recursive: true, withFileTypes: true })
+			.filter((entry) => entry.isFile())
+			.map((entry) => relative(directory, join(entry.parentPath, entry.name)).split(sep).join("/"))
+			.toSorted();
+	}
+
 	/**
 	 * Builds `entry.js` of a project with `files` and the Vite `config`, copies
 	 * the build alone to a new directory, and gives the `values` export of the
@@ -931,6 +939,231 @@ describe("appServer in a server build", () => {
 
 		expect(values).toStrictEqual(["own file"]);
 		expect(existsSync(join(server, "node_modules/og/word.txt"))).toBe(true);
+	});
+
+	/** A package like `@vercel/og`: it reads its own file, loads an optional package in a `try`, and lists a dependency that it bundled. */
+	const ogPackage = {
+		"entry.js": 'import { word } from "og";\nexport const values = [await word()];',
+		"node_modules/og/package.json": JSON.stringify({
+			name: "og",
+			type: "module",
+			exports: { ".": { node: "./dist/node.js", default: "./dist/edge.js" } },
+			dependencies: { bundled: "1.0.0" },
+			optionalDependencies: { speedy: "1.0.0" },
+		}),
+		"node_modules/og/dist/node.js": [
+			'import { readFileSync } from "node:fs";',
+			"export const word = async () => {",
+			'\tconst own = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+			"\ttry {",
+			'\t\treturn own + (await import("speedy")).suffix;',
+			"\t} catch {",
+			"\t\treturn own;",
+			"\t}",
+			"};",
+		].join("\n"),
+		"node_modules/og/dist/node.js.map": "{}",
+		"node_modules/og/dist/edge.js": "export const word = async () => 'edge';",
+		"node_modules/og/dist/word.txt": "own file",
+		...commonJsPackage("bundled", 'module.exports = "bundled";'),
+		...commonJsPackage("speedy", 'exports.suffix = " fast";'),
+		"node_modules/speedy/README.md": "docs",
+	};
+
+	it("copies only the files of an external package and its dependencies that the server build loads", async () => {
+		const { values, server } = await buildAlone(ogPackage, {});
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"og/dist/node.js",
+			"og/dist/word.txt",
+			"og/package.json",
+			"speedy/index.js",
+			"speedy/package.json",
+		]);
+	});
+
+	it("copies the entry that Bun and Deno take of an external package, besides the Node entry", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: {
+						".": {
+							bun: "./dist/bun.js",
+							deno: "./dist/deno.js",
+							node: "./dist/node.js",
+							default: "./dist/edge.js",
+						},
+					},
+					dependencies: { bundled: "1.0.0" },
+					optionalDependencies: { speedy: "1.0.0" },
+				}),
+				"node_modules/og/dist/bun.js": "export const word = async () => 'bun';",
+				"node_modules/og/dist/deno.js": "export const word = async () => 'deno';",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules/og"))).toStrictEqual([
+			"dist/bun.js",
+			"dist/deno.js",
+			"dist/node.js",
+			"dist/word.txt",
+			"package.json",
+		]);
+	});
+
+	it("copies each file of an external package that loads a file through `import.meta.dirname`, and its dependencies", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/dist/node.js": [
+					'import { readFileSync } from "node:fs";',
+					'import { join } from "node:path";',
+					"export const word = async () =>",
+					'\treadFileSync(join(import.meta.dirname, "word.txt"), "utf8") +',
+					'\t(await import(join(import.meta.dirname, "helper.js"))).suffix;',
+				].join("\n"),
+				"node_modules/og/dist/helper.js":
+					'import bundled from "bundled";\nexport const suffix = " " + bundled;',
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file bundled"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"bundled/index.js",
+			"bundled/package.json",
+			"og/dist/edge.js",
+			"og/dist/helper.js",
+			"og/dist/node.js",
+			"og/dist/node.js.map",
+			"og/dist/word.txt",
+			"og/package.json",
+			"speedy/README.md",
+			"speedy/index.js",
+			"speedy/package.json",
+		]);
+	});
+
+	it("copies each file of a package that a loaded module gives to `require.resolve()`", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: { ".": { node: "./dist/node.js", default: "./dist/edge.js" } },
+					dependencies: { data: "1.0.0" },
+				}),
+				"node_modules/og/dist/node.js": [
+					'import { readFileSync } from "node:fs";',
+					'import data from "./data.cjs";',
+					"export const word = async () => {",
+					'\tconst own = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+					'\treturn own + " " + data;',
+					"};",
+				].join("\n"),
+				"node_modules/og/dist/data.cjs": [
+					'const { readFileSync } = require("node:fs");',
+					'module.exports = require("data") + readFileSync(require.resolve("data/word.txt"), "utf8");',
+				].join("\n"),
+				"node_modules/data/package.json": JSON.stringify({
+					name: "data",
+					exports: { ".": "./index.js", "./word.txt": "./word.txt" },
+				}),
+				"node_modules/data/index.js": 'module.exports = "data ";',
+				"node_modules/data/word.txt": "file",
+				"node_modules/data/README.md": "docs",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file data file"]);
+		expect(filesUnder(join(server, "node_modules/data"))).toStrictEqual([
+			"README.md",
+			"index.js",
+			"package.json",
+			"word.txt",
+		]);
+	});
+
+	it("copies the dependencies of a package whose Bun entry the trace cannot parse, such as TypeScript", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: { ".": { bun: "./dist/bun.ts", node: "./dist/node.js" } },
+					dependencies: { bundled: "1.0.0" },
+					optionalDependencies: { speedy: "1.0.0" },
+				}),
+				"node_modules/og/dist/bun.ts": [
+					'import bundled from "bundled";',
+					"export const word: () => Promise<string> = async () => bundled;",
+				].join("\n"),
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file fast"]);
+		expect(filesUnder(join(server, "node_modules/bundled"))).toStrictEqual([
+			"index.js",
+			"package.json",
+		]);
+	});
+
+	it("copies each file of a package in `externals.whole`, and no package in `externals.omit`", async () => {
+		const { values, server } = await buildAlone(ogPackage, {
+			plugins: [
+				appServer({
+					framework: reactRouterAdapter(),
+					host: node(),
+					externals: { whole: ["og"], omit: ["speedy"] },
+				}).find((plugin) => plugin.name === "@ngrok/app-server:standalone"),
+			],
+		});
+
+		expect(values).toStrictEqual(["own file"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"bundled/index.js",
+			"bundled/package.json",
+			"og/dist/edge.js",
+			"og/dist/node.js",
+			"og/dist/node.js.map",
+			"og/dist/word.txt",
+			"og/package.json",
+		]);
+	});
+
+	it("copies each file of a native package and of the packages that it depends on", async () => {
+		const { values, server } = await buildAlone(
+			{
+				"entry.js": 'import { native } from "native";\nexport const values = [native];',
+				...commonJsPackage("native", 'exports.native = "native";', {
+					optionalDependencies: { "native-lib": "1.0.0" },
+				}),
+				"node_modules/native/addon.node": "binary",
+				// Why: the system's loader reads a library such as libvips, so a trace cannot see it.
+				"node_modules/native-lib/package.json": JSON.stringify({ name: "native-lib" }),
+				"node_modules/native-lib/lib/libnative.so": "library",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["native"]);
+		expect(filesUnder(join(server, "node_modules"))).toStrictEqual([
+			"native-lib/lib/libnative.so",
+			"native-lib/package.json",
+			"native/addon.node",
+			"native/index.js",
+			"native/package.json",
+		]);
 	});
 
 	it("keeps the peers of a package that reads its own files external, so the bundle shares one copy", async () => {

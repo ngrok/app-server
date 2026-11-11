@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import type { AppServerEnv, HostRuntime } from "../core/types.js";
 import { exitAfterFlush } from "./exit.js";
 import { nodeFiles } from "./files.js";
-import { gzipStream } from "./gzip.js";
+import { brotliStream, gzipStream } from "./compress.js";
 import { tcp } from "./tcp.js";
 
 export {
@@ -51,6 +51,7 @@ export const host: HostRuntime = {
 		get: () => storage.getStore(),
 	},
 	gzip: gzipStream,
+	brotli: brotliStream,
 	lifecycle: {
 		onStop: (stop) => {
 			for (const signal of ["SIGTERM", "SIGINT"] as const) {

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { constants, createDeflateRaw, gunzipSync } from "node:zlib";
+import { brotliDecompressSync, constants, createDeflateRaw, gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { gzipStream } from "./gzip.js";
+import { brotliStream, gzipStream } from "./compress.js";
 
 const encoder = new TextEncoder();
 const page = encoder.encode("<li>a row of a page</li>".repeat(300));
@@ -73,7 +73,7 @@ async function rawLength(value: Uint8Array, flush: number): Promise<number> {
 /** A `gzipStream` from a new copy of its module, so its pool of zlib streams is empty. */
 async function newGzipStream(): Promise<typeof gzipStream> {
 	vi.resetModules();
-	return (await import("./gzip.js")).gzipStream;
+	return (await import("./compress.js")).gzipStream;
 }
 
 describe("gzipStream", () => {
@@ -198,5 +198,31 @@ describe("gzipStream", () => {
 
 			expect(after.equals(alone)).toBe(true);
 		}
+	});
+});
+
+describe("brotliStream", () => {
+	it("sends brotli bytes that decode to the body, for an empty, a one-chunk, and a streamed body", async () => {
+		const bodies = [[], [page], [page, encoder.encode("tail"), page]];
+
+		const decoded = await Promise.all(
+			bodies.map(async (chunks) =>
+				brotliDecompressSync(await bytes(brotliStream(pulled(chunks)))).toString(),
+			),
+		);
+
+		expect(decoded).toStrictEqual(
+			bodies.map((chunks) => chunks.map((chunk) => Buffer.from(chunk).toString()).join("")),
+		);
+	});
+
+	it("sends the same bytes for a page from a pooled encoder, whatever body it sent before", async () => {
+		const before = await bytes(brotliStream(queued(page)));
+
+		await bytes(brotliStream(queued(new Uint8Array(randomBytes(64 * 1024)))));
+		const after = await bytes(brotliStream(queued(page)));
+
+		expect(after.equals(before)).toBe(true);
+		expect(brotliDecompressSync(after)).toStrictEqual(Buffer.from(page));
 	});
 });

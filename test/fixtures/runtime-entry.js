@@ -99,6 +99,9 @@ const routes = {
 		setTimeout(() => {}, 60_000);
 		return new Response("lingering", { headers: { "Content-Type": "text/plain" } });
 	},
+	// A page of one chunk, which a pooled zlib stream compresses.
+	"/page": () =>
+		new Response("<p>page</p>".repeat(200), { headers: { "Content-Type": "text/html" } }),
 	"/upload": async (request) => new Response(String((await request.arrayBuffer()).byteLength)),
 	"/events": (request) =>
 		eventStream({ signal: request.signal }, ({ send }) => {

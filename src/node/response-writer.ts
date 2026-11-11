@@ -6,7 +6,7 @@ import { headerIndex, headerList } from "../core/header-hook.js";
 import { ResponseEdge } from "../core/response-edge.js";
 import type { ListenerBindings } from "../core/types.js";
 import type { NodeBindings } from "./dev-server.js";
-import { waitsForZlib } from "./gzip.js";
+import { waitsForZlib } from "./compress.js";
 
 /** The header of a response that went out through Node's response already, as the dev server stage sends it. */
 const ALREADY_SENT_HEADER = "x-hono-already-sent";
