@@ -113,9 +113,19 @@ const DEFLATE_POOL: Pool = {
  */
 const BROTLI_QUALITY = 4;
 
+/**
+ * The base-2 logarithm of the brotli window, 256 KiB. Why not the default
+ * of 22 (4 MiB): Node.js tells V8 the full size of each encoder's ring
+ * buffer as external memory, and at 32 open encoders V8 then runs a full
+ * garbage collection for every few responses. A page under 256 KiB gets
+ * the same bytes, and a page of 2.7 MB gets 5% more.
+ */
+const BROTLI_WINDOW_BITS = 18;
+
 const BROTLI_PARAMS = {
 	[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
 	[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+	[constants.BROTLI_PARAM_LGWIN]: BROTLI_WINDOW_BITS,
 };
 
 /**

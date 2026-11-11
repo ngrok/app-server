@@ -26,6 +26,7 @@ const apps = [
 const routes = {
 	page: "`/` prerendered",
 	ssr: "`/ssr` rendered",
+	table: "`/table` rendered, 35 KB to 40 KB",
 	asset: "`/assets/*.js`",
 	api: "`/ping` route",
 };
@@ -180,6 +181,7 @@ async function measure(
 		const paths: Record<Route, string> = {
 			page: "/",
 			ssr: "/ssr",
+			table: "/table",
 			asset: asset ?? "/assets/none.js",
 			api: "/ping",
 		};

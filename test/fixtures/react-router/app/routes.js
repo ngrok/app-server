@@ -6,4 +6,5 @@ export default [
 	route("whoami", "routes/whoami.js"),
 	route("greeting", "routes/greeting.js"),
 	route("ssr", "routes/ssr.jsx"),
+	route("table", "routes/table.jsx"),
 ];
