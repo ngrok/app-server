@@ -23,13 +23,16 @@ export type LogLine = {
 export type LogOptions = {
 	/**
 	 * Gives the attributes of each line, after the server flattens each error.
-	 * Use it to add, change, or remove a field, such as to redact a value.
+	 * Use it to add, change, or remove a field, such as to redact a value. It
+	 * runs last, so it can also change a request field, such as `http.method`.
 	 */
 	attributes?: (line: LogLine) => Readonly<Record<string, unknown>>;
 	/**
 	 * Gives the fields of an attribute whose value is an `Error`. `prefix` is
 	 * the attribute name, such as `error`. `fields` holds the default fields,
-	 * so the hook can change some of them and keep the rest.
+	 * so the hook can change some of them and keep the rest. A field that the
+	 * hook gives does not replace another attribute of the line, such as
+	 * `http.method`.
 	 */
 	error?: (value: {
 		error: Error;

@@ -772,14 +772,14 @@ export async function loader() {
 }
 ```
 
-An attribute whose value is an `Error` becomes dotted fields under its name: `kind`, `message`, `stack`, each own field, such as `code`, and the `cause` chain as `<name>.cause.*`. An `AggregateError` adds its members as `<name>.errors`. An error with `toJSON` gives its own fields from it. The server's own error lines, such as `unhandled error`, use the same fields:
+An attribute whose value is an `Error` becomes dotted fields under its name: `kind`, `message`, `stack`, each own field other than `kind`, such as `code`, and the `cause` chain as `<name>.cause.*`. An `AggregateError` adds its members as `<name>.errors`. An error with `toJSON` gives its own fields from it. The server's own error lines, such as `unhandled error`, use the same fields:
 
 ```ts
 logger().error("payment failed", { error });
 // {"message":"payment failed","error.kind":"TypeError","error.message":"…","error.stack":"…","error.cause.kind":"Error","error.cause.code":"ECONNRESET",…}
 ```
 
-The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write:
+The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write. A field that `error` gives does not replace another attribute of the line, such as `http.method`. `attributes` runs last, so it can change each field:
 
 ```ts
 createServer({

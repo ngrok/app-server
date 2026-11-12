@@ -202,8 +202,11 @@ export function asError(error: unknown): Error {
 		: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
 }
 
-/** The fields of an error that {@link errorFields} writes on its own, not as an own field. */
-const ERROR_KEYS = new Set(["name", "message", "stack", "cause"]);
+/**
+ * The fields of an error that {@link errorFields} writes on its own, not as an
+ * own field. Why `kind`: an own `kind` must not replace the error's name.
+ */
+const ERROR_KEYS = new Set(["name", "kind", "message", "stack", "cause"]);
 
 /**
  * The dotted fields of `error` under `prefix`: `kind`, `message`, `stack`,
@@ -267,7 +270,11 @@ function errorFields(error: Error, prefix: string): Record<string, unknown> {
 	return fields;
 }
 
-/** `attributes` with each `Error` value replaced by its fields, after the `change` hook. */
+/**
+ * `attributes` with each `Error` value replaced by its fields, after the
+ * `change` hook. Each other attribute, such as `http.method`, wins over an
+ * error field of the same name.
+ */
 function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Attributes {
 	// Why look first: a line seldom holds an error, and then it needs no copy. Why `for...in`: it
 	// makes no array, and costs about half of `Object.values(...).some(...)` for each line.
@@ -288,6 +295,13 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 			Object.assign(flat, change == null ? fields : change({ error: value, prefix: key, fields }));
 		} else {
 			flat[key] = value;
+		}
+	}
+	// Why write them again: an error field that comes later must not replace an attribute, such as
+	// a request field. A key keeps its first place.
+	for (const key in attributes) {
+		if (!(attributes[key] instanceof Error)) {
+			flat[key] = attributes[key];
 		}
 	}
 	return flat;
