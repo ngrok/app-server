@@ -1,5 +1,11 @@
 # @ngrok/app-server
 
+## 0.3.6
+
+### Patch Changes
+
+- [#65](https://github.com/ngrok/app-server/pull/65) [`7b6ef54`](https://github.com/ngrok/app-server/commit/7b6ef5412f4cc17c3687189b3b7d1101a80a8227) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the node host, `streamingCompress()` now picks the brotli window from the size of the body. A body over 256 kibibytes (KiB) gets a window of 4 mebibytes (MiB), so a page that repeats data more than 256 KiB back is smaller. A body that ends within 256 KiB keeps the window of 256 KiB, and it now compresses in one zlib call. To pick the window, the stream holds the start of a body until the body ends, goes past 256 KiB or 1,024 chunks, or waits for its next chunk. So a page shell that waits for slow data still goes out at once.
+
 ## 0.3.5
 
 ### Patch Changes
