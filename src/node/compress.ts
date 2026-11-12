@@ -382,6 +382,7 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 	/** The pooled zlib stream while it compresses the one chunk of a body. */
 	let pooled: Pooled | undefined;
 	let started = false;
+	let canceled = false;
 	/** The source read that is still open after a hold. */
 	let pending: Promise<ReadResult> | undefined;
 	/** The next source chunk with bytes, or the end. */
@@ -499,6 +500,11 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 							ended || createLarge == null
 								? { value: chunk.value, done: ended, large: chunk.value.byteLength > onceMaxBytes }
 								: await hold(chunk.value, onceMaxBytes);
+						// Why: a cancel during the hold ran before this stream had an encoder to destroy.
+						if (canceled) {
+							stream.busy = false;
+							return;
+						}
 						if (start.done && !start.large) {
 							const output = await codec.once(start.value, (each) => {
 								pooled = each;
@@ -537,6 +543,7 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 			},
 			// Why cancel the source: a client disconnect must reach the handler, so it stops its work.
 			async cancel(reason) {
+				canceled = true;
 				zlib?.destroy();
 				// Why destroy: a stream that a write still uses must never go back to the pool.
 				pooled?.stream.destroy();

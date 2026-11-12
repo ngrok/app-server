@@ -7,7 +7,7 @@ import {
 	gunzipSync,
 } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { brotliStream, gzipStream } from "./compress.js";
+import { brotliStream, gzipStream, waitsForZlib } from "./compress.js";
 
 const encoder = new TextEncoder();
 const page = encoder.encode("<li>a row of a page</li>".repeat(300));
@@ -380,6 +380,46 @@ describe("brotliStream", () => {
 
 		expect(first.done).toBe(false);
 		expect(pulls).toBeLessThan(10);
+	});
+
+	it("starts no encoder when the consumer cancels during the hold", async () => {
+		const errors: unknown[] = [];
+		const onError = (error: unknown) => {
+			errors.push(error);
+		};
+		process.on("uncaughtException", onError);
+		let cancel = () => {};
+		let pulls = 0;
+		const stream = brotliStream(
+			new ReadableStream<Uint8Array>(
+				{
+					pull(controller) {
+						pulls += 1;
+						controller.enqueue(new Uint8Array(pulls === 1 ? 1024 : 0));
+						if (pulls === 2) {
+							queueMicrotask(() => {
+								cancel();
+							});
+						}
+					},
+				},
+				{ highWaterMark: 0 },
+			),
+		);
+		const reader = stream.getReader();
+		cancel = () => {
+			void reader.cancel();
+		};
+
+		const result = await reader.read();
+		// Why wait for `busy`: an encoder that started clears it only when it ends.
+		await vi.waitFor(() => {
+			expect(waitsForZlib(stream)).toBe(false);
+		});
+		process.off("uncaughtException", onError);
+
+		expect(result.done).toBe(true);
+		expect(errors).toStrictEqual([]);
 	});
 
 	it("copies at most 256 KiB to hold a body that ends with a large chunk", async () => {
