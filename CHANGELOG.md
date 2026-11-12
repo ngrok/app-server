@@ -1,5 +1,11 @@
 # @ngrok/app-server
 
+## 0.4.1
+
+### Patch Changes
+
+- [#71](https://github.com/ngrok/app-server/pull/71) [`1828a19`](https://github.com/ngrok/app-server/commit/1828a190a716a975627f5bccc44a80bf5cba4531) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - An own `kind` field of an error no longer replaces `error.kind`, so `error.kind` is always the error's name. A field that a `log.error` hook gives no longer replaces another attribute of the line, such as the request's `http.method`. The `log.attributes` hook runs last and can still change each field.
+
 ## 0.4.0
 
 ### Minor Changes
