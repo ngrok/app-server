@@ -762,7 +762,7 @@ createServer({
 
 The default is `jsonSink()`: one JSON object per line on standard output (stdout). It writes the lines of one event-loop turn in one write, at the end of the turn. Each line still reaches stdout before the process exits, and before the vercel handler returns. `jsonSink()` writes a bigint as a string, such as `"1n"`, and a cycle as `"[Circular]"`. A line whose attributes have no JSON, such as a value whose `toJSON` throws, goes out with `log.error` in place of its attributes, so `jsonSink()` never throws for its attributes. Like `JSON.stringify`, it writes a `Map` or a `Set` as `{}`, so convert it first, such as with `Object.fromEntries(map)`.
 
-In server code, `logger()` gives the logger of the request that runs. Its lines carry the request ID, method, and path, and these fields win over a field of the same name that you give. Outside a request, such as at module load or in a prerender pass, `logger()` writes to the sink and hooks of the last `createServer` call, else to `jsonSink()`:
+In server code, `logger()` gives the logger of the request that runs. Its lines carry the request ID, method, and path as `http.request_id`, `http.method`, and `http.url_details.path`, and these fields win over a field of the same name that you give. Outside a request, such as at module load or in a prerender pass, `logger()` writes to the sink and hooks of the last `createServer` call, else to `jsonSink()`:
 
 ```ts
 import { logger } from "@ngrok/app-server";
@@ -772,14 +772,14 @@ export async function loader() {
 }
 ```
 
-An attribute whose value is an `Error` becomes dotted fields under its name: `kind`, `message`, `stack`, each own field, such as `code`, and the `cause` chain as `<name>.cause.*`. An `AggregateError` adds its members as `<name>.errors`. An error with `toJSON` gives its own fields from it. The server's own error lines, such as `unhandled error`, use the same fields:
+An attribute whose value is an `Error` becomes dotted fields under its name: `kind`, `message`, `stack`, each own field other than `kind`, such as `code`, and the `cause` chain as `<name>.cause.*`. An `AggregateError` adds its members as `<name>.errors`. An error with `toJSON` gives its own fields from it. The server's own error lines, such as `unhandled error`, use the same fields:
 
 ```ts
 logger().error("payment failed", { error });
 // {"message":"payment failed","error.kind":"TypeError","error.message":"…","error.stack":"…","error.cause.kind":"Error","error.cause.code":"ECONNRESET",…}
 ```
 
-The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write:
+The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write. A field that `error` gives does not replace another attribute of the line, such as `http.method`. `attributes` runs last, so it can change each field:
 
 ```ts
 createServer({

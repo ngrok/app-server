@@ -348,6 +348,62 @@ describe("hookSink", () => {
 		]);
 	});
 
+	it("keeps the error's name as kind when the error has an own kind", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("boom"), { kind: "BizRuleViolation" });
+
+		hookSink(sink).log({ level: "error", message: "failed", attributes: { error } });
+
+		expect(lines[0]).toStrictEqual({
+			"error.kind": "Error",
+			"error.message": "boom",
+			"error.stack": error.stack,
+		});
+	});
+
+	it("keeps each attribute when an error field has the same name", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("upstream"), { "http.method": "POST" });
+		const hooked = hookSink(sink, {
+			error: ({ prefix, fields: { [`${prefix}.http.method`]: method, ...fields } }) => ({
+				...fields,
+				"http.method": method,
+			}),
+		});
+
+		hooked.log({
+			level: "error",
+			message: "failed",
+			attributes: { "http.method": "GET", error },
+		});
+
+		expect(Object.entries(lines[0] ?? {})).toStrictEqual([
+			["http.method", "GET"],
+			["error.kind", "Error"],
+			["error.message", "upstream"],
+			["error.stack", error.stack],
+		]);
+	});
+
+	it("writes no inherited attribute when the line has an error", () => {
+		const { sink, lines } = recordingSink();
+		const error = new TypeError("boom");
+		const attributes = Object.assign(
+			Object.create({ "error.kind": "fake", "http.method": "GET" }),
+			{
+				error,
+			},
+		);
+
+		hookSink(sink).log({ level: "error", message: "failed", attributes });
+
+		expect(lines[0]).toStrictEqual({
+			"error.kind": "TypeError",
+			"error.message": "boom",
+			"error.stack": error.stack,
+		});
+	});
+
 	it("passes a line with no error on as it is", () => {
 		const { sink, lines } = recordingSink();
 		const attributes = { "http.status_code": 200 };
