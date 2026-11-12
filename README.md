@@ -782,8 +782,8 @@ The `log` option changes each line of the server and of `logger()` before it goe
 ```ts
 createServer({
 	log: {
-		attributes: (level, message, attributes) => ({ ...attributes, "usr.email": undefined }),
-		error: (error, prefix, fields) => ({ ...fields, [`${prefix}.stack`]: undefined }),
+		attributes: ({ attributes }) => ({ ...attributes, "usr.email": undefined }),
+		error: ({ prefix, fields }) => ({ ...fields, [`${prefix}.stack`]: undefined }),
 	},
 });
 ```

@@ -18,21 +18,21 @@ export type LogOptions = {
 	 * Gives the attributes of each line, after the server flattens each error.
 	 * Use it to add, change, or remove a field, such as to redact a value.
 	 */
-	attributes?: (
-		level: LogLevel,
-		message: string,
-		attributes: Readonly<Record<string, unknown>>,
-	) => Readonly<Record<string, unknown>>;
+	attributes?: (line: {
+		level: LogLevel;
+		message: string;
+		attributes: Readonly<Record<string, unknown>>;
+	}) => Readonly<Record<string, unknown>>;
 	/**
 	 * Gives the fields of an attribute whose value is an `Error`. `prefix` is
 	 * the attribute name, such as `error`. `fields` holds the default fields,
 	 * so the hook can change some of them and keep the rest.
 	 */
-	error?: (
-		error: Error,
-		prefix: string,
-		fields: Readonly<Record<string, unknown>>,
-	) => Readonly<Record<string, unknown>>;
+	error?: (value: {
+		error: Error;
+		prefix: string;
+		fields: Readonly<Record<string, unknown>>;
+	}) => Readonly<Record<string, unknown>>;
 };
 
 /**

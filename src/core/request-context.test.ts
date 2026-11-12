@@ -18,7 +18,7 @@ describe("logger", () => {
 					lines.push(line);
 				},
 			},
-			log: { attributes: (_level, _message, attributes) => ({ ...attributes, app: "web" }) },
+			log: { attributes: ({ attributes }) => ({ ...attributes, app: "web" }) },
 		});
 
 		logger().warn("cache cold", { error: new TypeError("miss") });

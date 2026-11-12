@@ -285,7 +285,7 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 	for (const [key, value] of Object.entries(attributes)) {
 		if (value instanceof Error) {
 			const fields = errorFields(value, key);
-			Object.assign(flat, change == null ? fields : change(value, key, fields));
+			Object.assign(flat, change == null ? fields : change({ error: value, prefix: key, fields }));
 		} else {
 			flat[key] = value;
 		}
@@ -311,7 +311,7 @@ export function hookSink(
 			sink.log(
 				level,
 				message,
-				changeAttributes == null ? flat : changeAttributes(level, message, flat),
+				changeAttributes == null ? flat : changeAttributes({ level, message, attributes: flat }),
 			);
 		},
 	};
