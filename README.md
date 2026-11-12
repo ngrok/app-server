@@ -403,7 +403,7 @@ In development, `app-server start` sends the same policy. A rendered page gets a
 createServer({
 	plugins: defaultPlugins({
 		contentSecurityPolicy: {
-			policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+			policy: ({ scriptSrc }) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
 		},
 	}),
 });
@@ -682,7 +682,9 @@ The default twin is the path with no trailing slash plus `.md`, and `/index.md` 
 A different mapping goes in `twinOf`. Its path follows the same rules as a request path, and it can give a twin to a request that `rewrite` changes:
 
 ```ts
-prerendered({ markdownTwins: { twinOf: (path) => (path === "/" ? "/llms.md" : `${path}.md`) } });
+prerendered({
+	markdownTwins: { twinOf: ({ path }) => (path === "/" ? "/llms.md" : `${path}.md`) },
+});
 ```
 
 `twinOf` also gets the request's Hono context, the same as `rewrite`. If it gives `undefined`, the request gets no twin, and the answer gets no `Vary: Accept` and no `Link`.
@@ -753,7 +755,7 @@ Pass a sink to use your own format. Attribute names are flat and dotted:
 ```ts
 createServer({
 	logger: {
-		log: (level, message, attributes) => mySlogger[level](message, attributes),
+		log: ({ level, message, attributes }) => mySlogger[level](message, attributes),
 	},
 });
 ```
@@ -810,14 +812,14 @@ export async function loader({ context }: Route.LoaderArgs) {
 
 A request with a valid W3C `traceparent` header logs `trace_id` and `span_id` on each line. `requestId({ datadogTraceIds: true })` also logs `dd.trace_id` and `dd.span_id`, the lower 64 bits in decimal, so Datadog connects each line to its trace.
 
-`accessLog({ attributes })` adds the app's own attributes to each request line. The callback runs when the line goes out. It gets the context and what went out: `status`, `headers`, `bytes`, and `aborted`. Read a response header from `sent.headers`, not from `c.res`: `sent.headers` has the headers that went out on each runtime, after the header hooks, and `c.res` can lack them. On Node.js and Vercel, `sent.headers` also has the headers that the listener adds, such as `Content-Length`. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
+`accessLog({ attributes })` adds the app's own attributes to each request line. The callback runs when the line goes out. It gets `{ context, sent }`: the request's context, and what went out as `status`, `headers`, `bytes`, and `aborted`. Read a response header from `sent.headers`, not from `context.res`: `sent.headers` has the headers that went out on each runtime, after the header hooks, and `context.res` can lack them. On Node.js and Vercel, `sent.headers` also has the headers that the listener adds, such as `Content-Length`. `accessLog({ serverTiming: true })` sets `Server-Timing: app;dur=<ms>` on each HTML document: the time until the response headers were ready.
 
 ```ts
 defaultPlugins({
 	requestId: { datadogTraceIds: true },
 	accessLog: {
-		attributes: (c, sent) => ({
-			"usr.id": c.get("userId"),
+		attributes: ({ context, sent }) => ({
+			"usr.id": context.get("userId"),
 			"http.response.cache_control": sent.headers.get("Cache-Control"),
 		}),
 	},

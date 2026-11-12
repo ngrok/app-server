@@ -77,8 +77,8 @@ export function setProcessSink(sink: LogSink): void {
  * writes to the sink of the server.
  */
 export const outsideLogger: RequestLogger = sinkLogger({
-	log: (level, message, attributes) => {
-		processSink.log(level, message, attributes);
+	log: ({ level, message, attributes }) => {
+		processSink.log({ level, message, attributes });
 	},
 });
 

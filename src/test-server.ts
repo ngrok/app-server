@@ -112,7 +112,7 @@ export async function testServer({
 }): Promise<TestServer> {
 	const lines: LoggedLine[] = [];
 	const logger: LogSink = {
-		log: (level, message, attributes) => {
+		log: ({ level, message, attributes }) => {
 			lines.push({ level, message, attributes });
 		},
 	};

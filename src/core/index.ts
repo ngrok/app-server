@@ -175,6 +175,7 @@ export type {
 	ListenerBindings,
 	ListenerStartOptions,
 	LogLevel,
+	LogLine,
 	LogOptions,
 	LogSink,
 	Mode,

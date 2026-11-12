@@ -2,19 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createServer } from "./create-server.js";
 import { logger } from "./request-context.js";
 import { withRequestContext } from "../testing/index.js";
-import type { LogLevel, RequestLogger } from "./types.js";
-
-/** Lines that a sink got, as `[level, message, attributes]`. */
-type Line = [LogLevel, string, Readonly<Record<string, unknown>>];
+import type { LogLine, RequestLogger } from "./types.js";
 
 describe("logger", () => {
 	it("writes to the sink and hooks of the last createServer call outside a request", () => {
-		const lines: Line[] = [];
+		const lines: LogLine[] = [];
 		createServer({ plugins: [], logger: { log: () => {} } });
 		createServer({
 			plugins: [],
 			logger: {
-				log: (...line) => {
+				log: (line) => {
 					lines.push(line);
 				},
 			},
@@ -24,16 +21,16 @@ describe("logger", () => {
 		logger().warn("cache cold", { error: new TypeError("miss") });
 
 		expect(lines).toStrictEqual([
-			[
-				"warn",
-				"cache cold",
-				{
+			{
+				level: "warn",
+				message: "cache cold",
+				attributes: {
 					"error.kind": "TypeError",
 					"error.message": "miss",
 					"error.stack": expect.any(String),
 					app: "web",
 				},
-			],
+			},
 		]);
 	});
 

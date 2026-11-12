@@ -476,7 +476,7 @@ export function createServer({
 				throw failed.reason;
 			}
 			const urls = started.map((listener) => listener.url);
-			logger.log("info", "listening", { "app_server.urls": urls });
+			logger.log({ level: "info", message: "listening", attributes: { "app_server.urls": urls } });
 			let stopping: Promise<void> | undefined;
 			running = {
 				urls,
@@ -484,14 +484,22 @@ export function createServer({
 					stopping ??= (async () => {
 						markStopping();
 						if (shutdownDelayMs > 0) {
-							logger.log("info", "waiting before the drain", {
-								"app_server.delay_ms": shutdownDelayMs,
+							logger.log({
+								level: "info",
+								message: "waiting before the drain",
+								attributes: {
+									"app_server.delay_ms": shutdownDelayMs,
+								},
 							});
 							await new Promise((resolve) => {
 								setTimeout(resolve, shutdownDelayMs);
 							});
 						}
-						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
+						logger.log({
+							level: "info",
+							message: "draining",
+							attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
+						});
 						abortShutdownSignal();
 						const deadline = setTimeout(() => {
 							deadlinePassed = true;
@@ -508,7 +516,7 @@ export function createServer({
 						if (rejected != null) {
 							throw rejected.reason;
 						}
-						logger.log("info", "stopped", {});
+						logger.log({ level: "info", message: "stopped", attributes: {} });
 					})();
 					return stopping;
 				},
@@ -523,13 +531,21 @@ export function createServer({
 					);
 					for (const result of results) {
 						if (result.status === "rejected") {
-							logger.log("error", "plugin shutdown failed", { error: asError(result.reason) });
+							logger.log({
+								level: "error",
+								message: "plugin shutdown failed",
+								attributes: { error: asError(result.reason) },
+							});
 						}
 					}
 				})();
 				if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
-					logger.log("warn", "plugin shutdown passed the deadline", {
-						"app_server.deadline_ms": shutdownDeadlineMs,
+					logger.log({
+						level: "warn",
+						message: "plugin shutdown passed the deadline",
+						attributes: {
+							"app_server.deadline_ms": shutdownDeadlineMs,
+						},
 					});
 				}
 			})();

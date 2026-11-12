@@ -709,7 +709,7 @@ describe("defaultPlugins", () => {
 	it("gives a prerendered page the CSP of the contentSecurityPolicy option", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({
-				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 			}),
 			clientDirectory,
 		});
@@ -742,7 +742,7 @@ describe("defaultPlugins", () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({
 				noindex: true,
-				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 				beforeStatic: [login],
 			}),
 			clientDirectory,

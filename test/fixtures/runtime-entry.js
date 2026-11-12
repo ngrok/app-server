@@ -29,7 +29,7 @@ const app = createServer({
 	plugins: defaultPlugins({
 		bodyLimit: 1024,
 		accessLog: {
-			attributes: (_, sent) => ({ "sent.request_id": sent.headers.get("X-Request-Id") }),
+			attributes: ({ sent }) => ({ "sent.request_id": sent.headers.get("X-Request-Id") }),
 		},
 	}),
 	shutdownDeadlineMs: 3_000,

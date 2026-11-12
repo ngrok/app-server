@@ -69,7 +69,7 @@ const NO_JSON = '"log.error":"attributes not written as JSON"}';
  */
 export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	return {
-		log: (level, message, attributes) => {
+		log: ({ level, message, attributes }) => {
 			const time = isoNow();
 			const head = `{"time":"${time}","level":"${level}","message":${JSON.stringify(message)}`;
 			// Why the key check: a caller's `time`, `level`, or `message` replaces the sink's, as in a spread.
@@ -95,7 +95,7 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
  * one write for each turn: the lines then keep their order with Vite's lines.
  *
  * @example
- * textSink().log("info", "port in use, trying the next port", { "server.port": 3000 });
+ * textSink().log({ level: "info", message: "port in use, trying the next port", attributes: { "server.port": 3000 } });
  * // time=2026-11-11T12:00:00.000Z level=INFO msg="port in use, trying the next port" server.port=3000
  */
 export function textSink(
@@ -104,7 +104,7 @@ export function textSink(
 	},
 ): LogSink {
 	return {
-		log: (level, message, attributes) => {
+		log: ({ level, message, attributes }) => {
 			let line = `time=${isoNow()} level=${level.toUpperCase()} msg=${textValue(message)}`;
 			for (const [key, value] of Object.entries(attributes)) {
 				line += ` ${key}=${textValue(value)}`;
@@ -298,7 +298,7 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
  * value with its fields, and then runs the `attributes` hook.
  *
  * @example
- * hookSink(jsonSink()).log("error", "failed", { error: new Error("boom") });
+ * hookSink(jsonSink()).log({ level: "error", message: "failed", attributes: { error: new Error("boom") } });
  * // {"time":"…","level":"error","message":"failed","error.kind":"Error","error.message":"boom","error.stack":"…"}
  */
 export function hookSink(
@@ -306,12 +306,14 @@ export function hookSink(
 	{ attributes: changeAttributes, error: changeError }: LogOptions = {},
 ): LogSink {
 	return {
-		log: (level, message, attributes) => {
-			const flat = flattenErrors(attributes, changeError);
+		log: (line) => {
+			const flat = flattenErrors(line.attributes, changeError);
+			// Why keep `line` when nothing changes: a line seldom holds an error, and then it needs no copy.
+			const flatLine = flat === line.attributes ? line : { ...line, attributes: flat };
 			sink.log(
-				level,
-				message,
-				changeAttributes == null ? flat : changeAttributes({ level, message, attributes: flat }),
+				changeAttributes == null
+					? flatLine
+					: { ...flatLine, attributes: changeAttributes(flatLine) },
 			);
 		},
 	};
@@ -328,16 +330,16 @@ export function sinkLogger(
 	// Why four functions in one scope: a function that makes each one adds a scope for each, on each request.
 	return {
 		debug: (message, attributes = {}) => {
-			sink.log("debug", message, withBase(attributes));
+			sink.log({ level: "debug", message, attributes: withBase(attributes) });
 		},
 		info: (message, attributes = {}) => {
-			sink.log("info", message, withBase(attributes));
+			sink.log({ level: "info", message, attributes: withBase(attributes) });
 		},
 		warn: (message, attributes = {}) => {
-			sink.log("warn", message, withBase(attributes));
+			sink.log({ level: "warn", message, attributes: withBase(attributes) });
 		},
 		error: (message, attributes = {}) => {
-			sink.log("error", message, withBase(attributes));
+			sink.log({ level: "error", message, attributes: withBase(attributes) });
 		},
 	};
 }

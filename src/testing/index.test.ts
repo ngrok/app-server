@@ -6,7 +6,7 @@ import { requestContext } from "../core/request-context.js";
 import { createTestServer, withRequestContext } from "./index.js";
 import type { TestServerOptions } from "./index.js";
 
-const policy = { policy: (scriptSrc: string) => `script-src ${scriptSrc}` };
+const policy = { policy: ({ scriptSrc }: { scriptSrc: string }) => `script-src ${scriptSrc}` };
 
 async function testServer(options: Omit<TestServerOptions, "app">) {
 	const server = await createTestServer({

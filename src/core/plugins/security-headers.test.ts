@@ -169,7 +169,7 @@ afterAll(() => {
 });
 
 describe("contentSecurityPolicy", () => {
-	const csp = contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` });
+	const csp = contentSecurityPolicy({ policy: ({ scriptSrc }) => `script-src ${scriptSrc}` });
 
 	it("trusts a rendered document's scripts by a new nonce for each request, the nonce that the render used", async () => {
 		const { request } = await testServer({
@@ -234,7 +234,7 @@ describe("contentSecurityPolicy", () => {
 		const { request } = await testServer({
 			plugins: [
 				contentSecurityPolicy({
-					policy: (scriptSrc, context) =>
+					policy: ({ scriptSrc, context }) =>
 						`script-src ${scriptSrc}; frame-ancestors ${context.req.path.startsWith("/preview/") ? "'self'" : "'none'"}`,
 				}),
 				prerendered(),
