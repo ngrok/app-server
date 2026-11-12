@@ -352,6 +352,13 @@ type Codec = {
  */
 type Start = { value: Uint8Array; done: boolean; large: boolean };
 
+/**
+ * The most chunks that {@link zlibStream} holds. Why: a source that gives each
+ * chunk at once keeps the hold in one turn of the event loop, and 262,144
+ * chunks of 1 byte blocked it for 215 ms on an Apple M3 Max.
+ */
+const HOLD_MAX_CHUNKS = 1024;
+
 function join(chunks: Uint8Array[], size: number): Uint8Array {
 	const [first] = chunks;
 	return chunks.length === 1 && first != null ? first : Buffer.concat(chunks, size);
@@ -414,7 +421,7 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 					resolve(undefined);
 				});
 			});
-		while (size <= max) {
+		while (size <= max && parts.length < HOLD_MAX_CHUNKS) {
 			pending ??= reader.read();
 			turn ??= endOfTurn();
 			// oxlint-disable-next-line no-await-in-loop -- each read waits for the source.

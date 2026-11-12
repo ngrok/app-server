@@ -382,6 +382,35 @@ describe("brotliStream", () => {
 		expect(pulls).toBeLessThan(10);
 	});
 
+	it("holds at most 1,024 chunks of a body of tiny chunks", async () => {
+		const body = Buffer.alloc(4096, 97);
+		let pulls = 0;
+		const source = new ReadableStream<Uint8Array>(
+			{
+				pull(controller) {
+					pulls += 1;
+					if (pulls > body.byteLength) {
+						controller.close();
+					} else {
+						controller.enqueue(body.subarray(pulls - 1, pulls));
+					}
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		const reader = brotliStream(source).getReader();
+
+		const first = await reader.read();
+		const pullsBeforeFirst = pulls;
+		const parts = [Buffer.from(first.value ?? [])];
+		for (let next = await reader.read(); !next.done; next = await reader.read()) {
+			parts.push(Buffer.from(next.value));
+		}
+
+		expect(pullsBeforeFirst).toBeLessThanOrEqual(1025);
+		expect(brotliDecompressSync(Buffer.concat(parts))).toStrictEqual(body);
+	});
+
 	it("starts no encoder when the consumer cancels during the hold", async () => {
 		const errors: unknown[] = [];
 		const onError = (error: unknown) => {
