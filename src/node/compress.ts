@@ -1,4 +1,6 @@
 import type { Transform } from "node:stream";
+import { setImmediate } from "node:timers";
+import type { ReadResult } from "../core/compression.js";
 import {
 	brotliCompressSync,
 	constants,
@@ -14,7 +16,11 @@ import {
  * and a field costs less than a `WeakMap` entry for each response.
  */
 class ZlibBody extends ReadableStream<Uint8Array> {
-	/** Whether the next chunk waits only on zlib, because the source gave the bytes already. */
+	/**
+	 * Whether the next chunk waits only on zlib, because the source gave the
+	 * bytes already. It stays set while a brotli stream holds the start of a
+	 * body, which ends when the source waits.
+	 */
 	public busy = false;
 }
 
@@ -40,11 +46,11 @@ const HEADER = Buffer.from([31, 139, 8, 0, 0, 0, 0, 0, 0, 3]);
 const EMPTY_MEMBER = Buffer.concat([HEADER, Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0, 0])]);
 
 /**
- * The largest body that a pooled gzip or brotli stream compresses. Why a
- * limit: above about 64 KiB, the CRC-32 of a gzip body on the main thread
- * costs more than a new zlib stream does.
+ * The largest body that a pooled gzip stream compresses. Why a limit: above
+ * about 64 KiB, the CRC-32 of a gzip body on the main thread costs more than
+ * a new zlib stream does.
  */
-const POOLED_MAX_BYTES = 64 * 1024;
+const GZIP_POOLED_MAX_BYTES = 64 * 1024;
 
 /** The most zlib streams that wait for a body in each pool. Why a limit: an idle deflate stream keeps about 276 KiB of zlib state. */
 const MAX_IDLE = 16;
@@ -114,19 +120,33 @@ const DEFLATE_POOL: Pool = {
 const BROTLI_QUALITY = 4;
 
 /**
- * The base-2 logarithm of the brotli window, 256 KiB. Why not the default
- * of 22 (4 MiB): Node.js tells V8 the full size of each encoder's ring
- * buffer as external memory, and at 32 open encoders V8 then runs a full
- * garbage collection for every few responses. A page under 256 KiB gets
- * the same bytes, and a page of 2.7 MB gets 5% more.
+ * The base-2 logarithm of the brotli window of a body up to
+ * {@link BROTLI_HOLD_BYTES}, 256 KiB. Why not the default of 22 (4 MiB):
+ * Node.js tells V8 the full size of each encoder's ring buffer as external
+ * memory, and at 32 open encoders V8 then runs a full garbage collection for
+ * every few responses. A body that fits the window gets the same bytes.
  */
 const BROTLI_WINDOW_BITS = 18;
 
-const BROTLI_PARAMS = {
-	[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
-	[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
-	[constants.BROTLI_PARAM_LGWIN]: BROTLI_WINDOW_BITS,
-};
+/**
+ * The most bytes of a body that a brotli stream holds before it picks the
+ * window. A body that ends within them gets the 256 KiB window, and a longer
+ * body gets the default window of 4 MiB. Why: a repeat more than 256 KiB
+ * back costs a page of 2.5 MB 30% more bytes, and a stream has no length to
+ * pick the window from before it starts.
+ */
+const BROTLI_HOLD_BYTES = 2 ** BROTLI_WINDOW_BITS;
+
+function brotliParams(windowBits: number): Record<number, number> {
+	return {
+		[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+		[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+		[constants.BROTLI_PARAM_LGWIN]: windowBits,
+	};
+}
+
+const BROTLI_PARAMS = brotliParams(BROTLI_WINDOW_BITS);
+const BROTLI_LARGE_PARAMS = brotliParams(constants.BROTLI_DEFAULT_WINDOW);
 
 /**
  * The brotli pool. Why not sized: a reset makes a new brotli encoder with the
@@ -314,11 +334,26 @@ type Codec = {
 	/** The output for a body with no bytes. */
 	empty: Buffer;
 	/**
-	 * The output for a body of one chunk, up to 64 KiB, with no new zlib
-	 * stream. `use` gets the zlib stream while it compresses.
+	 * The output for a body of one chunk, up to `onceMaxBytes`, with no new
+	 * zlib stream. `use` gets the zlib stream while it compresses.
 	 */
 	once: (value: Uint8Array, use: (pooled: Pooled | undefined) => void) => Promise<Buffer>;
+	onceMaxBytes: number;
+	/**
+	 * A new zlib stream for a body longer than `onceMaxBytes`, which
+	 * {@link zlibStream} holds until it knows that. Without it, the stream
+	 * holds nothing, and each body gets `create`.
+	 */
+	createLarge?: () => Transform;
 };
+
+/** The start of a body that {@link zlibStream} held, and whether the source ended with it. */
+type Start = { value: Uint8Array; done: boolean };
+
+function join(chunks: Uint8Array[], size: number): Uint8Array {
+	const [first] = chunks;
+	return chunks.length === 1 && first != null ? first : Buffer.concat(chunks, size);
+}
 
 /**
  * Compresses a byte stream with `codec`. Each written chunk is readable at
@@ -327,6 +362,10 @@ type Codec = {
  * finishes a chunk, that chunk and the end of the stream go out as one. Why:
  * the host writes each chunk to the socket on its own, and a write costs more
  * than its few bytes.
+ *
+ * With `codec.createLarge`, it first holds the body up to
+ * `codec.onceMaxBytes`, the end, or a wait of the source, and then writes
+ * what it holds as one chunk.
  */
 function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableStream<Uint8Array> {
 	const reader = source.getReader();
@@ -341,6 +380,55 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 	/** The pooled zlib stream while it compresses the one chunk of a body. */
 	let pooled: Pooled | undefined;
 	let started = false;
+	/** The source read that is still open after a hold. */
+	let pending: Promise<ReadResult> | undefined;
+	/** The next source chunk with bytes, or the end. */
+	const read = async () => {
+		let chunk = await (pending ?? reader.read());
+		pending = undefined;
+		// Why skip empty chunks: zlib writes nothing for one, and a pull that enqueues nothing is not
+		// called again.
+		while (!chunk.done && chunk.value.byteLength === 0) {
+			chunk = await reader.read();
+		}
+		return chunk;
+	};
+	/**
+	 * `first` and the chunks after it, until they are longer than `max`, the
+	 * source ends, or a read stays open for a turn of the event loop. Why stop
+	 * then: the source waits for data, such as a React `<Suspense>` boundary
+	 * does, and what it gave must reach the client now. A renderer gives the
+	 * rest of a page with no wait.
+	 */
+	const hold = async (first: Uint8Array, max: number): Promise<Start> => {
+		const parts = [first];
+		let size = first.byteLength;
+		/** Resolves at the end of this turn of the event loop. Why one for each turn: an immediate costs more than a read. */
+		let turn: Promise<undefined> | undefined;
+		const endOfTurn = async () =>
+			new Promise<undefined>((resolve) => {
+				setImmediate(() => {
+					turn = undefined;
+					resolve(undefined);
+				});
+			});
+		while (size <= max) {
+			pending ??= reader.read();
+			turn ??= endOfTurn();
+			// oxlint-disable-next-line no-await-in-loop -- each read waits for the source.
+			const result = await Promise.race([pending, turn]);
+			if (result == null) {
+				break;
+			}
+			pending = undefined;
+			if (result.done) {
+				return { value: join(parts, size), done: true };
+			}
+			parts.push(result.value);
+			size += result.value.byteLength;
+		}
+		return { value: join(parts, size), done: false };
+	};
 	/** The zlib output that waits for the next enqueue. */
 	let held: Buffer[] = [];
 	let heldBytes = 0;
@@ -357,8 +445,9 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 	const startZlib = (
 		body: ZlibBody,
 		controller: ReadableStreamDefaultController<Uint8Array>,
+		create: () => Transform,
 	): Transform => {
-		const created = codec.create();
+		const created = create();
 		created.on("data", (chunk: Buffer) => {
 			held.push(chunk);
 			heldBytes += chunk.byteLength;
@@ -382,12 +471,9 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 		{
 			async pull(controller) {
 				try {
-					let chunk = await reader.read();
-					// Why skip empty chunks: zlib writes nothing for one, and a pull that enqueues nothing
-					// is not called again.
-					while (!chunk.done && chunk.value.byteLength === 0) {
-						chunk = await reader.read();
-					}
+					const chunk = await read();
+					let create = codec.create;
+					let start: Start | undefined;
 					if (!started) {
 						started = true;
 						if (chunk.done) {
@@ -398,8 +484,13 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 						stream.busy = true;
 						// Why wait: a source that closes in the pull that gave this chunk ends one microtask later.
 						await Promise.resolve();
-						if (ended && chunk.value.byteLength <= POOLED_MAX_BYTES) {
-							const output = await codec.once(chunk.value, (each) => {
+						const { createLarge, onceMaxBytes } = codec;
+						start =
+							ended || createLarge == null
+								? { value: chunk.value, done: ended }
+								: await hold(chunk.value, onceMaxBytes);
+						if (start.done && start.value.byteLength <= onceMaxBytes) {
+							const output = await codec.once(start.value, (each) => {
 								pooled = each;
 							});
 							stream.busy = false;
@@ -407,14 +498,18 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 							controller.close();
 							return;
 						}
+						if (createLarge != null && start.value.byteLength > onceMaxBytes) {
+							create = createLarge;
+						}
 					}
-					zlib ??= startZlib(stream, controller);
+					zlib ??= startZlib(stream, controller, create);
 					stream.busy = true;
 					if (chunk.done) {
 						zlib.end();
 						return;
 					}
-					await write(zlib, chunk.value);
+					await write(zlib, start?.value ?? chunk.value);
+					ended ||= start?.done === true;
 					if (ended) {
 						zlib.end();
 						return;
@@ -447,6 +542,7 @@ const GZIP: Codec = {
 	create: () => createGzip({ flush: constants.Z_SYNC_FLUSH }),
 	empty: EMPTY_MEMBER,
 	once: gzipOnce,
+	onceMaxBytes: GZIP_POOLED_MAX_BYTES,
 };
 
 /**
@@ -471,13 +567,25 @@ const BROTLI: Codec = {
 		createBrotliCompress({ flush: constants.BROTLI_OPERATION_FLUSH, params: BROTLI_PARAMS }),
 	empty: brotliCompressSync(new Uint8Array(), { params: BROTLI_PARAMS }),
 	once: brotliOnce,
+	onceMaxBytes: BROTLI_HOLD_BYTES,
+	createLarge: () =>
+		createBrotliCompress({
+			flush: constants.BROTLI_OPERATION_FLUSH,
+			params: BROTLI_LARGE_PARAMS,
+		}),
 };
 
 /**
  * Compresses a byte stream with brotli, quality 4. `BROTLI_OPERATION_FLUSH`
  * makes each written chunk readable at once. It reads and ends as
- * {@link gzipStream} does, and a body that ends with its first chunk, up to
- * 64 KiB, also takes a pooled encoder.
+ * {@link gzipStream} does.
+ *
+ * It holds the start of a body until it knows the window. A body that ends
+ * within 256 KiB takes a pooled encoder with a 256 KiB window, in one zlib
+ * call. A longer body gets a new encoder with a 4 MiB window. Why not 4 MiB
+ * for each body: see {@link BROTLI_WINDOW_BITS}. When the source waits for
+ * its next chunk first, the stream sends what it holds with the 256 KiB
+ * window, and then streams the rest.
  *
  * @example
  * new Response(brotliStream(response.body), response);
