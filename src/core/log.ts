@@ -289,7 +289,9 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 		return attributes;
 	}
 	const flat: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(attributes)) {
+	// Why `Object.entries`: it gives only own fields, and both passes must read the same fields.
+	const entries = Object.entries(attributes);
+	for (const [key, value] of entries) {
 		if (value instanceof Error) {
 			const fields = errorFields(value, key);
 			Object.assign(flat, change == null ? fields : change({ error: value, prefix: key, fields }));
@@ -299,9 +301,9 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 	}
 	// Why write them again: an error field that comes later must not replace an attribute, such as
 	// a request field. A key keeps its first place.
-	for (const key in attributes) {
-		if (!(attributes[key] instanceof Error)) {
-			flat[key] = attributes[key];
+	for (const [key, value] of entries) {
+		if (!(value instanceof Error)) {
+			flat[key] = value;
 		}
 	}
 	return flat;

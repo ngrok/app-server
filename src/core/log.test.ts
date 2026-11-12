@@ -385,6 +385,25 @@ describe("hookSink", () => {
 		]);
 	});
 
+	it("writes no inherited attribute when the line has an error", () => {
+		const { sink, lines } = recordingSink();
+		const error = new TypeError("boom");
+		const attributes = Object.assign(
+			Object.create({ "error.kind": "fake", "http.method": "GET" }),
+			{
+				error,
+			},
+		);
+
+		hookSink(sink).log({ level: "error", message: "failed", attributes });
+
+		expect(lines[0]).toStrictEqual({
+			"error.kind": "TypeError",
+			"error.message": "boom",
+			"error.stack": error.stack,
+		});
+	});
+
 	it("passes a line with no error on as it is", () => {
 		const { sink, lines } = recordingSink();
 		const attributes = { "http.status_code": 200 };
