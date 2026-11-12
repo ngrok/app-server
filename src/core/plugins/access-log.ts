@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { withHeaderHook } from "../header-hook.js";
-import { errorAttributes } from "../log.js";
+import { asError } from "../log.js";
 import { onResponseSent } from "../response-edge.js";
 import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 import { answeredByDevServer } from "./static.js";
@@ -114,7 +114,7 @@ export function accessLog({
 					try {
 						context.get("logger").error("access log attributes failed", {
 							...line,
-							...errorAttributes(error),
+							error: asError(error),
 						});
 					} catch {
 						// Why drop it: the sink failed twice, so no line can go out.

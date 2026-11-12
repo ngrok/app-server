@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Context } from "hono";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { flushLogs, jsonSink, textSink } from "./log.js";
+import { flushLogs, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
+import type { AppServerEnv, LogSink } from "./types.js";
 
 /** A spy on stdout that keeps each write out of the test output. */
 function spyStdout() {
@@ -103,6 +105,40 @@ describe("jsonSink", () => {
 			"2026-11-03T11:59:59.999Z",
 		]);
 	});
+
+	it("writes a bigint as a string and a cycle as [Circular], and does not throw", () => {
+		const lines: string[] = [];
+		const sink = jsonSink((line) => {
+			lines.push(line);
+		});
+		const parent: Record<string, unknown> = { name: "parent" };
+		parent.self = parent;
+		const shared = { id: 1 };
+
+		sink.log("info", "values", { count: 1n, parent, a: shared, b: shared });
+		sink.log("info", "bad toJSON", {
+			value: {
+				toJSON: () => {
+					throw new Error("no JSON");
+				},
+			},
+		});
+
+		expect(lines.map((line): unknown => JSON.parse(line))).toStrictEqual([
+			expect.objectContaining({
+				count: "1n",
+				parent: { name: "parent", self: "[Circular]" },
+				a: { id: 1 },
+				b: { id: 1 },
+			}),
+			{
+				time: expect.any(String),
+				level: "info",
+				message: "bad toJSON",
+				"log.error": "attributes not written as JSON",
+			},
+		]);
+	});
 });
 
 describe("textSink", () => {
@@ -124,6 +160,152 @@ describe("textSink", () => {
 				/ level=ERROR msg=failed error\.message="a \\"quote\\"\\nand a line" ok=true empty=""\n$/u,
 			),
 			expect.stringMatching(/ error\.message="\\u001b\[2J"\n$/u),
+		]);
+	});
+
+	it("writes a bigint as a string", () => {
+		const lines: string[] = [];
+
+		textSink((line) => {
+			lines.push(line);
+		}).log("info", "count", { count: 1n, counts: [2n] });
+
+		expect(lines).toStrictEqual([expect.stringMatching(/ count=1n counts="\[\\"2n\\"\]"\n$/u)]);
+	});
+});
+
+/** A sink that keeps the attributes of each line. */
+function recordingSink(): { sink: LogSink; lines: Readonly<Record<string, unknown>>[] } {
+	const lines: Readonly<Record<string, unknown>>[] = [];
+	return {
+		sink: {
+			log: (_level, _message, attributes) => {
+				lines.push(attributes);
+			},
+		},
+		lines,
+	};
+}
+
+describe("hookSink", () => {
+	it("writes an error value as dotted fields, with its own fields and its cause chain", () => {
+		const { sink, lines } = recordingSink();
+		const cause = Object.assign(new RangeError("bad id"), {
+			code: "E_ID",
+			count: 1n,
+			errors: ["id"],
+		});
+		const error = new Error("no row", { cause });
+
+		hookSink(sink).log("error", "failed", { "usr.id": "user-1", "db.error": error, ok: false });
+
+		expect(lines).toStrictEqual([
+			{
+				"usr.id": "user-1",
+				"db.error.kind": "Error",
+				"db.error.message": "no row",
+				"db.error.stack": error.stack,
+				"db.error.cause.kind": "RangeError",
+				"db.error.cause.message": "bad id",
+				"db.error.cause.stack": cause.stack,
+				"db.error.cause.code": "E_ID",
+				"db.error.cause.count": 1n,
+				"db.error.cause.errors": ["id"],
+				ok: false,
+			},
+		]);
+	});
+
+	it("writes a cause that is not an error, the members of an AggregateError, and a cycle", () => {
+		const { sink, lines } = recordingSink();
+		const first = new TypeError("first");
+		const aggregate = new AggregateError([first, "second"], "all failed", { cause: 1n });
+		const loop = new Error("loop");
+		loop.cause = loop;
+
+		hookSink(sink).log("error", "failed", { error: aggregate, other: loop });
+
+		expect(lines).toStrictEqual([
+			{
+				"error.kind": "AggregateError",
+				"error.message": "all failed",
+				"error.stack": aggregate.stack,
+				"error.cause": 1n,
+				"error.errors": [{ kind: "TypeError", message: "first", stack: first.stack }, "second"],
+				"other.kind": "Error",
+				"other.message": "loop",
+				"other.stack": loop.stack,
+				"other.cause": "[Circular]",
+			},
+		]);
+	});
+
+	it("takes the own fields of an error from its toJSON", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("denied"), {
+			token: "secret",
+			toJSON: () => ({ status: 403 }),
+		});
+
+		hookSink(sink).log("error", "failed", { error });
+
+		expect(lines[0]).toStrictEqual({
+			"error.kind": "Error",
+			"error.message": "denied",
+			"error.stack": error.stack,
+			"error.status": 403,
+		});
+	});
+
+	it("gives the line to the error and attributes hooks", () => {
+		const { sink, lines } = recordingSink();
+		const hooked = hookSink(sink, {
+			error: (error, prefix) => ({ [`${prefix}.kind`]: error.name }),
+			attributes: (level, message, attributes) => ({
+				...attributes,
+				"usr.email": "REDACTED",
+				line: `${level} ${message}`,
+			}),
+		});
+
+		hooked.log("warn", "slow", { error: new TypeError("boom"), "usr.email": "a@example.com" });
+
+		expect(lines).toStrictEqual([
+			{ "error.kind": "TypeError", "usr.email": "REDACTED", line: "warn slow" },
+		]);
+	});
+
+	it("passes a line with no error on as it is", () => {
+		const { sink, lines } = recordingSink();
+		const attributes = { "http.status_code": 200 };
+
+		hookSink(sink).log("info", "request", attributes);
+
+		expect(lines[0]).toBe(attributes);
+	});
+});
+
+describe("requestLogger", () => {
+	it("puts the request fields first, and keeps them when the caller gives the same names", () => {
+		const { sink, lines } = recordingSink();
+		const context = new Context<AppServerEnv>(new Request("http://localhost/"));
+		context.set("requestId", "abc-123");
+		context.set("logAttributes", { trace_id: "trace" });
+
+		requestLogger(sink, context).info("loading", {
+			"usr.id": "user-1",
+			"http.request_id": "other",
+			"http.method": "POST",
+			"http.url_details.path": "/other",
+			trace_id: "other",
+		});
+
+		expect(Object.entries(lines[0] ?? {})).toStrictEqual([
+			["http.request_id", "abc-123"],
+			["http.method", "GET"],
+			["http.url_details.path", "/"],
+			["trace_id", "trace"],
+			["usr.id", "user-1"],
 		]);
 	});
 });

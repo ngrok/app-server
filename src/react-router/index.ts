@@ -1,8 +1,7 @@
 import type { Context } from "hono";
 import { createContext, createRequestHandler, RouterContextProvider } from "react-router";
 import type { MiddlewareFunction, ServerBuild } from "react-router";
-import { jsonSink, sinkLogger } from "../core/log.js";
-import { requestContextValues } from "../core/request-context.js";
+import { outsideLogger, requestContextValues } from "../core/request-context.js";
 import type { AppServerEnv, FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
 
 /** What the server puts in React Router's context for each request. */
@@ -11,7 +10,7 @@ export type AppServerContext = RequestContext;
 /**
  * The React Router context key for {@link AppServerContext}. Outside a server
  * request, such as in React Router's prerender pass, it holds no request ID
- * and a logger that writes to `jsonSink()`. `requestContext()` from
+ * and the logger that `logger()` gives there. `requestContext()` from
  * `@ngrok/app-server` gives the same values.
  *
  * @example
@@ -21,7 +20,7 @@ export type AppServerContext = RequestContext;
  */
 export const appServerContext = createContext<AppServerContext>({
 	requestId: undefined,
-	logger: sinkLogger(jsonSink()),
+	logger: outsideLogger,
 	cspNonce: undefined,
 	clientAddress: undefined,
 });

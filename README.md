@@ -758,15 +758,46 @@ createServer({
 });
 ```
 
-The default is `jsonSink()`: one JSON object per line on standard output (stdout). It writes the lines of one event-loop turn in one write, at the end of the turn. Each line still reaches stdout before the process exits, and before the vercel handler returns.
+The default is `jsonSink()`: one JSON object per line on standard output (stdout). It writes the lines of one event-loop turn in one write, at the end of the turn. Each line still reaches stdout before the process exits, and before the vercel handler returns. `jsonSink()` writes a bigint as a string, such as `"1n"`, and a cycle as `"[Circular]"`. A line whose attributes have no JSON, such as a value whose `toJSON` throws, goes out with `log.error` in place of its attributes, so `jsonSink()` never throws for its attributes.
 
-In server code, read the request ID and a logger whose lines carry it. `requestContext()` works with each framework. It gives `undefined` outside a server request, such as in a prerender pass:
+In server code, `logger()` gives the logger of the request that runs. Its lines carry the request ID, method, and path, and these fields win over a field of the same name that you give. Outside a request, such as at module load or in a prerender pass, `logger()` writes to the sink and hooks of the last `createServer` call, else to `jsonSink()`:
+
+```ts
+import { logger } from "@ngrok/app-server";
+
+export async function loader() {
+	logger().info("loading", { "usr.id": userId });
+}
+```
+
+An attribute whose value is an `Error` becomes dotted fields under its name: `kind`, `message`, `stack`, each own field, such as `code`, and the `cause` chain as `<name>.cause.*`. An `AggregateError` adds its members as `<name>.errors`. An error with `toJSON` gives its own fields from it. The server's own error lines, such as `unhandled error`, use the same fields:
+
+```ts
+logger().error("payment failed", { error });
+// {"message":"payment failed","error.kind":"TypeError","error.message":"…","error.stack":"…","error.cause.kind":"Error","error.cause.code":"ECONNRESET",…}
+```
+
+The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` replaces the default fields of an error:
+
+```ts
+createServer({
+	log: {
+		attributes: (level, message, attributes) => ({ ...attributes, "usr.email": undefined }),
+		error: (error, prefix) => ({
+			[`${prefix}.kind`]: error.name,
+			[`${prefix}.message`]: error.message,
+		}),
+	},
+});
+```
+
+`requestContext()` gives the request ID, the logger, the CSP nonce, and the client address of the request that runs. It works with each framework. It gives `undefined` outside a server request:
 
 ```ts
 import { requestContext } from "@ngrok/app-server";
 
 export async function loader() {
-	requestContext()?.logger.info("loading");
+	const requestId = requestContext()?.requestId;
 }
 ```
 
@@ -907,6 +938,7 @@ A framework adapter or a host adapter is two small objects. A third-party adapte
 
 - `plugins`: default `defaultPlugins()`.
 - `logger`: default `jsonSink()`.
+- `log`: hooks that change each log line: `attributes` and `error`. See [Logs](#logs).
 - `listeners`: default the host's listeners. A listener decides how connections arrive. On the node host, the default is `[tcp()]` from `@ngrok/app-server/node`. `tcp()` uses `node:http`, `Bun.serve`, or `Deno.serve`.
 - `trustForwardedProto`: read the scheme from `X-Forwarded-Proto`. Set it only behind a proxy that overwrites the header. Default `false`. The server passes it to each listener as `start(fetch, { trustForwardedProto })`, so the node listener on Node.js builds each request with that scheme and copies none. For a listener that ignores it, the server copies each request to change its scheme. For a build with no `server.ts`, set `TRUST_FORWARDED_PROTO=1`. TanStack Start compares a server function call's `Origin` with the request URL when the browser sends no `Sec-Fetch-Site`, so set this option behind a proxy that ends TLS.
 - `trustedProxyHops`: how many proxies in front of the server add to `X-Forwarded-For`, such as `1` behind the ngrok edge. With N, the client address is the Nth address from the right of that header. The access log and `requestContext()?.clientAddress` use it. Default `0`, the address of the socket. Set it only to the number of proxies that you run, else a client can spoof its address. For a build with no `server.ts`, set `TRUSTED_PROXY_HOPS`.

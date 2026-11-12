@@ -12,7 +12,29 @@ export type LogSink = {
 	log: (level: LogLevel, message: string, attributes: Readonly<Record<string, unknown>>) => void;
 };
 
-/** The logger for one request. Each line carries the request ID, method, and path. */
+/** Hooks that change each log line before it goes to the {@link LogSink}. */
+export type LogOptions = {
+	/**
+	 * Gives the attributes of each line, after the server flattens each error.
+	 * Use it to add, change, or remove a field, such as to redact a value.
+	 */
+	attributes?: (
+		level: LogLevel,
+		message: string,
+		attributes: Readonly<Record<string, unknown>>,
+	) => Readonly<Record<string, unknown>>;
+	/**
+	 * Gives the fields of an attribute whose value is an `Error`, in place of
+	 * the default fields. `prefix` is the attribute name, such as `error`.
+	 */
+	error?: (error: Error, prefix: string) => Readonly<Record<string, unknown>>;
+};
+
+/**
+ * A logger with one method for each level. The logger of a request adds the
+ * request ID, method, and path to each line. These fields win over a field
+ * of the same name that the caller gives.
+ */
 export type RequestLogger = Record<
 	LogLevel,
 	(message: string, attributes?: Readonly<Record<string, unknown>>) => void
