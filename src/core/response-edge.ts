@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { headerIndex, headerList, listView, replaceResponse } from "./header-hook.js";
-import { errorAttributes } from "./log.js";
+import { asError } from "./log.js";
 import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse } from "./types.js";
 
 function ignore(): void {}
@@ -159,7 +159,7 @@ export class ResponseEdge {
 	public fail(error: unknown): void {
 		try {
 			if (this.#logger != null) {
-				this.#logger.error("unhandled error", errorAttributes(error));
+				this.#logger.error("unhandled error", { error: asError(error) });
 				return;
 			}
 		} catch {

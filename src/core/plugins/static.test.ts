@@ -95,7 +95,7 @@ describe("prerendered", () => {
 
 	it("lets the headers option replace a captured header", async () => {
 		const { request } = await staticServer({
-			headers: (path) =>
+			headers: ({ path }) =>
 				path === "/llms.txt" ? { "Access-Control-Allow-Origin": "https://a.example" } : undefined,
 		});
 
@@ -106,7 +106,7 @@ describe("prerendered", () => {
 
 	it("lets the headers option replace a captured header in any case", async () => {
 		const { request } = await staticServer({
-			headers: (path) =>
+			headers: ({ path }) =>
 				path === "/components/button.md" ? { "Cache-Control": "private, no-cache" } : undefined,
 		});
 
@@ -117,7 +117,7 @@ describe("prerendered", () => {
 
 	it("serves the file that rewrite names, with that file's headers", async () => {
 		const { request } = await staticServer({
-			rewrite: (path, context) =>
+			rewrite: ({ path, context }) =>
 				context.req.header("Accept") === "text/markdown" ? `${path}.md` : path,
 		});
 
@@ -148,7 +148,7 @@ describe("prerendered", () => {
 			"/alias": "/components//button",
 			"/escape": "/../outside.txt",
 		};
-		const { request } = await staticServer({ rewrite: (path) => rewrites[path] ?? path });
+		const { request } = await staticServer({ rewrite: ({ path }) => rewrites[path] ?? path });
 
 		for (const path of Object.keys(rewrites)) {
 			await expect((await request(path)).text()).resolves.toBe("rendered");
@@ -608,7 +608,7 @@ describe("compressed copies from the build", () => {
 
 	it("never sends a copy for a file that its headers already encode", async () => {
 		const { request } = await staticServer({
-			headers: (path) => (path === "/copy.txt" ? { "Content-Encoding": "gzip" } : undefined),
+			headers: ({ path }) => (path === "/copy.txt" ? { "Content-Encoding": "gzip" } : undefined),
 		});
 
 		const response = await request("/copy.txt", withBrotli);
@@ -628,7 +628,8 @@ describe("compressed copies from the build", () => {
 
 	it("never sends a copy for a response marked no-transform", async () => {
 		const { request } = await staticServer({
-			headers: (path) => (path === "/copy.txt" ? { "Cache-Control": "no-transform" } : undefined),
+			headers: ({ path }) =>
+				path === "/copy.txt" ? { "Cache-Control": "no-transform" } : undefined,
 		});
 
 		const response = await request("/copy.txt", withBrotli);
@@ -795,7 +796,9 @@ describe("prerendered markdownTwins", () => {
 			"/secret": "/.env",
 			"/escape": "/../outside.md",
 		};
-		const { request } = await staticServer({ markdownTwins: { twinOf: (path) => twins[path] } });
+		const { request } = await staticServer({
+			markdownTwins: { twinOf: ({ path }) => twins[path] },
+		});
 
 		await expect((await request("/button", markdown)).text()).resolves.toBe("# Button");
 		for (const path of ["/secret", "/escape"]) {
@@ -808,7 +811,7 @@ describe("prerendered markdownTwins", () => {
 	it("gives twinOf the request, so a request with a query can skip the twin", async () => {
 		const { request } = await staticServer({
 			markdownTwins: {
-				twinOf: (path, context) =>
+				twinOf: ({ path, context }) =>
 					new URL(context.req.url).search === "" ? `${path}.md` : undefined,
 			},
 		});
@@ -824,7 +827,7 @@ describe("prerendered markdownTwins", () => {
 	it("gives no default twin to a request that rewrite changes", async () => {
 		const { request } = await staticServer({
 			markdownTwins: true,
-			rewrite: (path, context) => (new URL(context.req.url).search === "" ? path : "/search"),
+			rewrite: ({ path, context }) => (new URL(context.req.url).search === "" ? path : "/search"),
 		});
 
 		const twin = await request("/components/button", markdown);
@@ -837,7 +840,7 @@ describe("prerendered markdownTwins", () => {
 
 	it("gives the twin from twinOf to a request that rewrite changes", async () => {
 		const { request } = await staticServer({
-			markdownTwins: { twinOf: (path) => `${path}.md` },
+			markdownTwins: { twinOf: ({ path }) => `${path}.md` },
 			rewrite: () => "/search",
 		});
 
@@ -983,7 +986,9 @@ describe("prerendered markdownTwins in development", () => {
 	it("asks the framework for no twin whose URL changes its path", async () => {
 		const skip = (path: string) => path.startsWith("/private");
 		const backslash = await devServer({ markdownTwins: true, skip });
-		const dots = await devServer({ markdownTwins: { twinOf: (path) => `/docs/%2e%2e${path}.md` } });
+		const dots = await devServer({
+			markdownTwins: { twinOf: ({ path }) => `/docs/%2e%2e${path}.md` },
+		});
 
 		await expect((await backslash.request("/docs%5C..%5Cprivate", markdown)).text()).resolves.toBe(
 			"rendered",
@@ -998,7 +1003,7 @@ describe("prerendered markdownTwins in development", () => {
 	it("gives twinOf the request, so a request with a query can skip the twin", async () => {
 		const { request, seen } = await devServer({
 			markdownTwins: {
-				twinOf: (path, context) =>
+				twinOf: ({ path, context }) =>
 					new URL(context.req.url).search === "" ? `${path}.md` : undefined,
 			},
 		});
@@ -1015,7 +1020,7 @@ describe("prerendered markdownTwins in development", () => {
 	it("asks for no default twin for a request that rewrite changes", async () => {
 		const { request, seen } = await devServer({
 			markdownTwins: true,
-			rewrite: (path, context) => (new URL(context.req.url).search === "" ? path : "/search"),
+			rewrite: ({ path, context }) => (new URL(context.req.url).search === "" ? path : "/search"),
 		});
 
 		await request("/docs/button", markdown);
@@ -1026,7 +1031,9 @@ describe("prerendered markdownTwins in development", () => {
 	});
 
 	it("uses twinOf, and is off by default", async () => {
-		const mapped = await devServer({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
+		const mapped = await devServer({
+			markdownTwins: { twinOf: ({ path }) => `/markdown${path}.md` },
+		});
 		const off = await devServer({});
 
 		await expect((await mapped.request("/docs/button", markdown)).text()).resolves.toBe(

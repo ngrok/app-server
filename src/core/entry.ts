@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
-import { errorAttributes } from "./log.js";
+import { asError } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { staticPages } from "./static-pages.js";
 import type { StaticPage } from "./static-pages.js";
@@ -157,7 +157,11 @@ export function createEntry({
 			const server = await internals.listen(runtime, host.listeners?.());
 			host.lifecycle?.onStop(async () =>
 				server.shutdown().catch((error: unknown) => {
-					internals.logger.log("error", "shutdown failed", errorAttributes(error));
+					internals.logger.log({
+						level: "error",
+						message: "shutdown failed",
+						attributes: { error: asError(error) },
+					});
 					throw error;
 				}),
 			);
@@ -165,7 +169,11 @@ export function createEntry({
 		fetch: async (request, bindings) => {
 			// Why log it: the host sends a 500 with no log, and no app handler runs before setup ends.
 			const runtime = await production().catch((error: unknown) => {
-				internals.logger.log("error", "setup failed", errorAttributes(error));
+				internals.logger.log({
+					level: "error",
+					message: "setup failed",
+					attributes: { error: asError(error) },
+				});
 				throw error;
 			});
 			return app.fetch(request, { ...bindings, framework: runtime });

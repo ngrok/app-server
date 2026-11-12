@@ -134,7 +134,7 @@ describe("staticPages", () => {
 		const byQuery = await pagesOf(
 			{
 				prerendered: {
-					rewrite: (path, context) =>
+					rewrite: ({ path, context }) =>
 						new URL(context.req.url).search === "" ? path : "/about/index.html",
 				},
 			},
@@ -220,7 +220,7 @@ describe("staticPages", () => {
 			{
 				prerendered: {
 					markdownTwins: true,
-					rewrite: (path, context) =>
+					rewrite: ({ path, context }) =>
 						context.req.header("Accept") === "application/json" ? "/about.json" : path,
 				},
 			},
@@ -239,7 +239,7 @@ describe("staticPages", () => {
 				noindex: { unlessHeader: "x-ngrok-edge" },
 				prerendered: {
 					markdownTwins: {
-						twinOf: (path, context) =>
+						twinOf: ({ path, context }) =>
 							context.req.header("x-ngrok-edge") == null ? `${path}.md` : undefined,
 					},
 				},

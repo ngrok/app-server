@@ -1,5 +1,12 @@
 import type { Context } from "hono";
-import type { AppServerEnv, RequestContext, RequestStore } from "./types.js";
+import { hookSink, jsonSink, sinkLogger } from "./log.js";
+import type {
+	AppServerEnv,
+	LogSink,
+	RequestContext,
+	RequestLogger,
+	RequestStore,
+} from "./types.js";
 
 /**
  * Each store that a request ran in. Why a set: two entries in one process can
@@ -41,11 +48,52 @@ export async function withRequestContext<Result>(
  * }
  */
 export function requestContext(): RequestContext | undefined {
+	const context = currentContext();
+	return context == null ? undefined : requestContextValues(context);
+}
+
+/** The Hono context of the request that runs, else `undefined`. */
+function currentContext(): Context<AppServerEnv> | undefined {
 	for (const store of stores) {
 		const context = store.get();
 		if (context != null) {
-			return requestContextValues(context);
+			return context;
 		}
 	}
 	return undefined;
+}
+
+/** The sink of the process. `createServer` sets it to its own sink, with its hooks. */
+let processSink: LogSink = hookSink(jsonSink());
+
+/** Sets the sink of the logger that {@link logger} gives outside a request. The last call wins. */
+export function setProcessSink(sink: LogSink): void {
+	processSink = sink;
+}
+
+/**
+ * A logger that writes to the sink of the process at the time of each call.
+ * Why: a value made before `createServer`, such as a context default, then
+ * writes to the sink of the server.
+ */
+export const outsideLogger: RequestLogger = sinkLogger({
+	log: ({ level, message, attributes }) => {
+		processSink.log({ level, message, attributes });
+	},
+});
+
+/**
+ * The logger of the request that runs. Outside a request, such as at module
+ * load or in a prerender pass, it gives a logger that writes to the sink and
+ * the hooks of the last `createServer` call, else to `jsonSink()`.
+ *
+ * @example
+ * import { logger } from "@ngrok/app-server";
+ *
+ * export async function loader() {
+ * 	logger().info("loading the dashboard", { "usr.id": userId });
+ * }
+ */
+export function logger(): RequestLogger {
+	return currentContext()?.get("logger") ?? outsideLogger;
 }

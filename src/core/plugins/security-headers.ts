@@ -100,7 +100,7 @@ export type ContentSecurityPolicyOptions = {
 	 * `context` is the request, so the policy can change by path. It runs in a
 	 * header hook, so it can run more than once for one request.
 	 */
-	policy: (scriptSrc: string, context: Context<AppServerEnv>) => string;
+	policy: (document: { scriptSrc: string; context: Context<AppServerEnv> }) => string;
 };
 
 /** A new random nonce: 16 bytes in base64. */
@@ -128,7 +128,7 @@ function randomNonce(): string {
  * @example
  * defaultPlugins({
  * 	contentSecurityPolicy: {
- * 		policy: (scriptSrc) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
+ * 		policy: ({ scriptSrc }) => `script-src ${scriptSrc}; object-src 'none'; base-uri 'none'`,
  * 	},
  * });
  */
@@ -161,7 +161,7 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 					hashes == null
 						? `'nonce-${nonce}' 'strict-dynamic'`
 						: ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
-				headers.set("Content-Security-Policy", oneLine(policy(scriptSrc, context)));
+				headers.set("Content-Security-Policy", oneLine(policy({ scriptSrc, context })));
 			});
 		},
 	});

@@ -80,6 +80,7 @@ export {
 } from "./prefers-markdown.js";
 export {
 	//,
+	logger,
 	requestContext,
 } from "./request-context.js";
 export {
@@ -174,6 +175,8 @@ export type {
 	ListenerBindings,
 	ListenerStartOptions,
 	LogLevel,
+	LogLine,
+	LogOptions,
 	LogSink,
 	Mode,
 	Plugin,

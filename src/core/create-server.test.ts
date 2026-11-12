@@ -227,11 +227,11 @@ describe("createServer", () => {
 		);
 	});
 
-	it("logs an unhandled error and answers 500", async () => {
+	it("logs an unhandled error with its cause and answers 500", async () => {
 		const { request, lines } = await testServer({
 			plugins: [],
 			render: async () => {
-				throw new TypeError("boom");
+				throw new TypeError("boom", { cause: Object.assign(new Error("refused"), { code: 61 }) });
 			},
 		});
 
@@ -242,7 +242,12 @@ describe("createServer", () => {
 			{
 				level: "error",
 				message: "unhandled error",
-				attributes: expect.objectContaining({ "error.kind": "TypeError", "error.message": "boom" }),
+				attributes: expect.objectContaining({
+					"error.kind": "TypeError",
+					"error.message": "boom",
+					"error.cause.message": "refused",
+					"error.cause.code": 61,
+				}),
 			},
 		]);
 	});
@@ -704,7 +709,7 @@ describe("defaultPlugins", () => {
 	it("gives a prerendered page the CSP of the contentSecurityPolicy option", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({
-				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 			}),
 			clientDirectory,
 		});
@@ -737,7 +742,7 @@ describe("defaultPlugins", () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({
 				noindex: true,
-				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 				beforeStatic: [login],
 			}),
 			clientDirectory,

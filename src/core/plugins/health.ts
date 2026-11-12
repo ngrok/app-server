@@ -1,4 +1,4 @@
-import { errorAttributes } from "../log.js";
+import { asError } from "../log.js";
 import { optionPlugin } from "../plugin-options.js";
 import { isStopping } from "../shutdown.js";
 import type { Plugin, RequestLogger } from "../types.js";
@@ -57,7 +57,7 @@ export function health({
 		try {
 			passed = await ready();
 		} catch (error) {
-			failure = errorAttributes(error);
+			failure = { error: asError(error) };
 		}
 		if (!passed && !appFailing) {
 			logger.warn("readiness check failed", failure);

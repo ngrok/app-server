@@ -9,10 +9,40 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  * {@link jsonSink}. Attribute names are flat and dotted, such as `http.method`.
  */
 export type LogSink = {
-	log: (level: LogLevel, message: string, attributes: Readonly<Record<string, unknown>>) => void;
+	log: (line: LogLine) => void;
 };
 
-/** The logger for one request. Each line carries the request ID, method, and path. */
+/** One log line. Attribute names are flat and dotted, such as `http.method`. */
+export type LogLine = {
+	level: LogLevel;
+	message: string;
+	attributes: Readonly<Record<string, unknown>>;
+};
+
+/** Hooks that change each log line before it goes to the {@link LogSink}. */
+export type LogOptions = {
+	/**
+	 * Gives the attributes of each line, after the server flattens each error.
+	 * Use it to add, change, or remove a field, such as to redact a value.
+	 */
+	attributes?: (line: LogLine) => Readonly<Record<string, unknown>>;
+	/**
+	 * Gives the fields of an attribute whose value is an `Error`. `prefix` is
+	 * the attribute name, such as `error`. `fields` holds the default fields,
+	 * so the hook can change some of them and keep the rest.
+	 */
+	error?: (value: {
+		error: Error;
+		prefix: string;
+		fields: Readonly<Record<string, unknown>>;
+	}) => Readonly<Record<string, unknown>>;
+};
+
+/**
+ * A logger with one method for each level. The logger of a request adds the
+ * request ID, method, and path to each line. These fields win over a field
+ * of the same name that the caller gives.
+ */
 export type RequestLogger = Record<
 	LogLevel,
 	(message: string, attributes?: Readonly<Record<string, unknown>>) => void

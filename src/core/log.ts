@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import type { AppServerEnv, LogSink, RequestLogger } from "./types.js";
+import type { AppServerEnv, LogOptions, LogSink, RequestLogger } from "./types.js";
 
 /** The standard output (stdout) lines that wait for {@link flushLogs}. */
 let pending = "";
@@ -52,6 +52,9 @@ function writeStdout(line: string): void {
 	pending += line;
 }
 
+/** The end of a {@link jsonSink} line whose attributes have no JSON. */
+const NO_JSON = '"log.error":"attributes not written as JSON"}';
+
 /**
  * A log sink that writes one JSON object per line. Each line has `time`,
  * `level`, `message`, and the flat attributes, which Datadog reads as its
@@ -66,8 +69,18 @@ function writeStdout(line: string): void {
  */
 export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	return {
-		log: (level, message, attributes) => {
-			write(`${JSON.stringify({ time: isoNow(), level, message, ...attributes })}\n`);
+		log: ({ level, message, attributes }) => {
+			const time = isoNow();
+			const head = `{"time":"${time}","level":"${level}","message":${JSON.stringify(message)}`;
+			// Why the key check: a caller's `time`, `level`, or `message` replaces the sink's, as in a spread.
+			const ownKeys = "time" in attributes || "level" in attributes || "message" in attributes;
+			// Why a splice, not one object: a copy of each attribute costs more than the rest of the line.
+			const json = toJson(ownKeys ? { time, level, message, ...attributes } : attributes);
+			let line = `${head},${NO_JSON}`;
+			if (json != null) {
+				line = ownKeys ? json : `${head}${json === "{}" ? "}" : `,${json.slice(1)}`}`;
+			}
+			write(`${line}\n`);
 		},
 	};
 }
@@ -82,7 +95,7 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
  * one write for each turn: the lines then keep their order with Vite's lines.
  *
  * @example
- * textSink().log("info", "port in use, trying the next port", { "server.port": 3000 });
+ * textSink().log({ level: "info", message: "port in use, trying the next port", attributes: { "server.port": 3000 } });
  * // time=2026-11-11T12:00:00.000Z level=INFO msg="port in use, trying the next port" server.port=3000
  */
 export function textSink(
@@ -91,7 +104,7 @@ export function textSink(
 	},
 ): LogSink {
 	return {
-		log: (level, message, attributes) => {
+		log: ({ level, message, attributes }) => {
 			let line = `time=${isoNow()} level=${level.toUpperCase()} msg=${textValue(message)}`;
 			for (const [key, value] of Object.entries(attributes)) {
 				line += ` ${key}=${textValue(value)}`;
@@ -103,8 +116,52 @@ export function textSink(
 
 /** A value of a {@link textSink} line. `JSON.stringify` escapes each control character. */
 function textValue(value: unknown): string {
-	const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+	if (typeof value === "bigint") {
+		return `${value}n`;
+	}
+	const text = typeof value === "string" ? value : (toJson(value) ?? String(value));
 	return /^[^\s"=\p{Cc}]+$/u.test(text) ? text : JSON.stringify(text);
+}
+
+/**
+ * `value` as JSON, with each bigint as a string such as `"1n"`, and each
+ * cycle as `"[Circular]"`. Gives `undefined` for a value with no JSON, such
+ * as a function, or one whose `toJSON` throws. Why try the plain call first:
+ * the replacer runs for each value, and a log line seldom needs it.
+ */
+function toJson(value: unknown): string | undefined {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		try {
+			return JSON.stringify(value, safeReplacer());
+		} catch {
+			return undefined;
+		}
+	}
+}
+
+/** A `JSON.stringify` replacer for {@link toJson}. */
+function safeReplacer(): (this: unknown, key: string, value: unknown) => unknown {
+	// Why the ancestors, not each object seen: an object that two fields share is not a cycle.
+	const ancestors: unknown[] = [];
+	return function replace(this: unknown, _key: string, value: unknown): unknown {
+		if (typeof value === "bigint") {
+			return `${value}n`;
+		}
+		if (typeof value !== "object" || value == null) {
+			return value;
+		}
+		// Why `this`: it is the object that holds `value`, so each ancestor after it is done.
+		while (ancestors.length > 0 && ancestors.at(-1) !== this) {
+			ancestors.pop();
+		}
+		if (ancestors.includes(value)) {
+			return "[Circular]";
+		}
+		ancestors.push(value);
+		return value;
+	};
 }
 
 /** The millisecond of the last `time`, and its ISO string. */
@@ -133,15 +190,134 @@ function isoNow(): string {
 	return lastTime;
 }
 
-/** Flat `error.*` attributes for a thrown value. */
-export function errorAttributes(error: unknown): Record<string, unknown> {
-	if (error instanceof Error) {
-		return { "error.kind": error.name, "error.message": error.message, "error.stack": error.stack };
-	}
-	return { "error.message": String(error) };
+type Attributes = Readonly<Record<string, unknown>>;
+
+/**
+ * A thrown value as an `Error`, so a log line gives it the `error.*` fields.
+ * Hono sends only an `Error` to `onError`, and rethrows any other value.
+ */
+export function asError(error: unknown): Error {
+	return error instanceof Error
+		? error
+		: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
 }
 
-type Attributes = Readonly<Record<string, unknown>>;
+/** The fields of an error that {@link errorFields} writes on its own, not as an own field. */
+const ERROR_KEYS = new Set(["name", "message", "stack", "cause"]);
+
+/**
+ * The dotted fields of `error` under `prefix`: `kind`, `message`, `stack`,
+ * each own field, such as `code`, the `cause` chain, and the `errors` of an
+ * `AggregateError`. An error with `toJSON` gives its own fields from it. An
+ * error that is its own ancestor in the chain gives `"[Circular]"`.
+ *
+ * @example
+ * errorFields(new Error("no row", { cause: new RangeError("bad id") }), "error");
+ * // => { "error.kind": "Error", "error.message": "no row", "error.stack": "…",
+ * //      "error.cause.kind": "RangeError", "error.cause.message": "bad id", "error.cause.stack": "…" }
+ */
+function errorFields(error: Error, prefix: string): Record<string, unknown> {
+	// Why the ancestors, not each error seen: an error that two fields share is not a cycle.
+	const ancestors: Error[] = [];
+	const addError = (fields: Record<string, unknown>, base: string, current: Error): void => {
+		const at = (key: string) => (base === "" ? key : `${base}.${key}`);
+		const add = (key: string, value: unknown) => {
+			if (!(value instanceof Error)) {
+				fields[key] = value;
+			} else if (ancestors.includes(value)) {
+				fields[key] = "[Circular]";
+			} else {
+				addError(fields, key, value);
+			}
+		};
+		ancestors.push(current);
+		fields[at("kind")] = current.name;
+		fields[at("message")] = current.message;
+		fields[at("stack")] = current.stack;
+		const toJSON: unknown = "toJSON" in current ? current.toJSON : undefined;
+		const own: unknown =
+			typeof toJSON === "function" ? Reflect.apply(toJSON, current, []) : current;
+		if (typeof own === "object" && own != null) {
+			for (const [key, value] of Object.entries(own)) {
+				if (!ERROR_KEYS.has(key)) {
+					add(at(key), value);
+				}
+			}
+		}
+		if (current.cause != null) {
+			add(at("cause"), current.cause);
+		}
+		if (current instanceof AggregateError) {
+			fields[at("errors")] = current.errors.map((member: unknown) => {
+				if (!(member instanceof Error)) {
+					return member;
+				}
+				if (ancestors.includes(member)) {
+					return "[Circular]";
+				}
+				const memberFields: Record<string, unknown> = {};
+				addError(memberFields, "", member);
+				return memberFields;
+			});
+		}
+		ancestors.pop();
+	};
+	const fields: Record<string, unknown> = {};
+	addError(fields, prefix, error);
+	return fields;
+}
+
+/** `attributes` with each `Error` value replaced by its fields, after the `change` hook. */
+function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Attributes {
+	// Why look first: a line seldom holds an error, and then it needs no copy. Why `for...in`: it
+	// makes no array, and costs about half of `Object.values(...).some(...)` for each line.
+	let hasError = false;
+	for (const key in attributes) {
+		if (attributes[key] instanceof Error) {
+			hasError = true;
+			break;
+		}
+	}
+	if (!hasError) {
+		return attributes;
+	}
+	const flat: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(attributes)) {
+		if (value instanceof Error) {
+			const fields = errorFields(value, key);
+			Object.assign(flat, change == null ? fields : change({ error: value, prefix: key, fields }));
+		} else {
+			flat[key] = value;
+		}
+	}
+	return flat;
+}
+
+/**
+ * A sink that writes each line to `sink`, after it replaces each `Error`
+ * value with its fields, and then runs the `attributes` hook.
+ *
+ * @example
+ * hookSink(jsonSink()).log({ level: "error", message: "failed", attributes: { error: new Error("boom") } });
+ * // {"time":"…","level":"error","message":"failed","error.kind":"Error","error.message":"boom","error.stack":"…"}
+ */
+export function hookSink(
+	sink: LogSink,
+	{ attributes: changeAttributes, error: changeError }: LogOptions = {},
+): LogSink {
+	return {
+		log: (line) => {
+			const flat = flattenErrors(line.attributes, changeError);
+			// Why keep `line` when nothing changes: a line seldom holds an error, and then it needs no copy.
+			const flatLine = flat === line.attributes ? line : { ...line, attributes: flat };
+			sink.log(
+				changeAttributes == null
+					? flatLine
+					: { ...flatLine, attributes: changeAttributes(flatLine) },
+			);
+		},
+	};
+}
 
 /**
  * A logger that writes to `sink`. `withBase` gives the attributes of each
@@ -154,29 +330,44 @@ export function sinkLogger(
 	// Why four functions in one scope: a function that makes each one adds a scope for each, on each request.
 	return {
 		debug: (message, attributes = {}) => {
-			sink.log("debug", message, withBase(attributes));
+			sink.log({ level: "debug", message, attributes: withBase(attributes) });
 		},
 		info: (message, attributes = {}) => {
-			sink.log("info", message, withBase(attributes));
+			sink.log({ level: "info", message, attributes: withBase(attributes) });
 		},
 		warn: (message, attributes = {}) => {
-			sink.log("warn", message, withBase(attributes));
+			sink.log({ level: "warn", message, attributes: withBase(attributes) });
 		},
 		error: (message, attributes = {}) => {
-			sink.log("error", message, withBase(attributes));
+			sink.log({ level: "error", message, attributes: withBase(attributes) });
 		},
 	};
 }
 
-/** A logger whose lines carry the request's ID, method, path, and `logAttributes`. */
+/**
+ * A logger whose lines carry the request's ID, method, path, and
+ * `logAttributes`. These fields win over a caller's field of the same name.
+ */
 export function requestLogger(sink: LogSink, context: Context<AppServerEnv>): RequestLogger {
-	// Why read at call time: the `requestId` plugin runs after this logger is made. Why one object:
-	// a base object and then a merge copy each attribute two times.
-	return sinkLogger(sink, (attributes) => ({
-		"http.request_id": context.get("requestId"),
-		"http.method": context.req.method,
-		"http.url_details.path": context.req.path,
-		...context.get("logAttributes"),
-		...attributes,
-	}));
+	// Why read at call time: the `requestId` plugin runs after this logger is made.
+	return sinkLogger(sink, (attributes) => {
+		const requestId = context.get("requestId");
+		const { method, path } = context.req;
+		const logAttributes = context.get("logAttributes");
+		const line: Record<string, unknown> = {
+			"http.request_id": requestId,
+			"http.method": method,
+			"http.url_details.path": path,
+			...logAttributes,
+			...attributes,
+		};
+		// Why write them again, not merge a base object: a caller's field must not replace a request
+		// field, and a merge copies each attribute two times. A key keeps its first place.
+		// oxlint-disable-next-line unicorn/no-immediate-mutation -- the spread above must not win.
+		line["http.request_id"] = requestId;
+		line["http.method"] = method;
+		line["http.url_details.path"] = path;
+		Object.assign(line, logAttributes);
+		return line;
+	});
 }

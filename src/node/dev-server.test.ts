@@ -81,7 +81,7 @@ describe("devServerStage", () => {
 		writeFileSync(join(publicDirectory, "docs/offline.html"), "<script>go()</script>");
 		const app = createServer({
 			plugins: [
-				contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` }),
+				contentSecurityPolicy({ policy: ({ scriptSrc }) => `script-src ${scriptSrc}` }),
 				assets(),
 			],
 			logger: { log: () => {} },
@@ -127,7 +127,7 @@ describe("devServerStage", () => {
 		writeFileSync(join(publicDirectory, "offline.html"), "<script>go()</script>");
 		const app = createServer({
 			plugins: [
-				contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` }),
+				contentSecurityPolicy({ policy: ({ scriptSrc }) => `script-src ${scriptSrc}` }),
 				assets(),
 			],
 			logger: { log: () => {} },
@@ -169,7 +169,7 @@ describe("devServerStage", () => {
 		const app = createServer({
 			plugins: [requestId(), accessLog(), sentRecorder(reports), assets()],
 			logger: {
-				log: (level, message, attributes) => {
+				log: ({ level, message, attributes }) => {
 					lines.push({ level, message, attributes });
 				},
 			},

@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from "node:http";
 import type { Server } from "node:http";
 import type { Plugin } from "vite";
-import { errorAttributes, textSink } from "../core/log.js";
+import { asError, hookSink, textSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
 import { requestListener } from "../node/response-writer.js";
@@ -51,7 +51,7 @@ export async function start(): Promise<void> {
 	const devServer = devServerStage(viteServer.middlewares, {
 		publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
 	});
-	const sink = textSink();
+	const sink = hookSink(textSink());
 	const apps = servedApps();
 
 	const listener = requestListener(async (request, bindings) => {
@@ -64,7 +64,11 @@ export async function start(): Promise<void> {
 			if (error instanceof Error) {
 				viteServer.ssrFixStacktrace(error);
 			}
-			sink.log("error", "dev request failed", errorAttributes(error));
+			sink.log({
+				level: "error",
+				message: "dev request failed",
+				attributes: { error: asError(error) },
+			});
 			return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {
 				status: 500,
 				headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -83,12 +87,20 @@ export async function start(): Promise<void> {
 		hostname,
 		strictPort: viteServer.config.server.strictPort,
 		onPortInUse: (inUse) => {
-			sink.log("info", "port in use, trying the next port", { "server.port": inUse });
+			sink.log({
+				level: "info",
+				message: "port in use, trying the next port",
+				attributes: { "server.port": inUse },
+			});
 		},
 		onWildcardInUse: (inUse) => {
-			sink.log("warn", "port in use on a wildcard address", {
-				"server.port": inUse,
-				"server.address": hostname,
+			sink.log({
+				level: "warn",
+				message: "port in use on a wildcard address",
+				attributes: {
+					"server.port": inUse,
+					"server.address": hostname,
+				},
 			});
 		},
 	});
@@ -108,7 +120,11 @@ export async function start(): Promise<void> {
 				});
 			});
 			const viteClosed = viteServer.close().catch((error: unknown) => {
-				sink.log("error", "Vite close failed", errorAttributes(error));
+				sink.log({
+					level: "error",
+					message: "Vite close failed",
+					attributes: { error: asError(error) },
+				});
 				process.exitCode = 1;
 			});
 			void Promise.all([pluginsStopped, httpClosed, viteClosed]).finally(exitAfterFlush);

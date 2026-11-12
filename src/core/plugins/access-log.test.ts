@@ -150,7 +150,7 @@ describe("accessLog", () => {
 		const { request, lines } = await testServer({
 			plugins: [
 				accessLog({
-					attributes: (_, sent) => ({
+					attributes: ({ sent }) => ({
 						"test.headers": [sent.headers.get("Cache-Control"), sent.headers.get("Content-Type")],
 					}),
 				}),
@@ -213,7 +213,7 @@ describe("accessLog", () => {
 	it("logs no line in development for a request that the dev server answers", async () => {
 		const lines: string[] = [];
 		const logger: LogSink = {
-			log: (_level, message, attributes) => {
+			log: ({ message, attributes }) => {
 				lines.push(`${message} ${String(attributes["http.url"])}`);
 			},
 		};
@@ -504,7 +504,7 @@ describe("accessLog on the Node.js listener", () => {
 		const { url, requestLines } = await listening(
 			[
 				accessLog({
-					attributes: (_, sent) => ({
+					attributes: ({ sent }) => ({
 						"test.headers": ["Cache-Control", "Content-Type", "Content-Length"].map((name) =>
 							sent.headers.get(name),
 						),
@@ -565,7 +565,7 @@ describe("accessLog on the Node.js listener", () => {
 
 	it("keeps each response, and stops a body that no one reads, when the log sink throws", async () => {
 		const logger: LogSink = {
-			log: (_level, message) => {
+			log: ({ message }) => {
 				if (message === "request" || message === "access log attributes failed") {
 					throw new Error("the sink is closed");
 				}

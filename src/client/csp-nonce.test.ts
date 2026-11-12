@@ -9,7 +9,7 @@ import { cspNonce } from "./csp-nonce.js";
 /** A server whose framework renders a page with the nonce of `cspNonce()`. */
 async function server() {
 	const { request, internals } = await testServer({
-		plugins: [contentSecurityPolicy({ policy: (scriptSrc) => `script-src ${scriptSrc}` })],
+		plugins: [contentSecurityPolicy({ policy: ({ scriptSrc }) => `script-src ${scriptSrc}` })],
 		render: async () =>
 			new Response(`<!doctype html><script nonce="${cspNonce() ?? ""}"></script>`, {
 				headers: { "Content-Type": "text/html; charset=utf-8" },

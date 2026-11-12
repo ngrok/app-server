@@ -325,7 +325,7 @@ describe("the node response writer", () => {
 		let app: AppServer | undefined;
 		const { url, linesOf } = await serving({
 			plugins: defaultPlugins({
-				contentSecurityPolicy: { policy: (scriptSrc) => `script-src ${scriptSrc}` },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 			}),
 			render: async (_request, context) =>
 				new Response(`<script nonce="${context.get("cspNonce") ?? ""}"></script>${page}`, {

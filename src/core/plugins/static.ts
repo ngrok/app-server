@@ -86,10 +86,10 @@ export type PrerenderedOptions = {
 	 * Extra headers for a served file, by its URL path. They replace the
 	 * headers captured at build time.
 	 */
-	headers?: (
-		path: string,
-		context: Context<AppServerEnv>,
-	) => Readonly<Record<string, string>> | undefined;
+	headers?: (file: {
+		path: string;
+		context: Context<AppServerEnv>;
+	}) => Readonly<Record<string, string>> | undefined;
 	/**
 	 * Maps a request path to the URL path of the file to serve, for content
 	 * negotiation. Return the path unchanged to serve the usual file. The
@@ -98,7 +98,7 @@ export type PrerenderedOptions = {
 	 * answer depends on a request header, add a `Vary` for it in a plugin.
 	 * With `markdownTwins: true`, a request that `rewrite` changes gets no twin.
 	 */
-	rewrite?: (path: string, context: Context<AppServerEnv>) => string;
+	rewrite?: (request: { path: string; context: Context<AppServerEnv> }) => string;
 	/**
 	 * Serves the markdown twin of a page, such as `/docs/button.md` for
 	 * `/docs/button`, to a request that {@link prefersMarkdown} accepts. A
@@ -130,7 +130,7 @@ export type PrerenderedOptions = {
 	 * the rules of a request path.
 	 *
 	 * @example
-	 * prerendered({ markdownTwins: { twinOf: (path) => `/markdown${path}.md` } });
+	 * prerendered({ markdownTwins: { twinOf: ({ path }) => `/markdown${path}.md` } });
 	 */
 	markdownTwins?: boolean | { twinOf: TwinOf };
 	/**
@@ -160,7 +160,7 @@ export type PrerenderedOptions = {
 };
 
 /** Maps a request to the URL path of its markdown twin, or `undefined` when it has none. */
-type TwinOf = (path: string, context: Context<AppServerEnv>) => string | undefined;
+type TwinOf = (request: { path: string; context: Context<AppServerEnv> }) => string | undefined;
 
 /**
  * The twin of a request, from its path and the path that `rewrite` gives for
@@ -242,7 +242,7 @@ function developmentTwins(
 			(method === "GET" || method === "HEAD") &&
 			skip?.(path) !== true &&
 			prefersMarkdown(context.req.raw)
-				? twinOf(path, rewrite?.(path, context) ?? path, context)
+				? twinOf(path, rewrite?.({ path, context }) ?? path, context)
 				: undefined;
 		// Why both checks: production has no twin that the build does not prerender, or at a path that fails `isFilePath`.
 		if (
@@ -286,7 +286,7 @@ function twinOfOption(
 		return undefined;
 	}
 	const { twinOf } = markdownTwins;
-	return (path, _rewritten, context) => twinOf(path, context);
+	return (path, _rewritten, context) => twinOf({ path, context });
 }
 
 /**
@@ -303,7 +303,7 @@ function twinOfOption(
  *
  * @example
  * prerendered({
- * 	headers: (path) => (path.startsWith("/api/") ? { "Access-Control-Allow-Origin": "*" } : undefined),
+ * 	headers: ({ path }) => (path.startsWith("/api/") ? { "Access-Control-Allow-Origin": "*" } : undefined),
  * });
  */
 export function prerendered(options: PrerenderedOptions = {}): Plugin {
@@ -329,8 +329,12 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			}
 			if (missing.length > 0) {
 				// Why a warning: a path with no file falls through to the framework, which still answers.
-				info.logger.log("warn", "prerendered paths with no file", {
-					"app_server.missing_paths": missing,
+				info.logger.log({
+					level: "warn",
+					message: "prerendered paths with no file",
+					attributes: {
+						"app_server.missing_paths": missing,
+					},
 				});
 			}
 			const cacheControl =
@@ -350,7 +354,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.
 				for (const layer of [
 					capturedHeaders.get(manifestKey(path)),
-					options.headers?.(path, context),
+					options.headers?.({ path, context }),
 				]) {
 					for (const [name, layerValue] of Object.entries(layer ?? {})) {
 						headers.set(name, layerValue);
@@ -368,7 +372,8 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				if ((method !== "GET" && method !== "HEAD") || options.skip?.(context.req.path) === true) {
 					return next();
 				}
-				const rewritten = options.rewrite?.(context.req.path, context) ?? context.req.path;
+				const rewritten =
+					options.rewrite?.({ path: context.req.path, context }) ?? context.req.path;
 				const twin = await findTwin(files, context, { twinOf, rewritten });
 				const preferred = twin != null && prefersMarkdown(context.req.raw) ? twin : undefined;
 				const path = preferred?.path ?? rewritten;

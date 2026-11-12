@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { withHeaderHook } from "../header-hook.js";
-import { errorAttributes } from "../log.js";
+import { asError } from "../log.js";
 import { onResponseSent } from "../response-edge.js";
 import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 import { answeredByDevServer } from "./static.js";
@@ -16,13 +16,13 @@ export type AccessLogOptions = {
 	/**
 	 * More attributes for each request line, such as the app's user ID. It
 	 * runs when the line goes out, with what went out. Read a response header
-	 * from `sent.headers`, not from `c.res`, which can lack the changes of the
+	 * from `sent.headers`, not from `context.res`, which can lack the changes of the
 	 * header hooks.
 	 */
-	attributes?: (
-		context: Context<AppServerEnv>,
-		sent: SentResponse,
-	) => Readonly<Record<string, unknown>>;
+	attributes?: (response: {
+		context: Context<AppServerEnv>;
+		sent: SentResponse;
+	}) => Readonly<Record<string, unknown>>;
 	/**
 	 * Set `Server-Timing: app;dur=<ms>` on each HTML document: the time until
 	 * the response headers were ready. The browser's DevTools show it.
@@ -108,13 +108,13 @@ export function accessLog({
 					const logger = context.get("logger");
 					logger[sent.status >= 500 ? "error" : "info"](
 						"request",
-						attributes == null ? line : { ...line, ...attributes(context, sent) },
+						attributes == null ? line : { ...line, ...attributes({ context, sent }) },
 					);
 				} catch (error) {
 					try {
 						context.get("logger").error("access log attributes failed", {
 							...line,
-							...errorAttributes(error),
+							error: asError(error),
 						});
 					} catch {
 						// Why drop it: the sink failed twice, so no line can go out.

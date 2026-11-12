@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Context } from "hono";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { flushLogs, jsonSink, textSink } from "./log.js";
+import { flushLogs, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
+import type { AppServerEnv, LogSink } from "./types.js";
 
 /** A spy on stdout that keeps each write out of the test output. */
 function spyStdout() {
@@ -18,8 +20,8 @@ describe("jsonSink", () => {
 		const write = spyStdout();
 		const sink = jsonSink();
 
-		sink.log("info", "first", {});
-		sink.log("warn", "second", { "http.status_code": 500 });
+		sink.log({ level: "info", message: "first", attributes: {} });
+		sink.log({ level: "warn", message: "second", attributes: { "http.status_code": 500 } });
 		expect(write).not.toHaveBeenCalled();
 		await new Promise<void>((resolve) => {
 			setImmediate(resolve);
@@ -39,8 +41,8 @@ describe("jsonSink", () => {
 		const script = `
 			import { jsonSink } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "log.ts")).href)};
 			const sink = jsonSink();
-			for (let line = 0; line < 1000; line += 1) sink.log("info", "line", { line });
-			process.on("exit", () => sink.log("info", "exiting", {}));
+			for (let line = 0; line < 1000; line += 1) sink.log({ level: "info", message: "line", attributes: { line } });
+			process.on("exit", () => sink.log({ level: "info", message: "exiting", attributes: {} }));
 			process.exit();
 		`;
 
@@ -56,7 +58,7 @@ describe("jsonSink", () => {
 	it("writes the waiting lines at once on flushLogs", () => {
 		const write = spyStdout();
 
-		jsonSink().log("info", "stopped", {});
+		jsonSink().log({ level: "info", message: "stopped", attributes: {} });
 		flushLogs();
 
 		expect(write).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"message":"stopped"'));
@@ -72,10 +74,33 @@ describe("jsonSink", () => {
 			lines.push(line);
 		});
 
-		sink.log("warn", "slow", { "http.status_code": 200, duration: 5, "http.useragent": undefined });
+		sink.log({
+			level: "warn",
+			message: "slow",
+			attributes: { "http.status_code": 200, duration: 5, "http.useragent": undefined },
+		});
 
 		expect(lines).toStrictEqual([
 			'{"time":"2026-11-03T12:00:00.000Z","level":"warn","message":"slow","http.status_code":200,"duration":5}\n',
+		]);
+	});
+
+	it("lets a caller's time, level, or message replace the sink's, and writes each key once", () => {
+		const lines: string[] = [];
+		const sink = jsonSink((line) => {
+			lines.push(line);
+		});
+
+		sink.log({
+			level: "info",
+			message: "request",
+			attributes: { message: "custom", "http.status_code": 200 },
+		});
+
+		expect(lines).toStrictEqual([
+			expect.stringMatching(
+				/^\{"time":"[^"]+","level":"info","message":"custom","http\.status_code":200\}\n$/u,
+			),
 		]);
 	});
 
@@ -89,18 +114,60 @@ describe("jsonSink", () => {
 			times.push((JSON.parse(line) as { time: unknown }).time);
 		});
 
-		sink.log("info", "first", {});
-		sink.log("info", "same millisecond", {});
+		sink.log({ level: "info", message: "first", attributes: {} });
+		sink.log({ level: "info", message: "same millisecond", attributes: {} });
 		vi.setSystemTime(Date.UTC(2026, 10, 3, 12, 0, 0, 1));
-		sink.log("info", "next millisecond", {});
+		sink.log({ level: "info", message: "next millisecond", attributes: {} });
 		vi.setSystemTime(Date.UTC(2026, 10, 3, 11, 59, 59, 999));
-		sink.log("info", "clock set back", {});
+		sink.log({ level: "info", message: "clock set back", attributes: {} });
 
 		expect(times).toStrictEqual([
 			"2026-11-03T12:00:00.000Z",
 			"2026-11-03T12:00:00.000Z",
 			"2026-11-03T12:00:00.001Z",
 			"2026-11-03T11:59:59.999Z",
+		]);
+	});
+
+	it("writes a bigint as a string and a cycle as [Circular], and does not throw", () => {
+		const lines: string[] = [];
+		const sink = jsonSink((line) => {
+			lines.push(line);
+		});
+		const parent: Record<string, unknown> = { name: "parent" };
+		parent.self = parent;
+		const shared = { id: 1 };
+
+		sink.log({
+			level: "info",
+			message: "values",
+			attributes: { count: 1n, parent, a: shared, b: shared },
+		});
+		sink.log({
+			level: "info",
+			message: "bad toJSON",
+			attributes: {
+				value: {
+					toJSON: () => {
+						throw new Error("no JSON");
+					},
+				},
+			},
+		});
+
+		expect(lines.map((line): unknown => JSON.parse(line))).toStrictEqual([
+			expect.objectContaining({
+				count: "1n",
+				parent: { name: "parent", self: "[Circular]" },
+				a: { id: 1 },
+				b: { id: 1 },
+			}),
+			{
+				time: expect.any(String),
+				level: "info",
+				message: "bad toJSON",
+				"log.error": "attributes not written as JSON",
+			},
 		]);
 	});
 });
@@ -112,9 +179,17 @@ describe("textSink", () => {
 			lines.push(line);
 		});
 
-		sink.log("info", "port in use, trying the next port", { "server.port": 3000 });
-		sink.log("error", "failed", { "error.message": 'a "quote"\nand a line', ok: true, empty: "" });
-		sink.log("error", "failed", { "error.message": "\u001B[2J" });
+		sink.log({
+			level: "info",
+			message: "port in use, trying the next port",
+			attributes: { "server.port": 3000 },
+		});
+		sink.log({
+			level: "error",
+			message: "failed",
+			attributes: { "error.message": 'a "quote"\nand a line', ok: true, empty: "" },
+		});
+		sink.log({ level: "error", message: "failed", attributes: { "error.message": "\u001B[2J" } });
 
 		expect(lines).toStrictEqual([
 			expect.stringMatching(
@@ -124,6 +199,186 @@ describe("textSink", () => {
 				/ level=ERROR msg=failed error\.message="a \\"quote\\"\\nand a line" ok=true empty=""\n$/u,
 			),
 			expect.stringMatching(/ error\.message="\\u001b\[2J"\n$/u),
+		]);
+	});
+
+	it("writes a bigint as a string", () => {
+		const lines: string[] = [];
+
+		textSink((line) => {
+			lines.push(line);
+		}).log({ level: "info", message: "count", attributes: { count: 1n, counts: [2n] } });
+
+		expect(lines).toStrictEqual([expect.stringMatching(/ count=1n counts="\[\\"2n\\"\]"\n$/u)]);
+	});
+});
+
+/** A sink that keeps the attributes of each line. */
+function recordingSink(): { sink: LogSink; lines: Readonly<Record<string, unknown>>[] } {
+	const lines: Readonly<Record<string, unknown>>[] = [];
+	return {
+		sink: {
+			log: ({ attributes }) => {
+				lines.push(attributes);
+			},
+		},
+		lines,
+	};
+}
+
+describe("hookSink", () => {
+	it("writes an error value as dotted fields, with its own fields and its cause chain", () => {
+		const { sink, lines } = recordingSink();
+		const cause = Object.assign(new RangeError("bad id"), {
+			code: "E_ID",
+			count: 1n,
+			errors: ["id"],
+		});
+		const error = new Error("no row", { cause });
+
+		hookSink(sink).log({
+			level: "error",
+			message: "failed",
+			attributes: { "usr.id": "user-1", "db.error": error, ok: false },
+		});
+
+		expect(lines).toStrictEqual([
+			{
+				"usr.id": "user-1",
+				"db.error.kind": "Error",
+				"db.error.message": "no row",
+				"db.error.stack": error.stack,
+				"db.error.cause.kind": "RangeError",
+				"db.error.cause.message": "bad id",
+				"db.error.cause.stack": cause.stack,
+				"db.error.cause.code": "E_ID",
+				"db.error.cause.count": 1n,
+				"db.error.cause.errors": ["id"],
+				ok: false,
+			},
+		]);
+	});
+
+	it("writes a cause that is not an error, the members of an AggregateError, and a cycle", () => {
+		const { sink, lines } = recordingSink();
+		const first = new TypeError("first");
+		const aggregate = new AggregateError([first, "second"], "all failed", { cause: 1n });
+		const loop = new Error("loop");
+		loop.cause = loop;
+
+		hookSink(sink).log({
+			level: "error",
+			message: "failed",
+			attributes: { error: aggregate, other: loop },
+		});
+
+		expect(lines).toStrictEqual([
+			{
+				"error.kind": "AggregateError",
+				"error.message": "all failed",
+				"error.stack": aggregate.stack,
+				"error.cause": 1n,
+				"error.errors": [{ kind: "TypeError", message: "first", stack: first.stack }, "second"],
+				"other.kind": "Error",
+				"other.message": "loop",
+				"other.stack": loop.stack,
+				"other.cause": "[Circular]",
+			},
+		]);
+	});
+
+	it("takes the own fields of an error from its toJSON", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("denied"), {
+			token: "secret",
+			toJSON: () => ({ status: 403 }),
+		});
+
+		hookSink(sink).log({ level: "error", message: "failed", attributes: { error } });
+
+		expect(lines[0]).toStrictEqual({
+			"error.kind": "Error",
+			"error.message": "denied",
+			"error.stack": error.stack,
+			"error.status": 403,
+		});
+	});
+
+	it("gives the error hook the default fields, and writes the fields that it gives", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("unavailable"), { "rpc.service": "svc.Users" });
+		const hooked = hookSink(sink, {
+			error: ({ prefix, fields: { [`${prefix}.rpc.service`]: service, ...fields } }) => ({
+				...fields,
+				"rpc.service": service,
+			}),
+		});
+
+		hooked.log({ level: "error", message: "failed", attributes: { error } });
+
+		expect(lines).toStrictEqual([
+			{
+				"error.kind": "Error",
+				"error.message": "unavailable",
+				"error.stack": error.stack,
+				"rpc.service": "svc.Users",
+			},
+		]);
+	});
+
+	it("gives the line to the error and attributes hooks", () => {
+		const { sink, lines } = recordingSink();
+		const hooked = hookSink(sink, {
+			error: ({ error, prefix }) => ({ [`${prefix}.kind`]: error.name }),
+			attributes: ({ level, message, attributes }) => ({
+				...attributes,
+				"usr.email": "REDACTED",
+				line: `${level} ${message}`,
+			}),
+		});
+
+		hooked.log({
+			level: "warn",
+			message: "slow",
+			attributes: { error: new TypeError("boom"), "usr.email": "a@example.com" },
+		});
+
+		expect(lines).toStrictEqual([
+			{ "error.kind": "TypeError", "usr.email": "REDACTED", line: "warn slow" },
+		]);
+	});
+
+	it("passes a line with no error on as it is", () => {
+		const { sink, lines } = recordingSink();
+		const attributes = { "http.status_code": 200 };
+
+		hookSink(sink).log({ level: "info", message: "request", attributes });
+
+		expect(lines[0]).toBe(attributes);
+	});
+});
+
+describe("requestLogger", () => {
+	it("puts the request fields first, and keeps them when the caller gives the same names", () => {
+		const { sink, lines } = recordingSink();
+		const context = new Context<AppServerEnv>(new Request("http://localhost/"));
+		context.set("requestId", "abc-123");
+		context.set("logAttributes", { trace_id: "trace" });
+
+		requestLogger(sink, context).info("loading", {
+			"usr.id": "user-1",
+			"http.request_id": "other",
+			"http.method": "POST",
+			"http.url_details.path": "/other",
+			trace_id: "other",
+		});
+
+		expect(Object.entries(lines[0] ?? {})).toStrictEqual([
+			["http.request_id", "abc-123"],
+			["http.method", "GET"],
+			["http.url_details.path", "/"],
+			["trace_id", "trace"],
+			["usr.id", "user-1"],
 		]);
 	});
 });

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { ErrorHandler, HTTPResponseError } from "hono/types";
-import { errorAttributes, jsonSink, requestLogger } from "./log.js";
+import { asError, hookSink, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
@@ -28,7 +28,7 @@ import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { checkOptionPlugins, presenceHeadersOf } from "./plugin-options.js";
-import { withRequestContext } from "./request-context.js";
+import { setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
@@ -37,6 +37,7 @@ import type {
 	FrameworkRuntime,
 	HeaderHook,
 	Listener,
+	LogOptions,
 	LogSink,
 	Plugin,
 	RequestStore,
@@ -53,7 +54,7 @@ function answerError(error: Error | HTTPResponseError, context: Context<AppServe
 			return response;
 		}
 	}
-	context.get("logger").error("unhandled error", errorAttributes(error));
+	context.get("logger").error("unhandled error", { error });
 	return context.text("Internal Server Error", 500);
 }
 
@@ -216,6 +217,11 @@ export type CreateServerOptions = {
 	plugins?: readonly Plugin[];
 	/** @default jsonSink() */
 	logger?: LogSink;
+	/**
+	 * Hooks that change each log line of the server and of `logger()`, such
+	 * as to redact a field.
+	 */
+	log?: LogOptions;
 	/** @default the host's listeners, such as `[tcp()]` on the node host */
 	listeners?: readonly Listener[];
 	/**
@@ -297,16 +303,6 @@ export function withForwardedProto(request: Request): Request {
 	return copy;
 }
 
-/**
- * A thrown value as an `Error`. Hono sends only an `Error` to `onError`, and
- * rethrows any other value.
- */
-function asError(error: unknown): Error {
-	return error instanceof Error
-		? error
-		: new Error(`A non-Error value was thrown: ${String(error)}`, { cause: error });
-}
-
 /** Whether `work` settles before `ms` pass. */
 async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -336,7 +332,8 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  */
 export function createServer({
 	plugins = defaultPlugins(),
-	logger = jsonSink(),
+	logger: sink = jsonSink(),
+	log,
 	listeners,
 	trustForwardedProto = false,
 	trustedProxyHops = 0,
@@ -347,6 +344,8 @@ export function createServer({
 	checkCount("trustedProxyHops", trustedProxyHops);
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
+	const logger = hookSink(sink, log);
+	setProcessSink(logger);
 	const app = new Hono<AppServerEnv>();
 	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
 	let onError: ErrorHandler<AppServerEnv> = answerError;
@@ -477,7 +476,7 @@ export function createServer({
 				throw failed.reason;
 			}
 			const urls = started.map((listener) => listener.url);
-			logger.log("info", "listening", { "app_server.urls": urls });
+			logger.log({ level: "info", message: "listening", attributes: { "app_server.urls": urls } });
 			let stopping: Promise<void> | undefined;
 			running = {
 				urls,
@@ -485,14 +484,22 @@ export function createServer({
 					stopping ??= (async () => {
 						markStopping();
 						if (shutdownDelayMs > 0) {
-							logger.log("info", "waiting before the drain", {
-								"app_server.delay_ms": shutdownDelayMs,
+							logger.log({
+								level: "info",
+								message: "waiting before the drain",
+								attributes: {
+									"app_server.delay_ms": shutdownDelayMs,
+								},
 							});
 							await new Promise((resolve) => {
 								setTimeout(resolve, shutdownDelayMs);
 							});
 						}
-						logger.log("info", "draining", { "app_server.deadline_ms": shutdownDeadlineMs });
+						logger.log({
+							level: "info",
+							message: "draining",
+							attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
+						});
 						abortShutdownSignal();
 						const deadline = setTimeout(() => {
 							deadlinePassed = true;
@@ -509,7 +516,7 @@ export function createServer({
 						if (rejected != null) {
 							throw rejected.reason;
 						}
-						logger.log("info", "stopped", {});
+						logger.log({ level: "info", message: "stopped", attributes: {} });
 					})();
 					return stopping;
 				},
@@ -524,13 +531,21 @@ export function createServer({
 					);
 					for (const result of results) {
 						if (result.status === "rejected") {
-							logger.log("error", "plugin shutdown failed", errorAttributes(result.reason));
+							logger.log({
+								level: "error",
+								message: "plugin shutdown failed",
+								attributes: { error: asError(result.reason) },
+							});
 						}
 					}
 				})();
 				if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
-					logger.log("warn", "plugin shutdown passed the deadline", {
-						"app_server.deadline_ms": shutdownDeadlineMs,
+					logger.log({
+						level: "warn",
+						message: "plugin shutdown passed the deadline",
+						attributes: {
+							"app_server.deadline_ms": shutdownDeadlineMs,
+						},
 					});
 				}
 			})();

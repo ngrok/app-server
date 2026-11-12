@@ -48,7 +48,7 @@ function testHost(): { host: HostRuntime; fetch: () => FetchHandler | undefined 
 
 function recordingLogger(lines: string[]): LogSink {
 	return {
-		log: (_level, message, attributes) => {
+		log: ({ message, attributes }) => {
 			lines.push(`${message} ${JSON.stringify(attributes)}`);
 		},
 	};
