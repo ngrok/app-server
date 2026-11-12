@@ -81,6 +81,21 @@ describe("jsonSink", () => {
 		]);
 	});
 
+	it("lets a caller's time, level, or message replace the sink's, and writes each key once", () => {
+		const lines: string[] = [];
+		const sink = jsonSink((line) => {
+			lines.push(line);
+		});
+
+		sink.log("info", "request", { message: "custom", "http.status_code": 200 });
+
+		expect(lines).toStrictEqual([
+			expect.stringMatching(
+				/^\{"time":"[^"]+","level":"info","message":"custom","http\.status_code":200\}\n$/u,
+			),
+		]);
+	});
+
 	it("gives each line the time of its own millisecond", () => {
 		vi.useFakeTimers({ now: Date.UTC(2026, 10, 3, 12, 0, 0, 0), toFake: ["Date"] });
 		onTestFinished(() => {

@@ -52,6 +52,9 @@ function writeStdout(line: string): void {
 	pending += line;
 }
 
+/** The end of a {@link jsonSink} line whose attributes have no JSON. */
+const NO_JSON = '"log.error":"attributes not written as JSON"}';
+
 /**
  * A log sink that writes one JSON object per line. Each line has `time`,
  * `level`, `message`, and the flat attributes, which Datadog reads as its
@@ -68,9 +71,15 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
 	return {
 		log: (level, message, attributes) => {
 			const time = isoNow();
-			const line =
-				toJson({ time, level, message, ...attributes }) ??
-				JSON.stringify({ time, level, message, "log.error": "attributes not written as JSON" });
+			const head = `{"time":"${time}","level":"${level}","message":${JSON.stringify(message)}`;
+			// Why the key check: a caller's `time`, `level`, or `message` replaces the sink's, as in a spread.
+			const ownKeys = "time" in attributes || "level" in attributes || "message" in attributes;
+			// Why a splice, not one object: a copy of each attribute costs more than the rest of the line.
+			const json = toJson(ownKeys ? { time, level, message, ...attributes } : attributes);
+			let line = `${head},${NO_JSON}`;
+			if (json != null) {
+				line = ownKeys ? json : `${head}${json === "{}" ? "}" : `,${json.slice(1)}`}`;
+			}
 			write(`${line}\n`);
 		},
 	};
