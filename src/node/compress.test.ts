@@ -323,4 +323,76 @@ describe("brotliStream", () => {
 			Buffer.concat([shell, tail]).toString(),
 		);
 	});
+
+	it("keeps a tail that comes with the end during the first zlib write", async () => {
+		const shell = Buffer.alloc(200 * 1024, 97);
+		const tail = encoder.encode("</main></body></html>");
+		let pulls = 0;
+		const source = new ReadableStream<Uint8Array>(
+			{
+				async pull(controller) {
+					pulls += 1;
+					if (pulls === 1) {
+						controller.enqueue(shell);
+						return;
+					}
+					// Why two turns: the hold stops after one, and the zlib write is still open after two.
+					await new Promise((resolve) => {
+						setImmediate(resolve);
+					});
+					await new Promise((resolve) => {
+						setImmediate(resolve);
+					});
+					controller.enqueue(tail);
+					controller.close();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+
+		const output = await bytes(brotliStream(source));
+
+		expect(brotliDecompressSync(output)).toStrictEqual(Buffer.concat([shell, tail]));
+	});
+
+	it("sends the start of a body when the source gives empty chunks", async () => {
+		const shell = encoder.encode("<html><body><main>".repeat(100));
+		let pulls = 0;
+		const source = new ReadableStream<Uint8Array>(
+			{
+				async pull(controller) {
+					pulls += 1;
+					if (pulls === 1) {
+						controller.enqueue(shell);
+					} else if (pulls <= 10_000) {
+						controller.enqueue(new Uint8Array());
+					} else {
+						await new Promise(() => {});
+					}
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		const reader = brotliStream(source).getReader();
+
+		const first = await reader.read();
+		await reader.cancel();
+
+		expect(first.done).toBe(false);
+		expect(pulls).toBeLessThan(10);
+	});
+
+	it("copies at most 256 KiB to hold a body that ends with a large chunk", async () => {
+		const body = seededBytes(512 * 1024, 7);
+		const concat = vi.spyOn(Buffer, "concat");
+
+		const output = await bytes(brotliStream(pulled([body.subarray(0, 1024), body.subarray(1024)])));
+		const copied = concat.mock.calls.map(([list]) =>
+			list.reduce((sum, each) => sum + each.byteLength, 0),
+		);
+		concat.mockRestore();
+
+		expect(Math.max(0, ...copied)).toBeLessThanOrEqual(256 * 1024);
+		expect(brotliDecompressSync(output).equals(body)).toBe(true);
+	});
 });

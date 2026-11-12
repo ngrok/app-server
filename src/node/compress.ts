@@ -124,16 +124,15 @@ const BROTLI_QUALITY = 4;
  * {@link BROTLI_HOLD_BYTES}, 256 KiB. Why not the default of 22 (4 MiB):
  * Node.js tells V8 the full size of each encoder's ring buffer as external
  * memory, and at 32 open encoders V8 then runs a full garbage collection for
- * every few responses. A body that fits the window gets the same bytes.
+ * every few responses.
  */
 const BROTLI_WINDOW_BITS = 18;
 
 /**
- * The most bytes of a body that a brotli stream holds before it picks the
- * window. A body that ends within them gets the 256 KiB window, and a longer
- * body gets the default window of 4 MiB. Why: a repeat more than 256 KiB
- * back costs a page of 2.5 MB 30% more bytes, and a stream has no length to
- * pick the window from before it starts.
+ * The most bytes of a body that a brotli stream holds to pick the window: 256
+ * KiB for a body that ends within them, else the default of 4 MiB. Why: a
+ * stream has no length to pick from, and a repeat more than 256 KiB back costs
+ * a page of 2.5 MB 30% more bytes.
  */
 const BROTLI_HOLD_BYTES = 2 ** BROTLI_WINDOW_BITS;
 
@@ -347,8 +346,11 @@ type Codec = {
 	createLarge?: () => Transform;
 };
 
-/** The start of a body that {@link zlibStream} held, and whether the source ended with it. */
-type Start = { value: Uint8Array; done: boolean };
+/**
+ * The start of a body that {@link zlibStream} held, whether the source ended
+ * with it, and whether the body is longer than the hold.
+ */
+type Start = { value: Uint8Array; done: boolean; large: boolean };
 
 function join(chunks: Uint8Array[], size: number): Uint8Array {
 	const [first] = chunks;
@@ -365,7 +367,7 @@ function join(chunks: Uint8Array[], size: number): Uint8Array {
  *
  * With `codec.createLarge`, it first holds the body up to
  * `codec.onceMaxBytes`, the end, or a wait of the source, and then writes
- * what it holds as one chunk.
+ * what it holds.
  */
 function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableStream<Uint8Array> {
 	const reader = source.getReader();
@@ -394,11 +396,10 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 		return chunk;
 	};
 	/**
-	 * `first` and the chunks after it, until they are longer than `max`, the
-	 * source ends, or a read stays open for a turn of the event loop. Why stop
-	 * then: the source waits for data, such as a React `<Suspense>` boundary
-	 * does, and what it gave must reach the client now. A renderer gives the
-	 * rest of a page with no wait.
+	 * `first` and the chunks after it, up to `max` bytes, until the source ends,
+	 * gives an empty chunk, or leaves a read open for a turn of the event loop.
+	 * Why stop on a wait: the source waits for data, such as a React
+	 * `<Suspense>` boundary, and what it gave must reach the client now.
 	 */
 	const hold = async (first: Uint8Array, max: number): Promise<Start> => {
 		const parts = [first];
@@ -422,12 +423,21 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 			}
 			pending = undefined;
 			if (result.done) {
-				return { value: join(parts, size), done: true };
+				return { value: join(parts, size), done: true, large: false };
+			}
+			// Why stop on an empty chunk: a read that resolves at once never lets the turn end.
+			if (result.value.byteLength === 0) {
+				break;
+			}
+			// Why give it to the next read: a join would copy the large chunk.
+			if (size + result.value.byteLength > max) {
+				pending = Promise.resolve(result);
+				return { value: join(parts, size), done: false, large: true };
 			}
 			parts.push(result.value);
 			size += result.value.byteLength;
 		}
-		return { value: join(parts, size), done: false };
+		return { value: join(parts, size), done: false, large: size > max };
 	};
 	/** The zlib output that waits for the next enqueue. */
 	let held: Buffer[] = [];
@@ -487,9 +497,9 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 						const { createLarge, onceMaxBytes } = codec;
 						start =
 							ended || createLarge == null
-								? { value: chunk.value, done: ended }
+								? { value: chunk.value, done: ended, large: chunk.value.byteLength > onceMaxBytes }
 								: await hold(chunk.value, onceMaxBytes);
-						if (start.done && start.value.byteLength <= onceMaxBytes) {
+						if (start.done && !start.large) {
 							const output = await codec.once(start.value, (each) => {
 								pooled = each;
 							});
@@ -498,7 +508,7 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 							controller.close();
 							return;
 						}
-						if (createLarge != null && start.value.byteLength > onceMaxBytes) {
+						if (createLarge != null && start.large) {
 							create = createLarge;
 						}
 					}
@@ -510,7 +520,8 @@ function zlibStream(source: ReadableStream<Uint8Array>, codec: Codec): ReadableS
 					}
 					await write(zlib, start?.value ?? chunk.value);
 					ended ||= start?.done === true;
-					if (ended) {
+					// Why check `pending`: an open read can hold the last chunk when the source closes.
+					if (ended && pending == null) {
 						zlib.end();
 						return;
 					}
@@ -580,12 +591,9 @@ const BROTLI: Codec = {
  * makes each written chunk readable at once. It reads and ends as
  * {@link gzipStream} does.
  *
- * It holds the start of a body until it knows the window. A body that ends
- * within 256 KiB takes a pooled encoder with a 256 KiB window, in one zlib
- * call. A longer body gets a new encoder with a 4 MiB window. Why not 4 MiB
- * for each body: see {@link BROTLI_WINDOW_BITS}. When the source waits for
- * its next chunk first, the stream sends what it holds with the 256 KiB
- * window, and then streams the rest.
+ * It holds the start of a body to pick the window, as
+ * {@link BROTLI_HOLD_BYTES} says. When the source waits for its next chunk
+ * first, the stream sends what it holds with the 256 KiB window.
  *
  * @example
  * new Response(brotliStream(response.body), response);
