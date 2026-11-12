@@ -267,11 +267,8 @@ function errorFields(error: Error, prefix: string): Record<string, unknown> {
 	return fields;
 }
 
-/** `attributes` with each `Error` value replaced by the fields that `toFields` gives for it. */
-function flattenErrors(
-	attributes: Attributes,
-	toFields: NonNullable<LogOptions["error"]>,
-): Attributes {
+/** `attributes` with each `Error` value replaced by its fields, after the `change` hook. */
+function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Attributes {
 	// Why look first: a line seldom holds an error, and then it needs no copy. Why `for...in`: it
 	// makes no array, and costs about half of `Object.values(...).some(...)` for each line.
 	let hasError = false;
@@ -287,7 +284,8 @@ function flattenErrors(
 	const flat: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(attributes)) {
 		if (value instanceof Error) {
-			Object.assign(flat, toFields(value, key));
+			const fields = errorFields(value, key);
+			Object.assign(flat, change == null ? fields : change(value, key, fields));
 		} else {
 			flat[key] = value;
 		}
@@ -305,12 +303,16 @@ function flattenErrors(
  */
 export function hookSink(
 	sink: LogSink,
-	{ attributes: change, error = errorFields }: LogOptions = {},
+	{ attributes: changeAttributes, error: changeError }: LogOptions = {},
 ): LogSink {
 	return {
 		log: (level, message, attributes) => {
-			const flat = flattenErrors(attributes, error);
-			sink.log(level, message, change == null ? flat : change(level, message, flat));
+			const flat = flattenErrors(attributes, changeError);
+			sink.log(
+				level,
+				message,
+				changeAttributes == null ? flat : changeAttributes(level, message, flat),
+			);
 		},
 	};
 }

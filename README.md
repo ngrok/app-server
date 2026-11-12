@@ -777,16 +777,13 @@ logger().error("payment failed", { error });
 // {"message":"payment failed","error.kind":"TypeError","error.message":"…","error.stack":"…","error.cause.kind":"Error","error.cause.code":"ECONNRESET",…}
 ```
 
-The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` replaces the default fields of an error:
+The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write:
 
 ```ts
 createServer({
 	log: {
 		attributes: (level, message, attributes) => ({ ...attributes, "usr.email": undefined }),
-		error: (error, prefix) => ({
-			[`${prefix}.kind`]: error.name,
-			[`${prefix}.message`]: error.message,
-		}),
+		error: (error, prefix, fields) => ({ ...fields, [`${prefix}.stack`]: undefined }),
 	},
 });
 ```

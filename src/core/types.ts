@@ -24,10 +24,15 @@ export type LogOptions = {
 		attributes: Readonly<Record<string, unknown>>,
 	) => Readonly<Record<string, unknown>>;
 	/**
-	 * Gives the fields of an attribute whose value is an `Error`, in place of
-	 * the default fields. `prefix` is the attribute name, such as `error`.
+	 * Gives the fields of an attribute whose value is an `Error`. `prefix` is
+	 * the attribute name, such as `error`. `fields` holds the default fields,
+	 * so the hook can change some of them and keep the rest.
 	 */
-	error?: (error: Error, prefix: string) => Readonly<Record<string, unknown>>;
+	error?: (
+		error: Error,
+		prefix: string,
+		fields: Readonly<Record<string, unknown>>,
+	) => Readonly<Record<string, unknown>>;
 };
 
 /**

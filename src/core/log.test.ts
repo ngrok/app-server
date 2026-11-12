@@ -272,6 +272,28 @@ describe("hookSink", () => {
 		});
 	});
 
+	it("gives the error hook the default fields, and writes the fields that it gives", () => {
+		const { sink, lines } = recordingSink();
+		const error = Object.assign(new Error("unavailable"), { "rpc.service": "svc.Users" });
+		const hooked = hookSink(sink, {
+			error: (_error, prefix, { [`${prefix}.rpc.service`]: service, ...fields }) => ({
+				...fields,
+				"rpc.service": service,
+			}),
+		});
+
+		hooked.log("error", "failed", { error });
+
+		expect(lines).toStrictEqual([
+			{
+				"error.kind": "Error",
+				"error.message": "unavailable",
+				"error.stack": error.stack,
+				"rpc.service": "svc.Users",
+			},
+		]);
+	});
+
 	it("gives the line to the error and attributes hooks", () => {
 		const { sink, lines } = recordingSink();
 		const hooked = hookSink(sink, {
