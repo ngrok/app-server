@@ -104,6 +104,21 @@ describe("prerendered", () => {
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
 	});
 
+	it("gives the headers option the path that names the file, and the path of the file", async () => {
+		const { request } = await staticServer({
+			headers: ({ path, file }) => ({ "X-Path": path, "X-File": file }),
+			rewrite: ({ path }) => (path === "/old" ? "/components/button.md" : path),
+		});
+
+		const page = await request("/components/button");
+		const rewritten = await request("/old");
+
+		expect(page.headers.get("X-Path")).toBe("/components/button");
+		expect(page.headers.get("X-File")).toBe("/components/button/index.html");
+		expect(rewritten.headers.get("X-Path")).toBe("/components/button.md");
+		expect(rewritten.headers.get("X-File")).toBe("/components/button.md");
+	});
+
 	it("lets the headers option replace a captured header in any case", async () => {
 		const { request } = await staticServer({
 			headers: ({ path }) =>

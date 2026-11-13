@@ -79,11 +79,15 @@ export function assets(): Plugin {
 /** Options for {@link prerendered}. */
 export type PrerenderedOptions = {
 	/**
-	 * Extra headers for a served file, by its URL path. They replace the
-	 * headers captured at build time.
+	 * Extra headers for a served file. They replace the headers captured at
+	 * build time. `path` is the URL path that names the file: the request path,
+	 * or the path that `rewrite` or a markdown twin gives, such as `/about`.
+	 * `file` is the URL path of the file in the client build, such as
+	 * `/about/index.html`, the same path that `cacheControl` gets.
 	 */
-	headers?: (file: {
+	headers?: (served: {
 		path: string;
+		file: string;
 		context: Context<AppServerEnv>;
 	}) => Readonly<Record<string, string>> | undefined;
 	/**
@@ -130,10 +134,10 @@ export type PrerenderedOptions = {
 	 */
 	markdownTwins?: boolean | { twinOf: TwinOf };
 	/**
-	 * Sends a request path to the next stage, with no file lookup. Use it for
-	 * private pages, so the auth check in the app or the framework runs for
-	 * them. A data request has its own path, such as `/app.data` in React
-	 * Router.
+	 * Sends a request path to the next stage, with no file lookup. It gets the
+	 * request path, before `rewrite`. Use it for private pages, so the auth
+	 * check in the app or the framework runs for them. A data request has its
+	 * own path, such as `/app.data` in React Router.
 	 *
 	 * @example
 	 * prerendered({ skip: (path) => path === "/app" || path.startsWith("/app/") || path.startsWith("/app.") });
@@ -150,9 +154,9 @@ export type PrerenderedOptions = {
 	 * `public, max-age=3600, stale-while-revalidate=86400`.
 	 *
 	 * @example
-	 * prerendered({ cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined) });
+	 * prerendered({ cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined) });
 	 */
-	cacheControl?: (path: string) => string | undefined;
+	cacheControl?: (file: string) => string | undefined;
 };
 
 /** Maps a request to the URL path of its markdown twin, or `undefined` when it has none. */
@@ -359,7 +363,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					headers: [
 						value == null ? undefined : { "Cache-Control": value },
 						capturedHeaders.get(manifestKey(path)),
-						options.headers?.({ path, context }),
+						options.headers?.({ path, file: file.path, context }),
 					],
 					contentTypes,
 				});
