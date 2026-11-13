@@ -348,7 +348,10 @@ export type SetupInfo = {
 	  }
 	| {
 			mode: "development";
-			/** The dev server as a pipeline stage. It serves source modules, HMR, and CSS. */
+			/**
+			 * The dev server as a pipeline stage. It serves source modules, HMR, and CSS. One plugin
+			 * must take it, as `assets()` does. The setup throws when no plugin reads it.
+			 */
 			devServer: MiddlewareHandler<AppServerEnv>;
 			/**
 			 * The URL paths that the build will prerender, or `undefined` when the

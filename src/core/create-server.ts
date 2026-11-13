@@ -572,8 +572,26 @@ export function createServer({
 				if (appSink == null && info.mode === "development") {
 					sink.log = textSink().log;
 				}
+				let devServerTaken = info.mode !== "development";
+				// Why a getter: an app plugin that runs the dev server itself must pass, so the check
+				// cannot look for the name `assets`.
+				const seen: SetupInfo =
+					info.mode === "development"
+						? {
+								...info,
+								get devServer() {
+									devServerTaken = true;
+									return info.devServer;
+								},
+							}
+						: info;
 				for (const plugin of plugins) {
-					await plugin.setup?.(info);
+					await plugin.setup?.(seen);
+				}
+				if (!devServerTaken) {
+					throw new Error(
+						"No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.",
+					);
 				}
 				app.all("*", async (context) => context.env.framework.fetch(context.req.raw, context));
 			})().catch((error: unknown) => {

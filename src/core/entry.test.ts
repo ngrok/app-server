@@ -10,17 +10,10 @@ import { createEntry } from "./entry.js";
 import { flushLogs } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
-import { prerendered } from "./plugins/static.js";
+import { assets, prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
 import { requestContext } from "./request-context.js";
-import type {
-	FetchHandler,
-	HostRuntime,
-	Listener,
-	LogLine,
-	LogSink,
-	StaticFiles,
-} from "./types.js";
+import type { FetchHandler, HostRuntime, Listener, LogLine, LogSink, Plugin, StaticFiles } from "./types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
@@ -73,7 +66,7 @@ describe("createEntry", () => {
 
 	it("answers a development request through the app's pipeline", async () => {
 		const entry = createEntry({
-			app: createServer({ plugins: [] }),
+			app: createServer({ plugins: [assets()] }),
 			host: nodeHost,
 			framework: () => stubFramework(),
 		});
@@ -90,7 +83,7 @@ describe("createEntry", () => {
 		const written = () => write.mock.calls.map(([line]) => String(line));
 		const entry = () =>
 			createEntry({
-				app: createServer({ plugins: [accessLog()] }),
+				app: createServer({ plugins: [accessLog(), assets()] }),
 				host: testHost().host,
 				clientDirectory,
 				framework: () => stubFramework(),
@@ -119,7 +112,7 @@ describe("createEntry", () => {
 		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		const lines: string[] = [];
 		const entry = createEntry({
-			app: createServer({ plugins: [accessLog()], logger: recordingLogger(lines) }),
+			app: createServer({ plugins: [accessLog(), assets()], logger: recordingLogger(lines) }),
 			host: nodeHost,
 			framework: () => stubFramework(),
 		});
@@ -133,6 +126,53 @@ describe("createEntry", () => {
 		expect(write).not.toHaveBeenCalled();
 	});
 
+	it("stops a development request when no plugin runs the dev server", async () => {
+		const entry = createEntry({
+			app: createServer({ plugins: [requestId()], logger: recordingLogger([]) }),
+			host: testHost().host,
+			clientDirectory,
+			framework: () => stubFramework(),
+		});
+		const devServer = async () => new Response("export {};");
+
+		await expect(
+			entry.fetchDev(new Request("http://localhost/@vite/client"), {}, devServer),
+		).rejects.toThrow(
+			"No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.",
+		);
+		const built = await entry.fetch(new Request("http://localhost/about"), {});
+		await expect(built.text()).resolves.toBe("rendered");
+	});
+
+	it("answers from the dev server through assets(), and through a plugin of the app that takes it", async () => {
+		let stage: Plugin["middleware"];
+		const mounted: Plugin = {
+			name: "own-dev-server",
+			setup: (info) => {
+				if (info.mode === "development") {
+					stage = info.devServer;
+				}
+			},
+			middleware: async (context, next) => stage?.(context, next) ?? next(),
+		};
+		const devServer = async () => new Response("export {};");
+
+		for (const plugins of [[assets()], [mounted]]) {
+			const entry = createEntry({
+				app: createServer({ plugins, logger: recordingLogger([]) }),
+				host: nodeHost,
+				framework: () => stubFramework(),
+			});
+			const response = await entry.fetchDev(
+				new Request("http://localhost/@vite/client"),
+				{},
+				devServer,
+			);
+
+			await expect(response.text()).resolves.toBe("export {};");
+		}
+	});
+
 	it("in development, gives a twin when the framework does not know the prerendered paths", async () => {
 		const framework = stubFramework(async (request) =>
 			request.url.endsWith(".md")
@@ -140,7 +180,7 @@ describe("createEntry", () => {
 				: new Response("rendered"),
 		);
 		const entry = createEntry({
-			app: createServer({ plugins: [prerendered({ markdownTwins: true })] }),
+			app: createServer({ plugins: [assets(), prerendered({ markdownTwins: true })] }),
 			host: nodeHost,
 			framework: () => framework,
 		});
@@ -157,7 +197,7 @@ describe("createEntry", () => {
 	it("asks the host for the files one time for the development requests of an entry", async () => {
 		const files = vi.fn<HostRuntime["files"]>(nodeHost.files);
 		const entry = createEntry({
-			app: createServer({ plugins: [] }),
+			app: createServer({ plugins: [assets()] }),
 			host: { ...nodeHost, files },
 			framework: () => stubFramework(),
 		});
@@ -179,7 +219,7 @@ describe("createEntry", () => {
 			throw new Error("config server down");
 		});
 		const entry = createEntry({
-			app: createServer({ plugins: [{ name: "remote-config", setup }] }),
+			app: createServer({ plugins: [assets(), { name: "remote-config", setup }] }),
 			host: nodeHost,
 			framework: () => stubFramework(),
 		});
@@ -197,7 +237,7 @@ describe("createEntry", () => {
 		const { host, fetch } = testHost();
 		const entry = (): ReturnType<typeof createEntry> =>
 			createEntry({
-				app: createServer({ plugins: [buildId()], logger: recordingLogger([]) }),
+				app: createServer({ plugins: [buildId(), assets()], logger: recordingLogger([]) }),
 				host,
 				clientDirectory,
 				framework: () => ({ name: "stub", fetch: renderedFramework }),

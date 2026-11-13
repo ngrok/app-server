@@ -34,7 +34,8 @@ export function answeredByDevServer(context: Context<AppServerEnv>): boolean {
  * default, with a one-year immutable cache. The `appServer` Vite plugin
  * records the directory. A missing asset gets a plain 404 with
  * `Cache-Control: no-store`, not a rendered page. In development, the dev
- * server serves the source modules, the HMR client, and the CSS here instead.
+ * server serves the source modules, the HMR client, and the CSS here instead,
+ * so a development plugin list needs this plugin.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets(), prerendered()] });
