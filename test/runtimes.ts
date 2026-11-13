@@ -2,16 +2,8 @@
 // each: `node ./test/runtimes.ts [node|bun|deno ...]`. Build the package first. A runtime that is
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import {
-	cpSync,
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	readdirSync,
-	realpathSync,
-	rmSync,
-} from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -119,8 +111,30 @@ async function checkPort(runtime: string): Promise<void> {
 	}
 }
 
+/** `serve` with no server build to load: a message and the usage on stderr, and no stack. */
+function checkMissingBuild(runtime: string): void {
+	const empty = mkdtempSync(join(tmpdir(), "app-server-empty-"));
+	try {
+		for (const [buildPath, message] of [
+			[["nope/app-server.js"], "No server build at nope/app-server.js. "],
+			[[], "No server build found. "],
+		] as const) {
+			const [command, args] = commands[runtime]?.([cliPath, "serve", ...buildPath]) ?? ["", []];
+			const { status, stderr } = spawnSync(command, args, { cwd: empty, encoding: "utf8" });
+			assert.equal(status, 1, "`serve` exits with code 1 when no file is at the build path");
+			const [first = "", usage = "", ...rest] = stderr.split("\n");
+			assert.ok(first.startsWith(message), `the first line names the fault: ${stderr}`);
+			assert.match(usage, /^Usage: /u, "the usage comes next");
+			assert.deepEqual(rest, [""], "no stack follows");
+		}
+	} finally {
+		rmSync(empty, { recursive: true, force: true });
+	}
+}
+
 async function check(runtime: string): Promise<void> {
 	await checkPort(runtime);
+	checkMissingBuild(runtime);
 	const { child, lines, url } = startServer(runtime, serveArgs);
 	try {
 		const base = await url;

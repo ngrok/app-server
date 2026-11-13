@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The `app-server` command: `app-server start` or `app-server serve [build/server/app-server.js]`,
 // each with an optional `--port`.
+import { existsSync } from "node:fs";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { parsePort } from "../node/tcp.js";
@@ -49,8 +50,18 @@ if (args?.help === true) {
 	if (typeof process.setSourceMapsEnabled === "function") {
 		process.setSourceMapsEnabled(true);
 	}
-	const { serve } = await import("./serve.js");
-	await serve({ buildPath: args.buildPath });
+	const { DEFAULT_BUILD_PATHS, serve } = await import("./serve.js");
+	const buildPath = args.buildPath ?? DEFAULT_BUILD_PATHS.find((each) => existsSync(each));
+	// Why here and not a catch around `serve`: a crash of the app's build must keep its stack.
+	if (buildPath == null) {
+		fail(
+			`No server build found. Build the app, or pass its path. Looked for: ${DEFAULT_BUILD_PATHS.join(", ")}.`,
+		);
+	} else if (existsSync(buildPath)) {
+		await serve({ buildPath });
+	} else {
+		fail(`No server build at ${buildPath}. Build the app, or pass its path.`);
+	}
 } else if (args != null) {
 	fail(args.command == null ? "Give a command." : `Unknown command: ${args.command}.`);
 }
