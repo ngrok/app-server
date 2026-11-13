@@ -1,5 +1,6 @@
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
+import { connect } from "node:net";
 import { constants, gunzipSync } from "node:zlib";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { defaultPlugins } from "../core/create-server.js";
@@ -432,6 +433,34 @@ describe("the node response writer", () => {
 
 		expect(seen).toStrictEqual([new URL("/page", plain.url).href]);
 		expect(odd.statusCode).toBe(400);
+	});
+
+	it("answers a request with no Host header, such as an HTTP/1.0 health probe, with the host localhost", async () => {
+		const { url } = await serving({
+			routes: (app) => {
+				app.get("/url", (c) => c.text(c.req.url));
+			},
+		});
+		const { port, hostname } = new URL(url);
+		/** The status line and the body of the answer to a GET for `path`. Why a socket: `node:http` always sends `Host`. */
+		const probe = async (path: string) =>
+			new Promise<(string | undefined)[]>((resolve, reject) => {
+				let answer = "";
+				const socket = connect(Number(port), hostname, () => {
+					socket.write(`GET ${path} HTTP/1.0\r\n\r\n`);
+				});
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk: string) => {
+					answer += chunk;
+				});
+				socket.once("error", reject);
+				socket.once("end", () => {
+					resolve([answer.split("\r\n")[0], answer.split("\r\n\r\n")[1]]);
+				});
+			});
+
+		await expect(probe("/livez")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "ok"]);
+		await expect(probe("/url")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "http://localhost/url"]);
 	});
 
 	it("sends the headers of the header hooks with a HEAD response, and with a copy that a wrapper returns", async () => {

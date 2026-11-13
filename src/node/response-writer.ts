@@ -375,6 +375,9 @@ function listenerOf(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
 	isDraining: (() => boolean) | undefined,
 ): ReturnType<typeof getRequestListener> {
+	// Why a default host: a request with no `Host`, such as an HTTP/1.0 health probe, then gets a URL
+	// and runs each stage. With no default, `@hono/node-server` answers it 400 before the first stage.
+	const options = { hostname: "localhost" };
 	return keepGlobalResponse(() =>
 		getRequestListener(async (request, { incoming, outgoing }) => {
 			const { remoteAddress } = incoming.socket;
@@ -413,6 +416,6 @@ function listenerOf(
 			}
 			await writeResponse(response, outgoing, edge);
 			return ALREADY_SENT;
-		}),
+		}, options),
 	);
 }
