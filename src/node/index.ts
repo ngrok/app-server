@@ -47,7 +47,7 @@ const storage = new AsyncLocalStorage<Context<AppServerEnv>>();
  */
 export const host: HostRuntime = {
 	files: nodeFiles,
-	listeners: () => [tcp()],
+	listeners: [tcp()],
 	storage: {
 		run: (value, work) => storage.run(value, work),
 		get: () => storage.getStore(),

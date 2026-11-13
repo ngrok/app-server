@@ -181,7 +181,7 @@ export type HostRuntime = {
 	 * The listeners when the app sets none. A serverless host has none: it
 	 * calls the entry's `fetch` for each request.
 	 */
-	listeners?: () => readonly Listener[];
+	listeners?: readonly Listener[];
 	/** The storage for {@link requestContext}. Without it, `requestContext()` gives `undefined`. */
 	storage?: RequestStore;
 	/**

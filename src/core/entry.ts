@@ -174,7 +174,7 @@ export function createEntry({
 		app,
 		start: async () => {
 			const runtime = await production();
-			const server = await internals.listen(runtime, host.listeners?.());
+			const server = await internals.listen(runtime, host.listeners);
 			host.lifecycle?.onStop(async () =>
 				server.shutdown().catch((error: unknown) => {
 					internals.logger.log({

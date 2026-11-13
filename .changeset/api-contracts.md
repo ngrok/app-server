@@ -21,3 +21,12 @@ const listener: Listener = { name: "unix", start };
 // After
 const listener: Listener = { start };
 ```
+
+**`HostRuntime.listeners` is a list, not a function**, as the `listeners` option of `createServer` is. TypeScript reports the old form. In JavaScript, a host that still gives a function fails at start with `This app server has no listener`.
+
+```ts
+// Before
+export const host: HostRuntime = { files, listeners: () => [tcp()], lifecycle };
+// After
+export const host: HostRuntime = { files, listeners: [tcp()], lifecycle };
+```

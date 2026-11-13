@@ -47,7 +47,7 @@ function testHost(): { host: HostRuntime; fetch: () => FetchHandler | undefined 
 		},
 	};
 	return {
-		host: { ...nodeHost, listeners: () => [listener], lifecycle: { onStop: () => {} } },
+		host: { ...nodeHost, listeners: [listener], lifecycle: { onStop: () => {} } },
 		fetch: () => handler,
 	};
 }
