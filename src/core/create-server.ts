@@ -420,9 +420,13 @@ export function createServer({
 			await context.res.body?.cancel();
 		}
 	});
+	// Why not each plugin: one with only `setup` or `onShutdown` has no work in a request.
+	const stages = plugins.filter(
+		({ middleware, etagPart }) => middleware != null || etagPart != null,
+	);
 	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
 	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
-	for (const { middleware, etagPart } of plugins) {
+	for (const { middleware, etagPart } of stages) {
 		app.use(async (context, next) => {
 			const part = etagPart?.();
 			if (part != null) {
