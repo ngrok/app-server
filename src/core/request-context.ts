@@ -38,13 +38,14 @@ export async function withRequestContext<Result>(
 }
 
 /**
- * The request ID, logger, and CSP nonce of the request that runs. It gives `undefined`
- * outside a server request, such as in a prerender pass, or on a host with no
- * request storage.
+ * The request ID, logger, CSP nonce, and client address of the request that
+ * runs. It gives `undefined` outside a server request, such as in a prerender
+ * pass, or on a host with no request storage. To log there too, use
+ * {@link logger}.
  *
  * @example
  * export async function loader() {
- * 	requestContext()?.logger.info("loading the dashboard");
+ * 	const requestId = requestContext()?.requestId;
  * }
  */
 export function requestContext(): RequestContext | undefined {

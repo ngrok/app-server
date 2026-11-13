@@ -130,8 +130,21 @@ export type DefaultPluginsOptions = {
 	 * @default {}
 	 */
 	health?: HealthOptions | false;
+	/**
+	 * The options of the request ID of each request. See {@link requestId}.
+	 * @default {}
+	 */
 	requestId?: RequestIdOptions;
+	/**
+	 * The options of the log line of each request. See {@link accessLog}.
+	 * @default {}
+	 */
 	accessLog?: AccessLogOptions;
+	/**
+	 * The options of the files of the client build, such as `headers`, `skip`,
+	 * and `markdownTwins`. See {@link prerendered}.
+	 * @default {}
+	 */
 	prerendered?: PrerenderedOptions;
 	/**
 	 * Redirects from old URL paths to new URLs. They run before
@@ -153,6 +166,7 @@ export type DefaultPluginsOptions = {
 	/**
 	 * The options of the security headers. `false` turns them off. See
 	 * {@link securityHeaders}.
+	 * @default {}
 	 */
 	securityHeaders?: SecurityHeadersOptions | false;
 	/**
@@ -191,11 +205,19 @@ export type DefaultPluginsOptions = {
  * set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
  * `beforeStatic` plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
- * array, so an app can filter it or splice into it.
+ * array, so an app can filter it or splice into it. To find a plugin in the
+ * array, compare its `name`: the name of its function in kebab-case, such as
+ * `streaming-compress`. A filter on a name that no plugin has removes nothing.
  *
  * @example
  * createServer({
  * 	plugins: defaultPlugins({ env, noindex: process.env.PREVIEW === "1", health: { ready: async () => db.ping() } }),
+ * });
+ *
+ * @example
+ * // Behind a proxy that compresses each response.
+ * createServer({
+ * 	plugins: defaultPlugins().filter((plugin) => plugin.name !== "streaming-compress"),
  * });
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {

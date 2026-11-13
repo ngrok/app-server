@@ -113,8 +113,9 @@ function randomNonce(): string {
  * policy trusts the document's scripts, and only them:
  *
  * - A rendered document gets `'nonce-…' 'strict-dynamic'` with a new nonce
- *   for each request. The app reads the nonce from `requestContext()` and
- *   gives it to the framework's render, so each inline script gets it.
+ *   for each request. The app gives `cspNonce()` from
+ *   `@ngrok/app-server/client` to the framework's render, so each inline
+ *   script gets the nonce.
  * - A prerendered document gets `'self'` and the hash of each of its inline
  *   scripts, which the Vite plugin records. Its file has one nonce for every
  *   visitor, so a nonce protects nothing. Why no `'strict-dynamic'`: a hash,

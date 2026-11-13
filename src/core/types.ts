@@ -288,8 +288,9 @@ export type ResponseHeaders = {
  * response. In an app server, it changes the head once, where the response
  * leaves, after the code that each stage runs after its `next()`: the hook of
  * an inner stage runs first, so an outer stage has the last word. A hook that
- * throws gives a 500, as a stage that throws does. A dev server middleware
- * that sends its own response runs the hooks before it sends the head.
+ * throws gets the answer of the app's `onError`, as a stage that throws does.
+ * A dev server middleware that sends its own response runs the hooks before
+ * it sends the head.
  *
  * The static stages and `streamingCompress` also run the hooks on a view of
  * the headers, to read the `Cache-Control` that leaves. So a hook can run two
@@ -363,7 +364,7 @@ export type SetupInfo = {
  * };
  */
 export type Plugin = {
-	/** A name for logs and errors. */
+	/** A name for logs and errors. An app finds the plugin in a list by it, such as in `defaultPlugins()`. */
 	name: string;
 	/** The Hono middleware for this step. */
 	middleware?: MiddlewareHandler<AppServerEnv>;
@@ -406,7 +407,7 @@ export type StartedListener = {
  * How the server receives connections, separate from the request pipeline.
  *
  * @example
- * createServer({ listeners: [tcp({ port: 8080 })] });
+ * createServer({ listeners: [tcp({ idleTimeoutMs: 120_000 })] });
  */
 export type Listener = {
 	/** A name for logs. */

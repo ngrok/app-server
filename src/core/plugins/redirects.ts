@@ -144,9 +144,10 @@ function withQuery(target: string, search: string): string {
  * target. It applies to GET and HEAD only.
  *
  * Put it before `trailingSlash`, so `/old/` gets one redirect to the final
- * URL, and give it the same `trailingSlash` mode. In `never` mode, a local
- * target loses its trailing slash, so `trailingSlash` does not redirect it
- * again. `defaultPlugins({ redirects })` does both.
+ * URL, and give it the same `trailingSlash` mode. Its default is
+ * `"preserve"`, which is not the `"never"` of `defaultPlugins()`. In `never`
+ * mode, a local target loses its trailing slash, so `trailingSlash` does not
+ * redirect it again. `defaultPlugins({ redirects })` does both.
  *
  * @example
  * redirects([

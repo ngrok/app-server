@@ -40,8 +40,8 @@ export function packageName(specifier: string): string {
 
 /**
  * Code that finds a file next to its own module: a relative `new URL()` on
- * `import.meta.url`, `fileURLToPath(import.meta.url)`, or
- * `import.meta.dirname`.
+ * `import.meta.url`, `fileURLToPath(import.meta.url)`, `import.meta.dirname`,
+ * or `import.meta.filename`.
  */
 const OWN_FILE =
 	/new\s+URL\(\s*(?<quote>["'`])\.{1,2}\/[^"'`]*\k<quote>\s*,\s*import\.meta\.url\s*\)|fileURLToPath\(\s*import\.meta\.url\s*\)|import\.meta\.(?:dirname|filename)\b/u;

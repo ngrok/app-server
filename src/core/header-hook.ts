@@ -70,8 +70,9 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
  * server, the hook changes the head once, where the response leaves, so the
  * response needs no copy. That run comes after the code that each stage runs
  * after its `next()`, so a stage can decide there what its hook does. A hook
- * that throws gives a 500. See {@link HeaderHook} for the order of the hooks
- * and the views that also run them.
+ * that throws gets the answer of the app's `onError`, as a stage that throws
+ * does. See {@link HeaderHook} for the order of the hooks and the views that
+ * also run them.
  *
  * @example
  * const frameOptions: Plugin = {

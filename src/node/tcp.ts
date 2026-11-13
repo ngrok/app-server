@@ -11,9 +11,16 @@ const MAX_IDLE_TIMEOUT_MS = 2_147_483_647 - 1_000;
 
 /** Options for {@link tcp}. */
 export type TcpOptions = {
-	/** @default the `PORT` environment variable, else 3000 */
+	/**
+	 * A port here wins over `PORT` and over the `--port` of `app-server serve`,
+	 * with no message. Leave it out to let the operator choose.
+	 * @default the `PORT` environment variable, else 3000
+	 */
 	port?: number;
-	/** @default the `HOST` environment variable, else every interface */
+	/**
+	 * A host here wins over `HOST`.
+	 * @default the `HOST` environment variable, else every interface
+	 */
 	host?: string;
 	/**
 	 * How long an idle keep-alive connection stays open, in milliseconds. Set
@@ -48,11 +55,12 @@ export function parsePort(value: string): number {
 /**
  * The default listener: a TCP port, served by the runtime's own HTTP server
  * (`node:http` on Node, `Bun.serve` on Bun, `Deno.serve` on Deno). It reads
- * `PORT` and `HOST` when it starts. An `idleTimeoutMs` that is not an integer
- * from 0 to 2147482647 throws, so a bad value stops startup.
+ * `PORT` and `HOST` when it starts, unless the options give a port or a host.
+ * An `idleTimeoutMs` that is not an integer from 0 to 2147482647 throws, so a
+ * bad value stops startup.
  *
  * @example
- * createServer({ listeners: [tcp({ port: 8080 })] });
+ * createServer({ listeners: [tcp({ idleTimeoutMs: 120_000 })] });
  */
 export function tcp({
 	port,
