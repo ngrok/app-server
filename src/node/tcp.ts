@@ -1,3 +1,4 @@
+import { checkCount, MAX_TIMER_MS } from "../core/check-count.js";
 import type { Listener } from "../core/types.js";
 
 /** Above the ngrok edge's 90 s idle pool, so the edge never reuses a socket that the server is closing. */
@@ -7,7 +8,7 @@ const DEFAULT_IDLE_TIMEOUT_MS = 95_000;
  * The largest `idleTimeoutMs`. Why 1 s under the limit of a timer: Node.js
  * adds 1 s to the value for the timer of each socket.
  */
-const MAX_IDLE_TIMEOUT_MS = 2_147_483_647 - 1_000;
+const MAX_IDLE_TIMEOUT_MS = MAX_TIMER_MS - 1_000;
 
 /** Options for {@link tcp}. */
 export type TcpOptions = {
@@ -70,15 +71,7 @@ export function tcp({
 	host,
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 }: TcpOptions = {}): Listener {
-	if (
-		!Number.isInteger(idleTimeoutMs) ||
-		idleTimeoutMs < 0 ||
-		idleTimeoutMs > MAX_IDLE_TIMEOUT_MS
-	) {
-		throw new Error(
-			`idleTimeoutMs must be an integer from 0 to ${MAX_IDLE_TIMEOUT_MS}, not ${idleTimeoutMs}.`,
-		);
-	}
+	checkCount("idleTimeoutMs", idleTimeoutMs, MAX_IDLE_TIMEOUT_MS);
 	return {
 		start: async (fetch, { trustForwardedProto = false } = {}) => {
 			const envHost = host == null ? process.env.HOST || undefined : undefined;

@@ -50,7 +50,12 @@ describe("listenerUrl", () => {
 });
 
 describe("tcp", () => {
-	it.each([-1, 1.5, Number.NaN, 2_147_483_647])(
+	it("takes the ends of the idleTimeoutMs range", () => {
+		expect(() => tcp({ idleTimeoutMs: 0 })).not.toThrow();
+		expect(() => tcp({ idleTimeoutMs: 2_147_482_647 })).not.toThrow();
+	});
+
+	it.each([-1, 1.5, Number.NaN, 2_147_482_648, 2_147_483_647])(
 		"refuses an idleTimeoutMs of %s with a message that names it",
 		(idleTimeoutMs) => {
 			expect(() => tcp({ idleTimeoutMs })).toThrow(
@@ -98,6 +103,31 @@ describe("tcp", () => {
 			.catch((error: unknown) => error);
 
 		expect(failure).toMatchObject({ code: "EADDRNOTAVAIL" });
+	});
+
+	it("sets the largest idleTimeoutMs with no timer overflow in Node.js", async () => {
+		// Why: Node.js adds 1 s to the value for the timer of each socket, and it warns when a
+		// timer is over the limit.
+		const warnings: string[] = [];
+		const record = (warning: Error) => {
+			warnings.push(warning.name);
+		};
+		process.on("warning", record);
+		onTestFinished(() => {
+			process.off("warning", record);
+		});
+		const started = await tcp({
+			port: 0,
+			host: "127.0.0.1",
+			idleTimeoutMs: 2_147_482_647,
+		}).start(async () => new Response("ok"));
+		onTestFinished(async () => started.stop({ deadlineMs: 0 }));
+
+		const response = await request(started.url);
+
+		await expect(text(response)).resolves.toBe("ok");
+		expect(response.headers["keep-alive"]).toBe("timeout=2147482");
+		expect(warnings).not.toContain("TimeoutOverflowWarning");
 	});
 
 	it("keeps an idle connection for longer than the request timeout of Node.js", async () => {
