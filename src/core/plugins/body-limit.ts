@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { replaceResponse } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 // Why: GET and HEAD have no body, and the Fetch `Request` constructor rejects the other three.
@@ -99,10 +100,10 @@ export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 			replaceResponse(context, tooLarge());
 		}
 	};
-	return {
+	return optionPlugin("bodyLimit", {
 		name: "body-limit",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) =>
 			NO_BODY_METHODS.has(context.req.raw.method) ? next() : limit(context, next),
-	};
+	});
 }

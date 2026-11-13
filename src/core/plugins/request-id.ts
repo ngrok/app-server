@@ -1,5 +1,5 @@
 import { withHeaderHook } from "../header-hook.js";
-import { checkHeaderName } from "../plugin-options.js";
+import { checkHeaderName, optionPlugin } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
 /** Options for {@link requestId}. */
@@ -86,7 +86,7 @@ export function requestId({
 	datadogTraceIds = false,
 }: RequestIdOptions = {}): Plugin {
 	checkHeaderName({ plugin: "requestId", option: "headerName", name: headerName });
-	return {
+	return optionPlugin("requestId", {
 		name: "request-id",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
@@ -105,5 +105,5 @@ export function requestId({
 				headers.set(headerName, id);
 			});
 		},
-	};
+	});
 }

@@ -305,7 +305,11 @@ createServer({
 
 Keep `assets` in the array, because it runs Vite in development.
 
-Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, an optional Hono `middleware`, and optional hooks:
+Two plugins of one option of `defaultPlugins()`, such as `defaultPlugins()` with a second `bodyLimit()`, stop startup. The check covers the plugins of the options `health`, `requestId`, `accessLog`, `securityHeaders`, `bodyLimit`, `noindex`, `buildId`, `contentSecurityPolicy`, `env`, `trailingSlash`, and `prerendered`. It does not cover `redirects()`, because a second table is valid. Two copies do not act as one: a value that the app gave is lost, or both act, such as two trailing-slash redirects that loop. Use the option. To put your own copy at another place, turn the option off with `false`, as `health`, `securityHeaders`, `bodyLimit`, and `buildId` allow, or filter the default out of the list by its `name`.
+
+A plugin of the options `securityHeaders`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` that comes after `prerendered()` in the list also stops startup, because the prerendered pages would not get it. Use the option, or put the plugin before `prerendered()`, such as in `beforeStatic`.
+
+A plugin is an object with a `name`, an optional Hono `middleware`, and optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";

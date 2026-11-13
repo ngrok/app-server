@@ -9,6 +9,7 @@ import { eventStream } from "../core/event-stream.js";
 import { withHeaderHook } from "../core/header-hook.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
+import { onResponseSent } from "../core/response-edge.js";
 import { streamingCompress } from "../core/plugins/streaming-compress.js";
 import type { FrameworkRuntime, Plugin } from "../core/types.js";
 import { testServer } from "../test-server.js";
@@ -333,13 +334,24 @@ describe("the node response writer", () => {
 		expect(linesOf("unhandled error")).toHaveLength(2);
 	});
 
-	it("logs a line for each access log on the request", async () => {
-		const { url, linesOf } = await serving({ plugins: [accessLog(), accessLog()] });
+	it("runs each report of a request", async () => {
+		const statuses: number[] = [];
+		const reports: Plugin = {
+			name: "reports",
+			middleware: async (context, next) => {
+				await next();
+				onResponseSent(context, ({ status }) => {
+					statuses.push(status);
+				});
+			},
+		};
+		const { url, linesOf } = await serving({ plugins: [accessLog(), reports] });
 
 		await (await fetch(url)).text();
 
 		await vi.waitFor(() => {
-			expect(linesOf("request")).toHaveLength(2);
+			expect(linesOf("request")).toHaveLength(1);
+			expect(statuses).toStrictEqual([200]);
 		});
 	});
 

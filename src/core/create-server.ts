@@ -405,9 +405,13 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  * the app's own routes, then the framework. It does not listen; the
  * `app-server` CLI starts it.
  *
- * Two plugins of one option of `defaultPlugins()`, such as two `buildId()`,
- * stop startup. So does an entry of `plugins` that is not a plugin, such as a
- * Hono middleware with no plugin around it.
+ * Two plugins of one option of `defaultPlugins()`, such as two `bodyLimit()`,
+ * stop startup. The exception is `redirects()`, because a second table is
+ * valid. A plugin of `securityHeaders`, `noindex`, `buildId`,
+ * `contentSecurityPolicy`, or `env` that comes after `prerendered()` also
+ * stops startup, because the prerendered pages would not get it. So does an
+ * entry of `plugins` that is not a plugin, such as a Hono middleware with no
+ * plugin around it.
  *
  * @example
  * // server.ts

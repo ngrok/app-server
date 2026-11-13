@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
+import { optionPlugin } from "../plugin-options.js";
 import { isSafeLocalPath } from "../safe-local-path.js";
 import { findStaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
@@ -95,11 +96,11 @@ async function isStaticFile(files: StaticFiles, path: string): Promise<boolean> 
  */
 export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 	if (mode === "preserve") {
-		return { name: "trailing-slash" };
+		return optionPlugin("trailingSlash", { name: "trailing-slash" });
 	}
 	/** Answers a request whose path does not have the form of `mode`. `setup` makes it. */
 	let redirect: MiddlewareHandler<AppServerEnv> | undefined;
-	return {
+	return optionPlugin("trailingSlash", {
 		name: "trailing-slash",
 		setup: (info) => {
 			redirect = async (context, next) => {
@@ -130,5 +131,5 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 				? next()
 				: redirect(context, next);
 		},
-	};
+	});
 }

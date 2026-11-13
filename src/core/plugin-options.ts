@@ -19,12 +19,33 @@ export function optionPlugin<P extends Plugin>(option: string, plugin: P): P {
 }
 
 /**
- * Stops startup when `plugins` has two plugins of one option of
- * `defaultPlugins()`, such as two `buildId()`. Why: two copies do not fail.
- * One sets its headers over the other, so a value that the app gave is lost.
+ * The options whose plugins must see the prerendered pages. Why a list
+ * here: `prerendered()` answers a page with no later stage, so a plugin of
+ * one of these options that comes after it changes only the rendered pages.
+ */
+const SEES_PRERENDERED_PAGES = new Set([
+	"securityHeaders",
+	"noindex",
+	"buildId",
+	"contentSecurityPolicy",
+	"env",
+]);
+
+/**
+ * Stops startup for a plugin list that puts a plugin of an option of
+ * `defaultPlugins()` where it does not do its job:
+ *
+ * - Two plugins of one option, such as two `bodyLimit()`. Why: two copies do
+ *   not fail, and they do not act as one. A value that the app gave is lost,
+ *   or both act, such as two trailing-slash redirects that loop.
+ * - A plugin of `securityHeaders`, `noindex`, `buildId`,
+ *   `contentSecurityPolicy`, or `env` after `prerendered()`. Why: the
+ *   prerendered pages then do not get it. Development serves no prerendered
+ *   page, so only production shows the failure.
  *
  * @example
- * checkOptionPlugins([...defaultPlugins(), buildId({ value: "v42" })]); // throws
+ * checkOptionPlugins([...defaultPlugins(), bodyLimit({ maxBytes: 1024 })]); // throws
+ * checkOptionPlugins([...defaultPlugins(), noindex()]); // throws
  */
 export function checkOptionPlugins(plugins: readonly Plugin[]): void {
 	const seen = new Set<string>();
@@ -32,7 +53,12 @@ export function checkOptionPlugins(plugins: readonly Plugin[]): void {
 		const option = options.get(plugin);
 		if (option != null && seen.has(option)) {
 			throw new Error(
-				`The plugin list has the ${plugin.name} plugin two times, so one replaces the other. Keep one: set the "${option}" option of defaultPlugins(), and do not also add the plugin.`,
+				`The plugin list has the ${plugin.name} plugin two times. Keep one: set the "${option}" option of defaultPlugins(), and do not also add the plugin. To put your own copy at another place, take the default out of the list first, such as with defaultPlugins().filter((plugin) => plugin.name !== "${plugin.name}").`,
+			);
+		}
+		if (option != null && seen.has("prerendered") && SEES_PRERENDERED_PAGES.has(option)) {
+			throw new Error(
+				`The ${plugin.name} plugin comes after prerendered(), so the prerendered pages do not get it. Set the "${option}" option of defaultPlugins(), or put the plugin before prerendered().`,
 			);
 		}
 		if (option != null) {

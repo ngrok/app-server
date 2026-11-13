@@ -73,7 +73,7 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 	for (const [name, value] of values) {
 		checkHeaderValue({ plugin: "securityHeaders", option: name, value });
 	}
-	return {
+	return optionPlugin("securityHeaders", {
 		name: "security-headers",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
@@ -88,7 +88,7 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 				}
 			});
 		},
-	};
+	});
 }
 
 /**

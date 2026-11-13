@@ -73,3 +73,39 @@ The error names the option, the value, and the fix:
 ```
 The value of buildId must be a value that a header can hold, not "v42\n". Remove each control character, such as a line break, and each character above U+00FF.
 ```
+
+Breaking change: a second plugin of the options `requestId`, `accessLog`, `securityHeaders`, `bodyLimit`, `trailingSlash`, or `prerendered` of `defaultPlugins()` now stops startup, as a second `health`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` plugin already did. Before, the server started, and the two copies did not act as one. For example, a second `bodyLimit()` with a higher limit changed nothing, a second `trailingSlash()` in another mode sent each page into a redirect loop, and a second `accessLog()` wrote two lines for each request. A second `redirects()` still starts, because a second table is valid. Use the option:
+
+```ts
+// Before
+createServer({ plugins: [...defaultPlugins(), bodyLimit({ maxBytes: 52_428_800 })] });
+
+// After
+createServer({ plugins: defaultPlugins({ bodyLimit: 52_428_800 }) });
+```
+
+Two lists that worked before now also stop startup. A second `bodyLimit()` with a lower limit: set the `bodyLimit` option to the lower limit. A second `prerendered()` for the paths that the first one skips: use one `prerendered`, whose `skip`, `rewrite`, `headers`, and `cacheControl` decide by path. To put your own copy of a plugin at another place, turn the option off with `false`, or filter the default out of the list:
+
+```ts
+createServer({
+	plugins: [...defaultPlugins().filter((plugin) => plugin.name !== "access-log"), accessLog()],
+});
+```
+
+Breaking change: a plugin of the options `securityHeaders`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` that comes after `prerendered()` in the plugin list now stops startup. Before, the server started, and each prerendered page went out with no CSP, no `X-Robots-Tag`, no build ID, or no public `runtimeEnv` values, while each rendered page had them. Development serves no prerendered page, so only production showed the failure. Use the option, or put the plugin before `prerendered()`, such as in `beforeStatic`:
+
+```ts
+// Before
+createServer({ plugins: [...defaultPlugins(), contentSecurityPolicy({ policy }), noindex(), env] });
+
+// After
+createServer({
+	plugins: defaultPlugins({ contentSecurityPolicy: { policy }, noindex: true, env }),
+});
+```
+
+The error names the plugin, the option, and the other way out:
+
+```
+The noindex plugin comes after prerendered(), so the prerendered pages do not get it. Set the "noindex" option of defaultPlugins(), or put the plugin before prerendered().
+```

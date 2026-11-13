@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { withHeaderHook } from "../header-hook.js";
 import { asError } from "../log.js";
+import { optionPlugin } from "../plugin-options.js";
 import { onResponseSent } from "../response-edge.js";
 import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 import { answeredByDevServer } from "./static.js";
@@ -92,7 +93,7 @@ export function accessLog({
 	attributes,
 	serverTiming = false,
 }: AccessLogOptions = {}): Plugin {
-	return {
+	return optionPlugin("accessLog", {
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
@@ -137,7 +138,7 @@ export function accessLog({
 				}
 			});
 		},
-	};
+	});
 
 	/** `href` as {@link loggedUrl} logs it. */
 	function requestUrl(href: string): string {

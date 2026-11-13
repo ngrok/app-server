@@ -16,12 +16,16 @@ import { withHeaderHook } from "./header-hook.js";
 import { ResponseEdge } from "./response-edge.js";
 import { renewShutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
+import { bodyLimit } from "./plugins/body-limit.js";
 import { buildId } from "./plugins/build-id.js";
 import { health } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
+import { redirects } from "./plugins/redirects.js";
 import { requestId } from "./plugins/request-id.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
-import { prerendered as prerenderedPlugin } from "./plugins/static.js";
+import { contentSecurityPolicy, securityHeaders } from "./plugins/security-headers.js";
+import { assets, prerendered as prerenderedPlugin } from "./plugins/static.js";
+import { trailingSlash } from "./plugins/trailing-slash.js";
 import { tcp } from "../node/tcp.js";
 import {
 	heldStream,
@@ -952,6 +956,82 @@ describe("defaultPlugins", () => {
 		expect(() => createServer({ plugins: [...defaultPlugins({ env }), env] })).toThrow(
 			'set the "env" option',
 		);
+	});
+
+	it.each([
+		{ option: "requestId", second: () => requestId({ headerName: "X-Correlation-Id" }) },
+		{ option: "accessLog", second: () => accessLog() },
+		{ option: "securityHeaders", second: () => securityHeaders() },
+		{ option: "bodyLimit", second: () => bodyLimit({ maxBytes: 52_428_800 }) },
+		{ option: "trailingSlash", second: () => trailingSlash({ mode: "always" }) },
+		{ option: "prerendered", second: () => prerenderedPlugin() },
+	])("stops startup for a second $option plugin after defaultPlugins()", ({ option, second }) => {
+		expect(() => createServer({ plugins: [...defaultPlugins(), second()] })).toThrow(
+			`Keep one: set the "${option}" option of defaultPlugins(), and do not also add the plugin.`,
+		);
+	});
+
+	it("takes a second redirects table, and the app's own copy of a plugin in place of the default", () => {
+		const table = [{ from: "/old", to: "/new" }];
+
+		expect(() =>
+			createServer({
+				plugins: [...defaultPlugins({ redirects: table }), redirects([{ from: "/a", to: "/b" }])],
+			}),
+		).not.toThrow();
+		expect(() =>
+			createServer({
+				plugins: [...defaultPlugins({ bodyLimit: false }), bodyLimit({ maxBytes: 1024 })],
+			}),
+		).not.toThrow();
+		expect(() =>
+			createServer({
+				plugins: [
+					...defaultPlugins().filter((plugin) => plugin.name !== "access-log"),
+					accessLog(),
+				],
+			}),
+		).not.toThrow();
+	});
+
+	it.each([
+		{ option: "noindex", name: "noindex", plugins: () => [...defaultPlugins(), noindex()] },
+		{
+			option: "contentSecurityPolicy",
+			name: "content-security-policy",
+			plugins: () => [
+				...defaultPlugins(),
+				contentSecurityPolicy({ policy: () => "default-src 'self'" }),
+			],
+		},
+		{ option: "env", name: "runtime-env", plugins: () => [...defaultPlugins(), env] },
+		{
+			option: "buildId",
+			name: "build-id",
+			plugins: () => [...defaultPlugins({ buildId: false }), buildId({ value: "v42" })],
+		},
+		{
+			option: "securityHeaders",
+			name: "security-headers",
+			plugins: () => [...defaultPlugins({ securityHeaders: false }), securityHeaders()],
+		},
+	])(
+		"stops startup for the $name plugin after prerendered(), which would skip each prerendered page",
+		({ option, name, plugins }) => {
+			expect(() => createServer({ plugins: plugins() })).toThrow(
+				`The ${name} plugin comes after prerendered(), so the prerendered pages do not get it. Set the "${option}" option of defaultPlugins(), or put the plugin before prerendered().`,
+			);
+		},
+	);
+
+	it("takes a plugin that must see the prerendered pages before prerendered(), or with no prerendered()", () => {
+		expect(() =>
+			createServer({ plugins: defaultPlugins({ beforeStatic: [noindex()] }) }),
+		).not.toThrow();
+		expect(() =>
+			createServer({ plugins: [noindex(), env, assets(), prerenderedPlugin()] }),
+		).not.toThrow();
+		expect(() => createServer({ plugins: [assets(), noindex()] })).not.toThrow();
 	});
 
 	it("takes an app plugin that has the name of an option plugin", () => {

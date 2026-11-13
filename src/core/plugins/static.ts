@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { getPath } from "hono/utils/url";
 import { manifestKey } from "../build-manifest.js";
 import { withHeaderHook } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
@@ -315,7 +316,7 @@ function twinOfOption(
  */
 export function prerendered(options: PrerenderedOptions = {}): Plugin {
 	let stage: MiddlewareHandler<AppServerEnv> | undefined;
-	return {
+	return optionPlugin("prerendered", {
 		name: "prerendered",
 		setup: async (info) => {
 			const twinOf = twinOfOption(options.markdownTwins);
@@ -390,5 +391,5 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			};
 		},
 		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
-	};
+	});
 }
