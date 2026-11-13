@@ -83,20 +83,28 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
  * 		}),
  * };
  */
-export async function withHeaderHook(
+// oxlint-disable-next-line typescript/promise-function-async -- nothing here throws before `next()`, and an `async` function adds a promise to each stage with a hook.
+export function withHeaderHook(
 	context: Context<AppServerEnv>,
 	next: Next,
 	hook: HeaderHook,
 ): Promise<void> {
 	const hooks = context.get("headerHooks");
-	// Why: outside an app server, such as in a plain Hono app, nothing runs the hook later.
 	if (hooks == null) {
-		await next();
-		hook(responseHeaders(context));
-		return;
+		return hookAfter(context, next, hook);
 	}
 	hooks.push(hook);
+	return next();
+}
+
+/** {@link withHeaderHook} outside an app server, such as in a plain Hono app, where nothing runs the hook later. */
+async function hookAfter(
+	context: Context<AppServerEnv>,
+	next: Next,
+	hook: HeaderHook,
+): Promise<void> {
 	await next();
+	hook(responseHeaders(context));
 }
 
 /**

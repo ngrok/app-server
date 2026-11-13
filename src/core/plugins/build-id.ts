@@ -129,7 +129,8 @@ export function buildId({
 		// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
 		// answer 200 when the build ID changes.
 		etagPart: () => value,
-		middleware: async (context, next) =>
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) =>
 			withHeaderHook(context, next, (response) => {
 				const { path } = context.req;
 				const isRouter =

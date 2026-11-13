@@ -94,23 +94,17 @@ async function isStaticFile(files: StaticFiles, path: string): Promise<boolean> 
  * createServer({ plugins: defaultPlugins({ trailingSlash: "always" }) });
  */
 export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
-	let stage: MiddlewareHandler<AppServerEnv> | undefined;
+	if (mode === "preserve") {
+		return { name: "trailing-slash" };
+	}
+	/** Answers a request whose path does not have the form of `mode`. `setup` makes it. */
+	let redirect: MiddlewareHandler<AppServerEnv> | undefined;
 	return {
 		name: "trailing-slash",
 		setup: (info) => {
-			if (mode === "preserve") {
-				return;
-			}
-			stage = async (context, next) => {
-				const { method, path } = context.req;
-				if (
-					(method !== "GET" && method !== "HEAD") ||
-					// Why first: most requests have the form of the mode, and this test needs no route list
-					// and no URL parse.
-					hasModeForm(path, mode) ||
-					info.isDataRequest(path) ||
-					hasAppRoute(context)
-				) {
+			redirect = async (context, next) => {
+				const { path } = context.req;
+				if (info.isDataRequest(path) || hasAppRoute(context)) {
 					return next();
 				}
 				// Why the raw URL: Hono decodes `path`, but a `Location` must keep the percent-encoding.
@@ -128,6 +122,13 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 				return context.redirect(location, 308);
 			};
 		},
-		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
+			const { method, path } = context.req;
+			// Why the form first: most requests have it, and this test needs no route list and no URL parse.
+			return redirect == null || (method !== "GET" && method !== "HEAD") || hasModeForm(path, mode)
+				? next()
+				: redirect(context, next);
+		},
 	};
 }

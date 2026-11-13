@@ -82,7 +82,8 @@ export function requestId({
 }: RequestIdOptions = {}): Plugin {
 	return {
 		name: "request-id",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const trace = parseTraceparent(context.req.header("traceparent"));
 			if (trace != null) {
 				context.set("logAttributes", {
@@ -94,7 +95,7 @@ export function requestId({
 			const id = incoming != null && VALID_ID.test(incoming) ? incoming : crypto.randomUUID();
 			context.set("requestId", id);
 			// Why a header hook: a dev server middleware sends its own response, and runs the hooks first.
-			await withHeaderHook(context, next, (headers) => {
+			return withHeaderHook(context, next, (headers) => {
 				headers.set(headerName, id);
 			});
 		},

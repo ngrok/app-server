@@ -69,9 +69,10 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 		.map(([name, value]) => [name, oneLine(value)] as const);
 	return {
 		name: "security-headers",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const isHttps = context.req.url.startsWith("https:");
-			await withHeaderHook(context, next, (response) => {
+			return withHeaderHook(context, next, (response) => {
 				for (const [name, value] of values) {
 					if (name === "Content-Security-Policy") {
 						response.append(name, value);
@@ -140,12 +141,13 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 		setup: (info) => {
 			({ scriptHashes } = info);
 		},
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const nonce = randomNonce();
 			context.set("cspNonce", nonce);
 			// Why a header hook: in development, the dev server sends its own response, such as a file of
 			// Vite's public directory, and runs the hooks before it sends the head.
-			await withHeaderHook(context, next, (headers) => {
+			return withHeaderHook(context, next, (headers) => {
 				// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
 				const file = context.get("staticDocument");
 				const hashes =

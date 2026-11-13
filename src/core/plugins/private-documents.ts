@@ -27,7 +27,8 @@ export function privateDocuments(): Plugin {
 		setup: (info) => {
 			({ isDataRequest } = info);
 		},
-		middleware: async (context, next) =>
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) =>
 			withHeaderHook(context, next, (headers) => {
 				if (
 					!headers.has("Cache-Control") &&

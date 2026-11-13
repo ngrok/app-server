@@ -75,20 +75,17 @@ export function health({
 		// Why check again: a stop signal can come while the app check runs.
 		return appReady && !isStopping();
 	};
+	/** The answer to the probe at `path`, which is `livePath` or `readyPath`. */
+	const answer = async (path: string, logger: RequestLogger) =>
+		path === livePath || (await isReady(logger)) ? probe("ok", 200) : probe("not ready", 503);
 	return optionPlugin("health", {
 		name: "health",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const { method, path } = context.req;
-			if (method !== "GET" && method !== "HEAD") {
-				return next();
-			}
-			if (path === livePath) {
-				return probe("ok", 200);
-			}
-			if (path === readyPath) {
-				return (await isReady(context.get("logger"))) ? probe("ok", 200) : probe("not ready", 503);
-			}
-			return next();
+			return (method === "GET" || method === "HEAD") && (path === livePath || path === readyPath)
+				? answer(path, context.get("logger"))
+				: next();
 		},
 	});
 }
