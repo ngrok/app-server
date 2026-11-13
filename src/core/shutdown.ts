@@ -8,8 +8,18 @@ export type ShutdownState = {
 	stopping: boolean;
 };
 
+/**
+ * The stop state of each app server of this copy of the package, for
+ * {@link abortShutdownSignal}. Why not weak: a module can keep the signal of an
+ * app server that no other code keeps, such as one that a `server.ts` edit
+ * replaced.
+ */
+const states = new Set<ShutdownState>();
+
 function newState(): ShutdownState {
-	return { controller: new AbortController(), stopping: false };
+	const state = { controller: new AbortController(), stopping: false };
+	states.add(state);
+	return state;
 }
 
 /**
@@ -46,7 +56,14 @@ export function shutdownSignal(): AbortSignal {
 	return (currentShutdown() ?? latest).controller.signal;
 }
 
-/** Aborts the {@link shutdownSignal} that a call outside a request gives. */
+/**
+ * Aborts the {@link shutdownSignal} of each app server of this copy of the
+ * package, for the exit of `app-server start`. Why each one: an edit to
+ * `server.ts` makes a new app server, and a signal of the app server before
+ * it must abort too.
+ */
 export function abortShutdownSignal(): void {
-	latest.controller.abort();
+	for (const { controller } of states) {
+		controller.abort();
+	}
 }
