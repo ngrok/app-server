@@ -102,10 +102,11 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 	let redirect: MiddlewareHandler<AppServerEnv> | undefined;
 	return optionPlugin("trailingSlash", {
 		name: "trailing-slash",
-		setup: (info) => {
+		// Why not `info`: a stage that keeps it keeps each field of it, such as the script hashes of each page.
+		setup: ({ isDataRequest, files }) => {
 			redirect = async (context, next) => {
 				const { path } = context.req;
-				if (info.isDataRequest(path) || hasAppRoute(context)) {
+				if (isDataRequest(path) || hasAppRoute(context)) {
 					return next();
 				}
 				// Why the raw URL: Hono decodes `path`, but a `Location` must keep the percent-encoding.
@@ -117,7 +118,7 @@ export function trailingSlash({ mode }: TrailingSlashOptions): Plugin {
 					return next();
 				}
 				// Why the decoded path: `/llms%2Etxt` names the file `/llms.txt`.
-				if (mode === "always" && (isFilePath(path) || (await isStaticFile(info.files, path)))) {
+				if (mode === "always" && (isFilePath(path) || (await isStaticFile(files, path)))) {
 					return next();
 				}
 				return context.redirect(location, 308);

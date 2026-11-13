@@ -329,7 +329,9 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 						: developmentTwins(twinOf, options, paths == null ? undefined : new Set(paths));
 				return;
 			}
-			const { files, contentTypes, capturedHeaders } = info;
+			// Why not `info` in a stage: a stage that keeps it keeps each field of it, such as the
+			// script hashes of each page.
+			const { files, contentTypes, capturedHeaders, isDataRequest } = info;
 			const missing: string[] = [];
 			for (const path of info.prerenderedPaths) {
 				if ((await findStaticFile(files, path)) == null) {
@@ -348,7 +350,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 				const type = contentType(file, contentTypes);
 				return type.startsWith("text/html") ||
 					type.startsWith("text/markdown") ||
-					info.isDataRequest(file)
+					isDataRequest(file)
 					? REVALIDATE
 					: ONE_HOUR;
 			};

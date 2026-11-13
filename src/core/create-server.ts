@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
+import type { Context, Handler, Next } from "hono";
 import type { ErrorHandler, HTTPResponseError } from "hono/types";
 import { asError, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
@@ -121,6 +121,14 @@ function checkPluginObjects(plugins: unknown): void {
 		}
 	}
 }
+
+/**
+ * Answers a request that no plugin or route answers. Why at module scope: a
+ * function made in `prepare` keeps the `SetupInfo`, and so the script hashes
+ * of each page, for the life of the server.
+ */
+const frameworkRoute: Handler<AppServerEnv> = async (context) =>
+	context.env.framework.fetch(context.req.raw, context);
 
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
 const appInternals = new WeakMap<AppServer, ServerInternals>();
@@ -592,7 +600,7 @@ export function createServer({
 						"No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.",
 					);
 				}
-				app.all("*", async (context) => context.env.framework.fetch(context.req.raw, context));
+				app.all("*", frameworkRoute);
 			})().catch((error: unknown) => {
 				// Why: the next request on a serverless host runs each `setup` again.
 				prepared = undefined;

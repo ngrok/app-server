@@ -27,7 +27,9 @@ import { contentSecurityPolicy, securityHeaders } from "./plugins/security-heade
 import { assets, prerendered as prerenderedPlugin } from "./plugins/static.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import { tcp } from "../node/tcp.js";
+import { createTestServer } from "../testing/index.js";
 import {
+	collectGarbage,
 	heldStream,
 	productionSetup,
 	renderedFramework,
@@ -35,7 +37,14 @@ import {
 	testServer,
 } from "../test-server.js";
 import type { LoggedLine } from "../test-server.js";
-import type { FrameworkRuntime, Listener, LogSink, Plugin, StartedListener } from "./types.js";
+import type {
+	FrameworkRuntime,
+	Listener,
+	LogSink,
+	Plugin,
+	SetupInfo,
+	StartedListener,
+} from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
 async function listening(
@@ -870,6 +879,41 @@ describe("defaultPlugins", () => {
 	afterAll(() => {
 		rmSync(clientDirectory, { recursive: true, force: true });
 	});
+
+	// Why: the setup info holds the script hashes of each page, which only `contentSecurityPolicy()`
+	// reads. A closure that keeps the info keeps them for the life of the server.
+	it("keeps no setup info after setup", async () => {
+		let info: WeakRef<SetupInfo> | undefined;
+		const modes: string[] = [];
+		const probe: Plugin = {
+			name: "probe",
+			setup: (given) => {
+				info = new WeakRef(given);
+				modes.push(given.mode);
+			},
+		};
+		const server = await createTestServer({
+			app: createServer({ plugins: [...defaultPlugins(), probe], logger: { log: () => {} } }),
+			files: { "docs/index.html": "<!doctype html><script>go()</script>" },
+		});
+		onTestFinished(server.close);
+
+		// Why three requests: each stage that reads the setup info must still answer.
+		const statuses: number[] = [];
+		for (const path of ["/docs/", "/docs", "/page"]) {
+			const response = await server.request(path, { redirect: "manual" });
+			await response.text();
+			statuses.push(response.status);
+		}
+
+		expect(statuses).toStrictEqual([308, 200, 404]);
+		expect(modes).toStrictEqual(["production"]);
+		await vi.waitFor(() => {
+			collectGarbage();
+			expect(info?.deref() == null).toBe(true);
+		});
+	});
+
 	const env = runtimeEnv(z.object({ PUBLIC_REGION: z.string() }), {
 		source: { PUBLIC_REGION: "eu" },
 	});
