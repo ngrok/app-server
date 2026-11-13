@@ -196,11 +196,22 @@ describe("prerendered", () => {
 		onTestFinished(() => {
 			rmSync(directory, { recursive: true, force: true });
 		});
-		// Why two times: one is under 2^32 milliseconds, and one is over it.
-		const times = { "old.txt": 86_400_000, "new.txt": 1_767_323_045_000 };
-		for (const [name, time] of Object.entries(times)) {
-			writeFileSync(join(directory, name), "0123456789abcdef");
-			utimesSync(join(directory, name), new Date(time), new Date(time));
+		// Why these times: the server converts the high bits and the low 24 bits of a time apart, and
+		// V8 converts a number from 2^31 on a slower path. Each time has the text of its `toString(16)`.
+		const times: readonly (readonly [milliseconds: number, hex: string])[] = [
+			// Under 2^24, and under 2^32.
+			[16_000_000, "f42400"],
+			[86_400_000, "5265c00"],
+			// The low 32 bits are under 2^31, and then from 2^31.
+			[1_767_323_045_000, "19b7ca98c88"],
+			[1_794_600_000_000, "1a1d67eda00"],
+			// The low 24 bits start with zero digits, and then all low 32 bits are zero.
+			[1_760_047_399_000, "199cb000058"],
+			[1_610_612_736_000, "17700000000"],
+		];
+		for (const [time, hex] of times) {
+			writeFileSync(join(directory, `${hex}.txt`), "0123456789abcdef");
+			utimesSync(join(directory, `${hex}.txt`), new Date(time), new Date(time));
 		}
 		const plain = await testServer({ plugins: [prerendered()], clientDirectory: directory });
 		const versioned = await testServer({
@@ -210,9 +221,12 @@ describe("prerendered", () => {
 		const etag = async (server: typeof plain, path: string) =>
 			(await server.request(path)).headers.get("ETag");
 
-		await expect(etag(plain, "/old.txt")).resolves.toBe('W/"10-5265c00"');
-		await expect(etag(plain, "/new.txt")).resolves.toBe('W/"10-19b7ca98c88"');
-		await expect(etag(versioned, "/new.txt")).resolves.toBe('W/"10-19b7ca98c88-O_wmlZTvZJIo6adL"');
+		const tags = await Promise.all(times.map(async ([, hex]) => etag(plain, `/${hex}.txt`)));
+
+		expect(tags).toStrictEqual(times.map(([, hex]) => `W/"10-${hex}"`));
+		await expect(etag(versioned, "/19b7ca98c88.txt")).resolves.toBe(
+			'W/"10-19b7ca98c88-O_wmlZTvZJIo6adL"',
+		);
 	});
 
 	it("gives each list of parts its own ETag when requests with other parts come between", async () => {

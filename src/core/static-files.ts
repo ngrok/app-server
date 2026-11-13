@@ -170,19 +170,24 @@ async function partsHash(parts: readonly string[]): Promise<string> {
 	return hash;
 }
 
-const UINT32 = 2 ** 32;
+/** Where {@link hexTime} splits a number: the low half has 24 bits, which are 6 hexadecimal digits. */
+const HEX_SPLIT = 2 ** 24;
 
 /**
  * The whole milliseconds of a time in hexadecimal, as
  * `Math.trunc(ms).toString(16)` gives them. Why two halves: V8 converts a
- * whole number under 2^32 in about 15 ns, and a larger one, as the time of
- * a file is, in about 340 ns.
+ * whole number under 2^31 in about 20 ns, and a larger one, as the time of a
+ * file is, in about 350 ns. The halves of a safe integer are under 2^29.
  */
 function hexTime(ms: number): string {
 	const whole = Math.trunc(ms);
-	return whole >= UINT32 && whole <= Number.MAX_SAFE_INTEGER
-		? `${Math.floor(whole / UINT32).toString(16)}${(whole % UINT32).toString(16).padStart(8, "0")}`
-		: whole.toString(16);
+	if (whole >= HEX_SPLIT && whole <= Number.MAX_SAFE_INTEGER) {
+		const high = Math.floor(whole / HEX_SPLIT);
+		// Why not `%`: the remainder of a number over 2^31 takes about 10 ns more.
+		const low = whole - high * HEX_SPLIT;
+		return `${high.toString(16)}${low.toString(16).padStart(6, "0")}`;
+	}
+	return whole.toString(16);
 }
 
 /**
