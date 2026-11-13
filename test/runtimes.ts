@@ -291,6 +291,46 @@ async function check(runtime: string): Promise<void> {
 	}
 }
 
+/** An error with no handler: the server logs one line, drains, and exits with code 1. */
+async function checkCrash(runtime: string): Promise<void> {
+	const { child, lines, url } = startServer(runtime, serveArgs);
+	try {
+		const base = await url;
+		const events = await request(new URL("/events", base).href);
+		const eventsEnd = new Promise<string>((resolve) => {
+			events.once("end", () => {
+				resolve("end");
+			});
+			events.once("error", () => {
+				resolve("error");
+			});
+			events.resume();
+		});
+		const stdoutEnded = new Promise<void>((resolve) => {
+			child.stdout.once("end", resolve);
+		});
+		const exitCode = exited(child, 10_000);
+		assert.equal(await (await fetch(new URL("/reject", base))).text(), "rejected");
+		assert.equal(await eventsEnd, "end", "an error with no handler does not cut an open response");
+		assert.equal(await exitCode, 1, "the server drains, then exits with code 1");
+		await stdoutEnded;
+		assert.deepEqual(
+			lines
+				.filter((line) => line.level === "error")
+				.map((line) => [line.message, line["error.message"]]),
+			[["uncaught exception", "no handler"]],
+			"one log line has the error",
+		);
+		assert.ok(
+			lines.some((line) => line.message === "stopped"),
+			"the drain ends before the exit",
+		);
+		process.stdout.write(`ok ${runtime} crash\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
 /**
  * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
  * server at once, though the app left a timer.
@@ -764,6 +804,7 @@ buildFixtures();
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
+	await checkCrash(runtime);
 	if (runtime === "node") {
 		await checkStart();
 		await checkLoadedModules();

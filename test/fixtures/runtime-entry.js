@@ -99,6 +99,11 @@ const routes = {
 		setTimeout(() => {}, 60_000);
 		return new Response("lingering", { headers: { "Content-Type": "text/plain" } });
 	},
+	// Leaves a rejected promise with no handler, as a call that the route does not await can.
+	"/reject": () => {
+		void Promise.reject(new Error("no handler"));
+		return new Response("rejected", { headers: { "Content-Type": "text/plain" } });
+	},
 	// A page of one chunk, which a pooled zlib stream compresses.
 	"/page": () =>
 		new Response("<p>page</p>".repeat(200), { headers: { "Content-Type": "text/html" } }),

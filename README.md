@@ -170,8 +170,8 @@ A React Router app with no Vite plugin also works: `app-server serve build/serve
 ## Commands
 
 - `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. A Vite plugin gets the CLI's HTTP server as `server.httpServer` in its `configureServer` hook, so it can wait for `listening` and `close`. A Vite restart, such as after an edit to `vite.config.ts`, keeps that server open. So a new plugin instance gets no `listening`, and the old instance gets `close` only at exit. To clean up for each instance, use Vite's `closeServer` hook. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. When it listens, `start` prints its URLs as `vite dev` does, through Vite's logger. Its other log lines, such as a port in use, use the text format of Go's `log/slog`, not JSON. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
-- `node build/server/app-server.js`: production, with no install. Use `dist/server/app-server.js` for TanStack Start. It reads `PORT` and `HOST`, and it drains on `SIGTERM` or `SIGINT`, as `app-server serve` does. It has no `--port`. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value.
-- `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A `port` or a `host` that the app gives to `tcp()` wins over them, with no message, so leave both out of `tcp()` to let the operator choose. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. A server process serves the client build that was there at start. A deploy starts a new process.
+- `node build/server/app-server.js`: production, with no install. Use `dist/server/app-server.js` for TanStack Start. It reads `PORT` and `HOST`, and it drains on `SIGTERM`, on `SIGINT`, and after an uncaught error, as `app-server serve` does. It has no `--port`. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value.
+- `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A `port` or a `host` that the app gives to `tcp()` wins over them, with no message, so leave both out of `tcp()` to let the operator choose. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. After an uncaught error, it logs the error, drains, then exits with code 1. A server process serves the client build that was there at start. A deploy starts a new process.
 
 `-p` is short for `--port`. `--help`, or `-h`, writes the usage. A bad argument writes a message and the usage, and exits with code 1.
 
@@ -818,6 +818,8 @@ logger().error("payment failed", { error });
 // {"message":"payment failed","error.kind":"TypeError","error.message":"…","error.stack":"…","error.cause.kind":"Error","error.cause.code":"ECONNRESET",…}
 ```
 
+On the node host, the server logs one error line for an error that no code catches, such as a rejected promise with no handler: `uncaught exception`, with the fields of the error. `app_server.origin` is `uncaughtException` for a thrown error and `unhandledRejection` for a rejected promise. On Node.js, the line also has the fields of the request that the error came from. The server then drains, and the process exits with code 1. See [Health checks](#health-checks).
+
 The `log` option changes each line of the server and of `logger()` before it goes to the sink. `attributes` gets the attributes after the server flattens each error. `error` gets each error, its attribute name, and its default fields, and gives the fields to write. A field that `error` gives does not replace another attribute of the line, such as `http.method`. `attributes` runs last, so it can change each field:
 
 ```ts
@@ -918,6 +920,8 @@ spec:
 ```
 
 A request that is still open at the deadline loses its connection. The server then logs one warn line, `the drain deadline passed with open requests`, with `app_server.deadline_ms`. The access line of a response that the deadline cut has `http.client_aborted: true`, and it comes before the `stopped` line. On Bun, such a response gets no access line. When you see the warn line, raise `shutdownDeadlineMs`, or stop the long responses on `shutdownSignal()`. See [Long-lived responses](#long-lived-responses).
+
+An uncaught error stops the server as a stop signal does: `/readyz` answers 503, the server waits for `shutdownDelayMs`, and then it drains. So one failed request does not cut the other open requests. The process then exits with code 1, and your process manager starts a new one. The server drains for the first uncaught error only: a later one can stop the process at once.
 
 ## Environment
 
