@@ -23,7 +23,13 @@ import { requestId } from "./plugins/request-id.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
 import { prerendered as prerenderedPlugin } from "./plugins/static.js";
 import { tcp } from "../node/tcp.js";
-import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
+import {
+	heldStream,
+	productionSetup,
+	renderedFramework,
+	stubFramework,
+	testServer,
+} from "../test-server.js";
 import type { LoggedLine } from "../test-server.js";
 import type { FrameworkRuntime, Listener, LogSink, Plugin, StartedListener } from "./types.js";
 
@@ -688,6 +694,33 @@ describe("createServer", () => {
 		await server.shutdown();
 
 		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
+	});
+
+	it("logs the drain deadline and the access line of a response that it cuts, before `stopped`", async () => {
+		const { internals, framework, lines } = await testServer({
+			plugins: defaultPlugins(),
+			render: async () => heldStream("stuck").response,
+			options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })], shutdownDeadlineMs: 50 },
+		});
+		const server = await internals.listen(framework, []);
+		const response = await fetch(server.urls[0] ?? "");
+
+		await server.shutdown();
+
+		await expect(response.text()).rejects.toThrow("terminated");
+		expect(
+			lines.map(({ level, message, attributes }) => [
+				level,
+				message,
+				attributes["app_server.deadline_ms"] ?? attributes["http.client_aborted"],
+			]),
+		).toStrictEqual([
+			["info", "listening", undefined],
+			["info", "draining", 50],
+			["warn", "the drain deadline passed with open requests", 50],
+			["info", "request", true],
+			["info", "stopped", undefined],
+		]);
 	});
 
 	it("gives each request a logger whose methods write a line when taken off it", async () => {

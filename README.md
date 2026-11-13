@@ -865,6 +865,8 @@ spec:
         httpGet: { path: /livez, port: 3000 }
 ```
 
+A request that is still open at the deadline loses its connection. The server then logs one warn line, `the drain deadline passed with open requests`, with `app_server.deadline_ms`. The access line of a response that the deadline cut has `http.client_aborted: true`, and it comes before the `stopped` line. On Bun, such a response gets no access line. When you see the warn line, raise `shutdownDeadlineMs`, or stop the long responses on `shutdownSignal()`. See [Long-lived responses](#long-lived-responses).
+
 ## Environment
 
 `runtimeEnv(schema)` validates the environment once, at startup, with any [Standard Schema](https://standardschema.dev) (zod, valibot, arktype). A bad value stops the server with a message that names it. Give the plugin to the `env` option of `defaultPlugins()`.

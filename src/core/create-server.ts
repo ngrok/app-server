@@ -560,15 +560,30 @@ export function createServer({
 							attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
 						});
 						abortShutdownSignal();
+						let openListeners = started.length;
 						const deadline = setTimeout(() => {
 							deadlinePassed = true;
+							// Why only with an open listener: a plugin that hangs gets its own line.
+							if (openListeners > 0) {
+								logger.log({
+									level: "warn",
+									message: "the drain deadline passed with open requests",
+									attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
+								});
+							}
 						}, shutdownDeadlineMs);
 						// Why at the same time: a plugin that hangs must not keep the listeners open.
 						// Why settle all: the process exits after shutdown, so one failed stop must not cut
 						// the other stops short.
 						const results = await Promise.allSettled([
 							internals.stopPlugins(),
-							...started.map(async (listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
+							...started.map(async (listener) => {
+								try {
+									await listener.stop({ deadlineMs: shutdownDeadlineMs });
+								} finally {
+									openListeners -= 1;
+								}
+							}),
 						]);
 						clearTimeout(deadline);
 						const rejected = results.find((result) => result.status === "rejected");

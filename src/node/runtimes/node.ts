@@ -49,15 +49,21 @@ export async function listen(
 				// Node closes each other connection 1 ms after its last response ends.
 				server.keepAliveTimeout = 1;
 				server.keepAliveTimeoutBuffer = 0;
+				let cut = false;
 				const deadline = setTimeout(() => {
+					cut = true;
 					server.closeAllConnections();
 				}, deadlineMs);
 				server.close((error) => {
 					clearTimeout(deadline);
-					if (error == null) {
-						resolve();
-					} else {
+					if (error != null) {
 						reject(error);
+					} else if (cut) {
+						// Why a timer: Node emits `close` for each response that the deadline cut after
+						// this callback. The access line of each one then comes before the stop settles.
+						setTimeout(resolve, 0);
+					} else {
+						resolve();
 					}
 				});
 			}),

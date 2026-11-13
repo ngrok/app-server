@@ -266,10 +266,25 @@ async function check(runtime: string): Promise<void> {
 			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits without waiting for the app's timers",
 		);
 		await Promise.all([eventsEnded, stuckEnded, stdoutEnded]);
-		assert.ok(
-			lines.some((line) => line.message === "stopped"),
-			"the exit waits for stdout, so the last log line arrives",
+		const stopped = lines.findIndex((line) => line.message === "stopped");
+		assert.notEqual(stopped, -1, "the exit waits for stdout, so the last log line arrives");
+		const warned = lines.findIndex(
+			(line) => line.message === "the drain deadline passed with open requests",
 		);
+		assert.ok(
+			warned !== -1 && warned < stopped && lines[warned]?.["app_server.deadline_ms"] === 3_000,
+			"a warn line names the drain deadline that cut open requests, before `stopped`",
+		);
+		// Why not on Bun: on Bun 1.3, `stop(true)` does not end an open body, so its access line never comes.
+		if (runtime !== "bun") {
+			const cut = lines.findIndex(
+				(line) => line.message === "request" && line["http.url"] === "/stuck",
+			);
+			assert.ok(
+				cut !== -1 && cut < stopped && lines[cut]?.["http.client_aborted"] === true,
+				"the access line of a response that the deadline cuts comes before `stopped`",
+			);
+		}
 		process.stdout.write(`ok ${runtime}\n`);
 	} finally {
 		child.kill("SIGKILL");
