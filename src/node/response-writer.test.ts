@@ -116,6 +116,27 @@ describe("the node response writer", () => {
 		expect(gunzipSync(body).toString()).toBe(page);
 	});
 
+	it("sends a response with no body with a Content-Length of 0, but not a HEAD response, a 204, or a 304", async () => {
+		const url = await listening(
+			async (request) =>
+				new Response(null, { status: Number(new URL(request.url).pathname.slice(1)) }),
+			[],
+		);
+		const framingOf = async (path: string, method = "GET") => {
+			const response = await new Promise<IncomingMessage>((resolve, reject) => {
+				httpRequest(new URL(path, url), { method }, resolve).once("error", reject).end();
+			});
+			await bodyOf(response);
+			return [response.headers["content-length"], response.headers["transfer-encoding"]];
+		};
+
+		await expect(framingOf("/308")).resolves.toStrictEqual(["0", undefined]);
+		await expect(framingOf("/200")).resolves.toStrictEqual(["0", undefined]);
+		await expect(framingOf("/200", "HEAD")).resolves.toStrictEqual([undefined, undefined]);
+		await expect(framingOf("/204")).resolves.toStrictEqual([undefined, undefined]);
+		await expect(framingOf("/304")).resolves.toStrictEqual([undefined, undefined]);
+	});
+
 	it("sends the shell of a streamed page at once, with no timer, before the rest exists", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout"] });
 		onTestFinished(() => {

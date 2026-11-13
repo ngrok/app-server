@@ -134,6 +134,26 @@ function sentHead(outgoing: ServerResponse): string[] {
 	return head;
 }
 
+/**
+ * Writes a response with no body, with a `Content-Length` of 0. Why: with no
+ * length, Node sends `Transfer-Encoding: chunked` and an empty chunk. Why not
+ * for a 204, a 304, or a HEAD response: a 204 takes no length, and the others
+ * keep the length of the body that they do not send.
+ */
+function writeEmpty(status: number, outgoing: ServerResponse, head: string[]): void {
+	if (
+		status !== 204 &&
+		status !== 304 &&
+		outgoing.req.method !== "HEAD" &&
+		headerIndex(head, "content-length") === -1 &&
+		headerIndex(head, "transfer-encoding") === -1
+	) {
+		head.push("content-length", "0");
+	}
+	outgoing.writeHead(status, head);
+	outgoing.end();
+}
+
 /** Writes the head and the body of `response`, with `head` in place of its headers. */
 async function writeBody(
 	response: Response,
@@ -142,8 +162,7 @@ async function writeBody(
 ): Promise<void> {
 	const { body, status } = response;
 	if (body == null || reader == null) {
-		outgoing.writeHead(status, head);
-		outgoing.end();
+		writeEmpty(status, outgoing, head);
 		return;
 	}
 	if (headerIndex(head, "content-type") === -1) {
