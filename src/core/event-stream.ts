@@ -10,7 +10,10 @@ export type ServerSentEvent = {
 /** What {@link eventStream} passes to its producer. */
 export type EventStreamSink = {
 	send: (event: ServerSentEvent) => void;
-	/** Aborts when the client disconnects or the server shuts down. Stop the work on it. */
+	/**
+	 * Aborts when the client disconnects or the server shuts down, while the stream is open. Stop
+	 * the work on it.
+	 */
 	signal: AbortSignal;
 };
 
@@ -70,62 +73,66 @@ export function eventStream(
 		);
 	}
 	const encoder = new TextEncoder();
+	// Why `AbortSignal.any`: a listener of each open stream on `shutdownSignal()` makes that signal
+	// walk a longer list each time a stream adds or removes its listener.
+	const upstream = AbortSignal.any(
+		signal == null ? [shutdownSignal()] : [shutdownSignal(), signal],
+	);
+	// Why not `upstream` for the producer: such a signal stays in memory while it has a listener and
+	// a source lives, and `shutdownSignal()` lives until the server stops.
 	const stopped = new AbortController();
-	const stopSignal = AbortSignal.any([
-		stopped.signal,
-		shutdownSignal(),
-		...(signal == null ? [] : [signal]),
-	]);
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
-	let closed = false;
+	/** The controller of the body, until the stream ends. */
+	let open: ReadableStreamDefaultController<Uint8Array> | undefined;
+
+	/** Ends the stream. It gives the controller to the first call only, to close or fail the body. */
+	function end() {
+		const controller = open;
+		open = undefined;
+		clearInterval(heartbeat);
+		upstream.removeEventListener("abort", stop);
+		return controller;
+	}
+	function close() {
+		end()?.close();
+	}
+	function stop() {
+		close();
+		stopped.abort(upstream.reason);
+	}
+	function write(text: string) {
+		open?.enqueue(encoder.encode(text));
+	}
 
 	const body = new ReadableStream<Uint8Array>({
 		start(controller) {
-			const close = () => {
-				if (closed) {
-					return;
-				}
-				closed = true;
-				clearInterval(heartbeat);
-				// Why: the listener lives on `shutdownSignal()`, which lasts the life of the process.
-				stopSignal.removeEventListener("abort", close);
-				controller.close();
-			};
-			const write = (text: string) => {
-				if (!closed) {
-					controller.enqueue(encoder.encode(text));
-				}
-			};
-			heartbeat = setInterval(() => {
-				write(": ping\n\n");
-			}, heartbeatMs);
-			stopSignal.addEventListener("abort", close, { once: true });
-			if (stopSignal.aborted) {
-				close();
-				return;
-			}
-			Promise.resolve()
-				.then(async () =>
-					produce({
-						send: (event) => {
-							write(formatEvent(event));
-						},
-						signal: stopSignal,
-					}),
-				)
-				.then(close, (error: unknown) => {
-					closed = true;
-					clearInterval(heartbeat);
-					stopSignal.removeEventListener("abort", close);
-					controller.error(error);
-				});
+			open = controller;
 		},
 		cancel() {
-			closed = true;
-			clearInterval(heartbeat);
+			end();
 			stopped.abort();
 		},
 	});
+	if (upstream.aborted) {
+		close();
+	} else {
+		heartbeat = setInterval(() => {
+			write(": ping\n\n");
+		}, heartbeatMs);
+		upstream.addEventListener("abort", stop);
+		Promise.resolve()
+			.then(async () =>
+				produce({
+					send: (event) => {
+						write(formatEvent(event));
+					},
+					signal: stopped.signal,
+				}),
+			)
+			.then(close, (error: unknown) => {
+				end()?.error(error);
+			});
+	}
 
 	const responseHeaders = new Headers(headers);
 	responseHeaders.set("Content-Type", "text/event-stream; charset=utf-8");

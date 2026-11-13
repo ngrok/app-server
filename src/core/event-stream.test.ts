@@ -1,6 +1,9 @@
 import { getEventListeners } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { eventStream } from "./event-stream.js";
+import { abortShutdownSignal, renewShutdownSignal, shutdownSignal } from "./shutdown.js";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -8,6 +11,13 @@ afterEach(() => {
 
 async function readAll(response: Response): Promise<string> {
 	return new TextDecoder().decode(await response.arrayBuffer());
+}
+
+/** Runs a full garbage collection. Why this way: Vitest starts no worker with `--expose-gc`. */
+function collectGarbage(): void {
+	setFlagsFromString("--expose-gc");
+	const collect = runInNewContext("gc") as () => void;
+	collect();
 }
 
 describe("eventStream", () => {
@@ -78,10 +88,11 @@ describe("eventStream", () => {
 			return new Promise(() => {});
 		});
 
-		request.abort();
+		request.abort("the client left");
 
 		await expect(readAll(response)).resolves.toBe("");
 		expect(producerSignal?.aborted).toBe(true);
+		expect(producerSignal?.reason).toBe("the client left");
 	});
 
 	it("errors the stream when produce rejects", async () => {
@@ -92,24 +103,89 @@ describe("eventStream", () => {
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
 	});
 
-	// Why: the signal hangs off `shutdownSignal()`, so a listener left on it keeps the stream in memory.
-	it.each([
-		["resolves", async () => {}],
-		[
-			"rejects",
-			async () => {
+	// Why: Node.js keeps a signal that follows `shutdownSignal()`, with each listener that the producer
+	// left on it, until the server stops.
+	it.each<{ source: string; abort: (request: AbortController) => void }>([
+		{
+			source: "the request aborts",
+			abort: (request) => {
+				request.abort();
+			},
+		},
+		{ source: "the server shuts down", abort: abortShutdownSignal },
+	])(
+		"does not abort the signal of a stream that ended by itself when $source later",
+		async ({ abort }) => {
+			onTestFinished(renewShutdownSignal);
+			const request = new AbortController();
+			const onAbort = vi.fn<() => void>();
+			let producerSignal: AbortSignal | undefined;
+			const response = eventStream({ signal: request.signal }, ({ signal }) => {
+				producerSignal = signal;
+				signal.addEventListener("abort", onAbort);
+			});
+			await readAll(response);
+
+			abort(request);
+
+			expect(producerSignal?.aborted).toBe(false);
+			expect(onAbort).not.toHaveBeenCalled();
+		},
+	);
+
+	// Why: a signal walks its list of listeners to add or remove one, so a listener for each open
+	// stream makes each stream cost more as more streams are open.
+	it("adds no listener to shutdownSignal() for an open stream", async () => {
+		// Why: a new signal has no listener of another test.
+		renewShutdownSignal();
+		const response = eventStream({}, async () => new Promise(() => {}));
+
+		expect(getEventListeners(shutdownSignal(), "abort")).toStrictEqual([]);
+		await response.body?.cancel();
+	});
+
+	// Why: a listener that outlives its stream keeps all that it holds, and `shutdownSignal()` lives
+	// until the server stops.
+	it.each<{
+		end: string;
+		produce: () => Promise<void>;
+		finish: (response: Response) => Promise<unknown>;
+	}>([
+		{ end: "produce resolves", produce: async () => {}, finish: readAll },
+		{
+			end: "produce rejects",
+			produce: async () => {
 				throw new Error("upstream failed");
 			},
-		],
-	])("removes its abort listener when produce %s", async (_, settle) => {
-		let producerSignal: AbortSignal | undefined;
-		const response = eventStream({}, async ({ signal }) => {
-			producerSignal = signal;
-			return settle();
-		});
+			finish: async (response) => readAll(response).catch(() => {}),
+		},
+		{
+			end: "the client leaves",
+			produce: async () => new Promise(() => {}),
+			finish: async (response) => response.body?.cancel(),
+		},
+	])(
+		"frees a listener that the producer left on the signal, after $end",
+		async ({ produce, finish }) => {
+			const request = new AbortController();
+			const streamed = async () => {
+				const onAbort = () => {};
+				const response = eventStream({ signal: request.signal }, async ({ signal }) => {
+					signal.addEventListener("abort", onAbort);
+					return produce();
+				});
+				await finish(response);
+				return new WeakRef(onAbort);
+			};
+			const listener = await streamed();
+			// Why a turn of the event loop: a `WeakRef` keeps its target until the turn that made it ends.
+			await new Promise((resolve) => {
+				setImmediate(resolve);
+			});
 
-		await readAll(response).catch(() => {});
+			collectGarbage();
 
-		expect(producerSignal && getEventListeners(producerSignal, "abort")).toStrictEqual([]);
-	});
+			expect(listener.deref()).toBeUndefined();
+		},
+	);
 });
