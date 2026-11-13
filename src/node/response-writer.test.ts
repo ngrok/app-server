@@ -435,19 +435,19 @@ describe("the node response writer", () => {
 		expect(odd.statusCode).toBe(400);
 	});
 
-	it("answers a request with no Host header, such as an HTTP/1.0 health probe, with the host localhost", async () => {
+	it("answers an HTTP/1.0 request with no Host header, and a request with an empty Host, with the host localhost", async () => {
 		const { url } = await serving({
 			routes: (app) => {
 				app.get("/url", (c) => c.text(c.req.url));
 			},
 		});
 		const { port, hostname } = new URL(url);
-		/** The status line and the body of the answer to a GET for `path`. Why a socket: `node:http` always sends `Host`. */
-		const probe = async (path: string) =>
+		/** The status line and the body of the answer to the request `head`. Why a socket: `node:http` always sends `Host`. */
+		const probe = async (head: string) =>
 			new Promise<(string | undefined)[]>((resolve, reject) => {
 				let answer = "";
 				const socket = connect(Number(port), hostname, () => {
-					socket.write(`GET ${path} HTTP/1.0\r\n\r\n`);
+					socket.write(`${head}\r\n\r\n`);
 				});
 				socket.setEncoding("utf8");
 				socket.on("data", (chunk: string) => {
@@ -459,8 +459,19 @@ describe("the node response writer", () => {
 				});
 			});
 
-		await expect(probe("/livez")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "ok"]);
-		await expect(probe("/url")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "http://localhost/url"]);
+		// An HTTP/1.0 health probe, as HAProxy sends by default.
+		await expect(probe("GET /livez HTTP/1.0")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "ok"]);
+		await expect(probe("GET /url HTTP/1.0")).resolves.toStrictEqual([
+			"HTTP/1.1 200 OK",
+			"http://localhost/url",
+		]);
+		await expect(probe("GET /url HTTP/1.1\r\nHost:\r\nConnection: close")).resolves.toStrictEqual([
+			"HTTP/1.1 200 OK",
+			"http://localhost/url",
+		]);
+		// Why: Node.js answers an HTTP/1.1 request with no `Host` itself, before the listener.
+		const [status] = await probe("GET /url HTTP/1.1\r\nConnection: close");
+		expect(status).toBe("HTTP/1.1 400 Bad Request");
 	});
 
 	it("sends the headers of the header hooks with a HEAD response, and with a copy that a wrapper returns", async () => {
