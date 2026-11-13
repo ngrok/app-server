@@ -473,6 +473,37 @@ describe("streamingCompress", () => {
 		await expect(bodyOf("Content-Range", "bytes 0-1502/2000")).resolves.toStrictEqual([null, page]);
 	});
 
+	it("compresses a body when a header hook throws before its stage has the value that the hook needs", async () => {
+		// Why: the plugin runs each hook before the code that an earlier stage runs after its `next()`.
+		const setsLate: Plugin = {
+			name: "sets-late",
+			middleware: async (context, next) => {
+				const late: { value?: string } = {};
+				await withHeaderHook(context, next, (headers) => {
+					if (late.value == null) {
+						throw new Error("The stage has no value yet.");
+					}
+					headers.set("X-Late", late.value);
+				});
+				late.value = "set";
+			},
+		};
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [setsLate, streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect([
+			response.status,
+			response.headers.get("X-Late"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual([200, "set", "gzip"]);
+		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe(page);
+	});
+
 	it("leaves a body alone when a hook that a stage adds to headerHooks marks it no-transform", async () => {
 		const page = `<p>${"hi ".repeat(500)}</p>`;
 		const marks: Plugin = {

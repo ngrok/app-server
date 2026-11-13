@@ -841,6 +841,53 @@ describe("compressed copies from the build", () => {
 		]).toStrictEqual(["public, max-age=60", "br"]);
 	});
 
+	it("sends the copy when a header hook throws before its stage has the value that the hook needs", async () => {
+		// Why: the static stage runs each hook before the code that an earlier stage runs after its `next()`.
+		const setsLate: Plugin = {
+			name: "sets-late",
+			middleware: async (context, next) => {
+				const late: { value?: string } = {};
+				await withHeaderHook(context, next, (response) => {
+					if (late.value == null) {
+						throw new Error("The stage has no value yet.");
+					}
+					response.set("X-Late", late.value);
+				});
+				late.value = "set";
+			},
+		};
+		const { request } = await testServer({
+			plugins: [setsLate, prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect([
+			response.status,
+			response.headers.get("X-Late"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual([200, "set", "br"]);
+	});
+
+	it("sends a value that a header hook appends one time, though the static stage also runs the hook", async () => {
+		const appends: Plugin = {
+			name: "appends",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.append("X-Stage", "appends");
+				}),
+		};
+		const { request } = await testServer({ plugins: [appends, prerendered()], clientDirectory });
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect([
+			response.headers.get("X-Stage"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual(["appends", "br"]);
+	});
+
 	it("lets an app hook mark no-transform by a header that a built-in hook sets", async () => {
 		const byRequestId: Plugin = {
 			name: "by-request-id",
