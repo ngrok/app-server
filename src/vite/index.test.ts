@@ -699,6 +699,67 @@ describe("appServer", () => {
 		rmSync(directory, { recursive: true, force: true });
 	});
 
+	it("gives the host's `output` the logger of the build after a late prerender pass, when the framework's preview is silent", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-pass-logger-"));
+		mkdirSync(join(directory, "build/client"), { recursive: true });
+		const reports: string[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: ({ clientDirectory, logger }) => {
+					const manifest: unknown = JSON.parse(
+						readFileSync(join(clientDirectory, ".app-server.json"), "utf8"),
+					);
+					logger.info(`report ${JSON.stringify(manifest)}`);
+				},
+			},
+		};
+		const plugins = appServer(options);
+		const config = await resolveConfig(
+			{
+				root: directory,
+				configFile: false,
+				build: { outDir: "build/client" },
+				customLogger: {
+					...createLogger("silent"),
+					info: (message) => {
+						reports.push(message);
+					},
+				},
+				plugins,
+			},
+			"build",
+		);
+		const buildApp = plugins[1]?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{ config } as never,
+		);
+		// Why `silent` and a new instance: React Router starts its prerender preview from the config
+		// file again, with that log level.
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer(options), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(reports).toHaveLength(2);
+		expect(reports[0]).toContain('"prerendered":[]');
+		expect(reports[1]).toContain('"prerendered":["/agents.txt"]');
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("passes the framework's runtime options to its runtime", () => {
 		expect(
 			serverEntrySource({

@@ -156,7 +156,11 @@ export type HostOutput = {
 	 * `/assets/`. Its files have content hashes in their names.
 	 */
 	assetsPath: string;
-	/** Vite's logger, so Vite's `logLevel` and `customLogger` apply to what the host prints. */
+	/**
+	 * The logger of the Vite build, so Vite's `logLevel` and `customLogger`
+	 * apply to what the host prints. After a prerender pass, it is still the
+	 * logger of the build, not the logger of the framework's preview server.
+	 */
 	logger: Pick<Logger, "info" | "warn">;
 };
 
@@ -231,6 +235,14 @@ function defaultApp(root: string): string | undefined {
 		.find((path) => existsSync(path));
 }
 
+/**
+ * The logger of the build whose post step ran, by Vite root. Why in the
+ * module: the framework starts its prerender preview with a new instance of
+ * this plugin and its own log level, which is `silent` for React Router. So
+ * what the host's `output` prints after that pass needs the logger of the build.
+ */
+const buildLoggers = new Map<string, Logger>();
+
 /** What a host's `output` gets for the build of `config`. */
 function hostOutput(config: ResolvedConfig): HostOutput {
 	return {
@@ -238,7 +250,7 @@ function hostOutput(config: ResolvedConfig): HostOutput {
 		clientDirectory: outDir(config, "client"),
 		entryFile: join(outDir(config, SERVER_ENVIRONMENT), SERVER_ENTRY_FILE),
 		assetsPath: assetsPathOf(config),
-		logger: config.logger,
+		logger: buildLoggers.get(config.root) ?? config.logger,
 	};
 }
 
@@ -962,6 +974,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory, copyOptions(builder.config));
+				buildLoggers.set(builder.config.root, builder.config.logger);
 				host.output?.(hostOutput(builder.config));
 			},
 		},
