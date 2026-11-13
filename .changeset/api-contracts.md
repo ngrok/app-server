@@ -12,3 +12,12 @@ info.logger.log({ level: "warn", message: "cache is cold", attributes: { "cache.
 // After
 info.logger.warn("cache is cold", { "cache.entries": 0 });
 ```
+
+**`HostRuntime` and `Listener` have no `name`.** No log and no error read it. Delete `name` from a host or a listener of your own. TypeScript reports each one.
+
+```ts
+// Before
+const listener: Listener = { name: "unix", start };
+// After
+const listener: Listener = { start };
+```

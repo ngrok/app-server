@@ -175,8 +175,6 @@ export type Lifecycle = {
 
 /** The run side of a host adapter: where the server runs. */
 export type HostRuntime = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The files of the client build at `clientDirectory`, a file path or a `file:` URL. */
 	files: (clientDirectory: string) => StaticFiles;
 	/**
@@ -411,8 +409,6 @@ export type StartedListener = {
  * createServer({ listeners: [tcp({ idleTimeoutMs: 120_000 })] });
  */
 export type Listener = {
-	/** A name for logs. */
-	name: string;
 	start: (fetch: FetchHandler, options?: ListenerStartOptions) => Promise<StartedListener>;
 };
 

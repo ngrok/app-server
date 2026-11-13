@@ -42,7 +42,6 @@ function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
  * export const appServer = createEntry({ app, host, framework: (mode) => runtime(build, { mode }) });
  */
 export const host: HostRuntime = {
-	name: "vercel",
 	files: (clientDirectory) => {
 		const files = brotliOnlyFiles(nodeHost.files(clientDirectory));
 		const builtAt = Number(process.env.APP_SERVER_BUILT_AT);

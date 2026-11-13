@@ -41,7 +41,6 @@ afterAll(() => {
 function testHost(): { host: HostRuntime; fetch: () => FetchHandler | undefined } {
 	let handler: FetchHandler | undefined;
 	const listener: Listener = {
-		name: "recording",
 		start: async (fetch) => {
 			handler = fetch;
 			return { url: "http://localhost:1/", stop: async () => {} };
@@ -322,7 +321,7 @@ describe("createEntry", () => {
 		});
 		createEntry({
 			app: createServer({ logger: recordingLogger([]) }),
-			host: { name: host.name, files: host.files },
+			host: { files: host.files },
 			framework: () => stubFramework(),
 		});
 
@@ -339,7 +338,7 @@ describe("createEntry", () => {
 		const setup = vi.fn<() => void>();
 		const entry = createEntry({
 			app: createServer({ plugins: [buildId(), prerendered(), { name: "count", setup }] }),
-			host: { name: "serverless", files: nodeHost.files },
+			host: { files: nodeHost.files },
 			clientDirectory,
 			framework: () => ({ name: "stub", fetch: renderedFramework }),
 		});
@@ -365,7 +364,7 @@ describe("createEntry", () => {
 				plugins: [{ name: "remote-config", setup }],
 				logger: recordingLogger(lines),
 			}),
-			host: { name: "serverless", files: nodeHost.files },
+			host: { files: nodeHost.files },
 			clientDirectory,
 			framework: () => ({ name: "stub", fetch: renderedFramework }),
 		});
@@ -400,7 +399,7 @@ describe("createEntry", () => {
 					},
 				},
 			}),
-			host: { name: "serverless", files: nodeHost.files },
+			host: { files: nodeHost.files },
 			clientDirectory,
 			framework: () => ({ name: "stub", fetch: renderedFramework }),
 		});
@@ -415,7 +414,7 @@ describe("createEntry", () => {
 	it("refuses to start when neither the app nor the host has a listener", async () => {
 		const entry = createEntry({
 			app: createServer({ plugins: [], logger: recordingLogger([]) }),
-			host: { name: "serverless", files: nodeHost.files },
+			host: { files: nodeHost.files },
 			clientDirectory,
 			framework: () => stubFramework(),
 		});

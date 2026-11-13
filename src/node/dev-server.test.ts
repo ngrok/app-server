@@ -45,7 +45,6 @@ function sentRecorder(reports: Report[]): Plugin {
  */
 function noEdgeListener(): Listener {
 	return {
-		name: "no-edge",
 		start: async (fetch) => {
 			const listener = getRequestListener(async (request, { incoming, outgoing }) =>
 				fetch(request, { remoteAddress: incoming.socket.remoteAddress, incoming, outgoing }),

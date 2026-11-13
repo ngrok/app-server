@@ -77,7 +77,6 @@ export function tcp({
 		);
 	}
 	return {
-		name: "tcp",
 		start: async (fetch, { trustForwardedProto = false } = {}) => {
 			const options = {
 				port: port ?? (process.env.PORT == null ? 3000 : parsePort(process.env.PORT)),

@@ -669,10 +669,7 @@ describe("createServer", () => {
 		const app = createServer({
 			plugins: [],
 			logger: { log: () => {} },
-			listeners: [
-				{ name: "ok", start: async () => ({ url: "http://localhost:1", stop }) },
-				{ name: "taken", start },
-			],
+			listeners: [{ start: async () => ({ url: "http://localhost:1", stop }) }, { start }],
 		});
 
 		await expect(serverInternals(app)?.listen(stubFramework(), [])).rejects.toThrow(
@@ -696,7 +693,6 @@ describe("createServer", () => {
 			logger: { log: () => {} },
 			listeners: [
 				{
-					name: "broken",
 					start: async () => ({
 						url: "http://localhost:1",
 						stop: async () => {

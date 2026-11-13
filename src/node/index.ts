@@ -46,7 +46,6 @@ const storage = new AsyncLocalStorage<Context<AppServerEnv>>();
  * export const appServer = createEntry({ app, host, framework: (mode) => runtime(build, { mode }) });
  */
 export const host: HostRuntime = {
-	name: "node",
 	files: nodeFiles,
 	listeners: () => [tcp()],
 	storage: {
