@@ -6,7 +6,7 @@ import { devServerStage } from "../node/dev-server.js";
 import { exitAfterFlush } from "../node/exit.js";
 import { requestListener } from "../node/response-writer.js";
 import { parsePort } from "../node/tcp.js";
-import { SERVER_ENTRY_ID } from "../vite/index.js";
+import { SERVER_ENTRY_ID } from "../vite/entry-source.js";
 import { devUrlLines } from "./dev-urls.js";
 import { loadEntry } from "./load-entry.js";
 import { servedApps } from "./served-apps.js";

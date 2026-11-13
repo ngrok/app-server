@@ -34,7 +34,9 @@ describe("loadEntry", () => {
 		await expect(loadEntry(build)).resolves.toBe(entry);
 	});
 
-	it("refuses a module that is not a React Router build", async () => {
-		await expect(loadEntry({ default: {} })).rejects.toThrow("not a React Router server build");
+	it("refuses to start a module that is not a React Router build", async () => {
+		const entry = await loadEntry({ default: {} });
+
+		await expect(entry.start()).rejects.toThrow("not a React Router server build");
 	});
 });

@@ -22,7 +22,8 @@ import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
-import { SERVER_ENTRY_ID, appServer, serverEntrySource } from "./index.js";
+import { SERVER_ENTRY_ID, serverEntrySource } from "./entry-source.js";
+import { appServer } from "./index.js";
 import type { AppServerOptions } from "./index.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vite-"));
@@ -168,6 +169,10 @@ describe("appServer with no options", () => {
 });
 
 describe("appServer", () => {
+	it("is the one export of the entry, so no internal of the plugin is API", async () => {
+		expect(Object.keys(await import("./index.js"))).toStrictEqual(["appServer"]);
+	});
+
 	it("records each 2xx path, and the headers of each that is not a document, with no cookie or length", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		mkdirSync(join(root, "build/client/page"), { recursive: true });

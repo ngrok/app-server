@@ -3,7 +3,7 @@ import type { HandleDocumentRequestFunction, ServerBuild } from "react-router";
 import { describe, expect, it } from "vitest";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
-import { appServerContext, isServerBuild, runtime } from "./index.js";
+import { appServerContext, runtime } from "./index.js";
 import { reactRouterAdapter } from "./vite.js";
 import { testServer } from "../test-server.js";
 
@@ -200,6 +200,12 @@ describe("runtime", () => {
 		expect(initial.isDataRequest?.("/__manifest")).toBe(false);
 	});
 
+	it("refuses a module that is not a server build", () => {
+		expect(() => runtime({ default: {} }, { mode: "production" })).toThrow(
+			"The server module is not a React Router server build.",
+		);
+	});
+
 	it("refuses a build with a public path other than /", () => {
 		expect(() => runtime(documentBuild({ publicPath: "/docs/" }), { mode: "production" })).toThrow(
 			'serves a build at "/" only, and this build has the publicPath "/docs/"',
@@ -207,9 +213,11 @@ describe("runtime", () => {
 	});
 });
 
-describe("isServerBuild", () => {
-	it("tells a server build from another module", () => {
-		expect(isServerBuild(documentBuild())).toBe(true);
-		expect(isServerBuild({ default: {} })).toBe(false);
+describe("@ngrok/app-server/react-router", () => {
+	it("exports the context key and the run side only", async () => {
+		expect(Object.keys(await import("./index.js")).toSorted()).toStrictEqual([
+			"appServerContext",
+			"runtime",
+		]);
 	});
 });
