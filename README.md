@@ -1052,6 +1052,8 @@ export const appServer = createEntry({
 });
 ```
 
+`createEntry` gives an `AppServerEntry`. The CLI calls its `start`. A serverless host calls its `fetch` for each request. A build step can read its `staticPages()`, as `vercel()` does. It gives each prerendered path as a `StaticPage`: the `CdnPage` answer that a CDN can send with no server, or the reason that the server must answer the path. Call `stopPlugins()` when the loop ends.
+
 ## Options
 
 `createServer` takes:

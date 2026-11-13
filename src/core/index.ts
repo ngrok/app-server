@@ -104,6 +104,11 @@ export type {
 } from "./entry.js";
 export type {
 	//,
+	CdnPage,
+	StaticPage,
+} from "./static-pages.js";
+export type {
+	//,
 	EventStreamOptions,
 	EventStreamSink,
 	ServerSentEvent,
