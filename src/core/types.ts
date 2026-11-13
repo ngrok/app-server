@@ -92,13 +92,19 @@ export type FrameworkRuntime = {
 	contentTypes?: Readonly<Record<string, string>>;
 };
 
-/** What a host knows about a file under the client build. */
-export type FileInfo = {
-	kind: "file" | "directory";
-	/** The size in bytes. */
-	size: number;
-	mtimeMs: number;
-};
+/**
+ * What a host knows about a file or a directory under the client build. Why
+ * a union: no code reads a size or a time of a directory, so a host gives
+ * none.
+ */
+export type FileInfo =
+	| {
+			kind: "file";
+			/** The size in bytes. */
+			size: number;
+			mtimeMs: number;
+	  }
+	| { kind: "directory" };
 
 /** A range of bytes in a file. `start` and `end` are both inclusive. */
 export type ByteRange = { start: number; end: number };

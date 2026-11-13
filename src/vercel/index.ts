@@ -23,7 +23,7 @@ async function listedBuild(disk: StaticFiles): Promise<StaticFiles | undefined> 
 	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
 	const { builtAt, files, brotliOnly } = JSON.parse(text) as FunctionFiles;
 	const entries = new Map<string, FileInfo>();
-	const directory: FileInfo = { kind: "directory", size: 0, mtimeMs: builtAt };
+	const directory: FileInfo = { kind: "directory" };
 	for (const sizes of [files, brotliOnly]) {
 		for (const [path, size] of Object.entries(sizes)) {
 			entries.set(path, { kind: "file", size, mtimeMs: builtAt });

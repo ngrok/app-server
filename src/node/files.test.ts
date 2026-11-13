@@ -37,7 +37,7 @@ describe("nodeFiles", () => {
 		const files = nodeFiles(pathToFileURL(join(root, "client/")).href);
 
 		await expect(files.stat("/llms.txt")).resolves.toMatchObject({ kind: "file", size: 4 });
-		await expect(files.stat("/docs")).resolves.toMatchObject({ kind: "directory" });
+		await expect(files.stat("/docs")).resolves.toStrictEqual({ kind: "directory" });
 		await expect(files.stat("/missing")).resolves.toBeUndefined();
 		await expect(new Response(await files.open("/llms.txt")).text()).resolves.toBe("llms");
 	});
@@ -78,6 +78,7 @@ describe("nodeFiles", () => {
 			undefined,
 			undefined,
 		]);
+		await expect(files?.stat("/docs")).resolves.toStrictEqual({ kind: "directory" });
 	});
 
 	it("lists the files of a directory under each symbolic link to it", async () => {

@@ -114,9 +114,7 @@ function fileInfo(stats: Stats | undefined): FileInfo | undefined {
 	if (stats?.isFile() === true) {
 		return { kind: "file", size: stats.size, mtimeMs: stats.mtimeMs };
 	}
-	return stats?.isDirectory() === true
-		? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
-		: undefined;
+	return stats?.isDirectory() === true ? { kind: "directory" } : undefined;
 }
 
 /**

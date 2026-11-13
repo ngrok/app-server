@@ -358,6 +358,7 @@ describe("host", () => {
 		// Why: the function serves the files of the list, so it does not find a later file.
 		writeFileSync(join(directory, "late.txt"), "late");
 		const entry = functionEntry(directory);
+		const listed = await host.files(directory).snapshot?.();
 		const request = async (path: string, headers: Record<string, string> = {}) =>
 			entry.fetch(new Request(`http://localhost${path}`, { headers }), {});
 
@@ -392,6 +393,9 @@ describe("host", () => {
 			missing: "rendered",
 			late: "rendered",
 		});
+		await expect(listed?.stat("/about")).resolves.toStrictEqual({ kind: "directory" });
+		await expect(listed?.stat("/about/")).resolves.toStrictEqual({ kind: "directory" });
+		await expect(listed?.stat("/robots.txt/")).resolves.toBeUndefined();
 	});
 
 	it("reads a client build with no list from the file system, as the build step and development do", async () => {
