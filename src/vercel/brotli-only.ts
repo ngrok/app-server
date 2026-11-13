@@ -1,6 +1,6 @@
 import { Duplex } from "node:stream";
 import { createBrotliDecompress } from "node:zlib";
-import { copyName } from "../core/compression.js";
+import { copyPath } from "../core/compression.js";
 import type { ByteRange, StaticFiles } from "../core/types.js";
 
 /**
@@ -10,12 +10,6 @@ import type { ByteRange, StaticFiles } from "../core/types.js";
  * serve one.
  */
 export const BROTLI_ONLY_LIST = "/.app-server-brotli.json";
-
-/** The URL path of the brotli copy of the file at `path`. */
-function brotliCopy(path: string): string {
-	const slash = path.lastIndexOf("/");
-	return `${path.slice(0, slash + 1)}${copyName(path.slice(slash + 1), "br")}`;
-}
 
 /** The bytes of `range` in `stream`. It cancels `stream` after the last byte. */
 function sliced(stream: ReadableStream<Uint8Array>, { start, end }: ByteRange) {
@@ -99,7 +93,7 @@ export function brotliOnlyFiles(files: StaticFiles): StaticFiles {
 				if (size == null) {
 					return info;
 				}
-				const copy = await inner.stat(brotliCopy(path));
+				const copy = await inner.stat(copyPath(path, "br"));
 				return copy?.kind === "file" ? { kind: "file", size, mtimeMs: copy.mtimeMs } : undefined;
 			},
 			open: async (path, range) => {
@@ -112,7 +106,7 @@ export function brotliOnlyFiles(files: StaticFiles): StaticFiles {
 						Uint8Array,
 						Uint8Array
 					>;
-					const decoded = (await inner.open(brotliCopy(path))).pipeThrough(decompress);
+					const decoded = (await inner.open(copyPath(path, "br"))).pipeThrough(decompress);
 					return range == null ? decoded : sliced(decoded, range);
 				});
 			},

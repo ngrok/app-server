@@ -46,6 +46,17 @@ export function copyName(name: string, encoding: Encoding): string {
 }
 
 /**
+ * The URL path of the `encoding` copy of the file at the URL path `path`.
+ *
+ * @example
+ * copyPath("/assets/app-abc.js", "br"); // => "/assets/.app-abc.js.br"
+ */
+export function copyPath(path: string, encoding: Encoding): string {
+	const name = path.lastIndexOf("/") + 1;
+	return `${path.slice(0, name)}${copyName(path.slice(name), encoding)}`;
+}
+
+/**
  * Whether the server compresses a body of the content type `type`.
  *
  * @example

@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
-import { COPY_ENCODINGS, copyName, forbidsTransform, preferredEncoding } from "./compression.js";
+import { COPY_ENCODINGS, copyPath, forbidsTransform, preferredEncoding } from "./compression.js";
 import type { Encoding } from "./compression.js";
 import { hookedHeaders } from "./header-hook.js";
 import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
@@ -277,11 +277,11 @@ async function preferredCopy(
 	}
 	const copies: Copy[] = [];
 	for (const encoding of COPY_ENCODINGS) {
-		const copyPath = path.replace(/[^/]*$/u, (name) => copyName(name, encoding));
+		const copy = copyPath(path, encoding);
 		// oxlint-disable-next-line no-await-in-loop -- two lookups, and a snapshot answers each at once.
-		const info = await files.stat(copyPath);
+		const info = await files.stat(copy);
 		if (info?.kind === "file") {
-			copies.push({ path: copyPath, size: info.size, mtimeMs: info.mtimeMs, encoding });
+			copies.push({ path: copy, size: info.size, mtimeMs: info.mtimeMs, encoding });
 		}
 	}
 	if (copies.length === 0) {
