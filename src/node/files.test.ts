@@ -91,6 +91,33 @@ describe("nodeFiles", () => {
 		await expect(files?.stat("/link/a.txt")).resolves.toMatchObject({ kind: "file" });
 	});
 
+	it("gives the answers of stat from a snapshot of a tree with more entries than it reads at one time", async () => {
+		const client = join(root, "tree");
+		const paths = ["/", "/missing", "/missing/a.txt", "/a/0/0.txt/", "/a/0/0.txt/b"];
+		for (const section of ["a", "b", "c"]) {
+			for (let directory = 0; directory < 8; directory += 1) {
+				mkdirSync(join(client, section, String(directory)), { recursive: true });
+				paths.push(`/${section}`, `/${section}/${directory}`, `/${section}/${directory}/`);
+				for (let file = 0; file < 10; file += 1) {
+					writeFileSync(join(client, section, String(directory), `${file}.txt`), "x".repeat(file));
+					paths.push(`/${section}/${directory}/${file}.txt`);
+				}
+			}
+		}
+		symlinkSync("a", join(client, "linked"));
+		// Why no path under `/b/up`: a snapshot lists a link to a parent directory, but not what is under it.
+		symlinkSync("..", join(client, "b/up"));
+		paths.push("/linked", "/linked/3/4.txt", "/b/up");
+		const files = nodeFiles(client);
+		const snapshot = await files.snapshot?.();
+
+		const fromDisk = await Promise.all(paths.map(async (path) => files.stat(path)));
+		const fromSnapshot = await Promise.all(paths.map(async (path) => snapshot?.stat(path)));
+
+		expect(fromSnapshot).toStrictEqual(fromDisk);
+		expect(fromSnapshot.filter((info) => info != null).length).toBeGreaterThan(300);
+	});
+
 	it("refuses a snapshot when a file system error does not mean a missing file", async () => {
 		await expect(nodeFiles(join(root, "client")).snapshot?.()).rejects.toMatchObject({
 			code: "ELOOP",

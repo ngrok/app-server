@@ -120,10 +120,23 @@ function fileInfo(stats: Stats | undefined): FileInfo | undefined {
 }
 
 /**
+ * The most file system calls of one `snapshot` in flight. Why a limit: each
+ * call in flight holds about 4 KiB for its request, its path, and its
+ * result, and a walk with no limit has a call in flight for each entry of
+ * the client build. Why 64: a build of 100 pages then starts as fast as with
+ * no limit, and with 8 it starts 11% slower.
+ */
+const SNAPSHOT_CALLS = 64;
+
+/** An entry for `snapshot` to read: its URL path, and the inodes of the directories above it. */
+type Unread = readonly [path: string, parents: ReadonlySet<string>];
+
+/**
  * The client build on the file system. A relative `clientDirectory` is
  * relative to the working directory.
  *
- * Its `snapshot` reads each file and directory once. It throws for an error
+ * Its `snapshot` reads each file and directory once, with at most
+ * {@link SNAPSHOT_CALLS} file system calls in flight. It throws for an error
  * that does not mean a missing file, so the server does not start.
  *
  * @example
@@ -157,18 +170,16 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		},
 		snapshot: async () => {
 			const entries = new Map<string, FileInfo>();
-			// Why the inodes of the parents: a symbolic link to a parent directory must not make the
-			// walk endless. A link to another directory, such as a sibling, still lists its files.
-			const walk = async (
-				path: string,
-				stats: Stats,
-				parents: ReadonlySet<string>,
-			): Promise<void> => {
+			/** Reads the entry at `path`, and adds the entries of a directory to `found`. */
+			const read = async ([path, parents]: Unread, found: Unread[]): Promise<void> => {
+				const stats = await orMissing(stat(path === "/" ? root : filePath(path)));
 				const info = fileInfo(stats);
-				if (info == null) {
+				if (stats == null || info == null) {
 					return;
 				}
 				entries.set(path, info);
+				// Why the inodes of the parents: a symbolic link to a parent directory must not make the
+				// walk endless. A link to another directory, such as a sibling, still lists its files.
 				const inode = `${stats.dev}:${stats.ino}`;
 				if (info.kind === "file" || parents.has(inode)) {
 					return;
@@ -176,20 +187,36 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				const inside = new Set(parents).add(inode);
 				const prefix = path === "/" ? "" : path;
 				// Why: a deploy can remove a directory between its `stat` and this read.
-				const names = (await orMissing(readdir(filePath(path)))) ?? [];
-				await Promise.all(
-					names.map(async (name) => {
-						const childPath = `${prefix}/${name}`;
-						const childStats = await orMissing(stat(filePath(childPath)));
-						if (childStats != null) {
-							await walk(childPath, childStats, inside);
-						}
-					}),
-				);
+				for (const name of (await orMissing(readdir(filePath(path)))) ?? []) {
+					found.push([`${prefix}/${name}`, inside]);
+				}
 			};
-			const rootStats = await orMissing(stat(root));
-			if (rootStats != null) {
-				await walk("/", rootStats, new Set());
+			// Why one depth at a time: the list of a depth is complete before a worker takes from it, so
+			// each worker stops when the list is empty.
+			let depth: Unread[] = [["/", new Set()]];
+			while (depth.length > 0) {
+				const unread = depth;
+				const found: Unread[] = [];
+				let next = 0;
+				let failure: { error: unknown } | undefined;
+				const worker = async (): Promise<void> => {
+					for (let entry = unread[next]; entry != null && failure == null; entry = unread[next]) {
+						next += 1;
+						try {
+							// oxlint-disable-next-line no-await-in-loop -- each worker reads one entry at a time.
+							await read(entry, found);
+						} catch (error) {
+							failure ??= { error };
+						}
+					}
+				};
+				// oxlint-disable-next-line no-await-in-loop -- the entries of a depth come from the depth above.
+				await Promise.all(Array.from({ length: Math.min(SNAPSHOT_CALLS, unread.length) }, worker));
+				// Why after each worker ends: no call of a failed walk then runs on while the caller tries again.
+				if (failure != null) {
+					throw failure.error;
+				}
+				depth = found;
 			}
 			return {
 				stat: async (path) => {
