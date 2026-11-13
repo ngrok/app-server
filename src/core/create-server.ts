@@ -527,7 +527,7 @@ export function createServer({
 			if (!context.finalized) {
 				context.res = await answerThrown(
 					new Error(
-						"No stage answered the request. A middleware must return a Response or call `await next()`.",
+						"The request has no answer. A middleware must return a Response or call `await next()`.",
 					),
 					context,
 				);

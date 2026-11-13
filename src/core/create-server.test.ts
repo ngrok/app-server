@@ -1191,7 +1191,7 @@ describe("the pipeline", () => {
 	});
 
 	const noAnswer =
-		"No stage answered the request. A middleware must return a Response or call `await next()`.";
+		"The request has no answer. A middleware must return a Response or call `await next()`.";
 	/**
 	 * A pipeline whose plugin returns `value` and does not call `next()`. Why
 	 * the cast: the type takes a `Response` only, but a middleware in JavaScript
@@ -1276,7 +1276,7 @@ describe("the pipeline", () => {
 		]);
 	});
 
-	it("answers a request that no stage answers with the app's onError", async () => {
+	it("gives a request that has no answer the answer of the app's onError", async () => {
 		const { request, lines } = await pipeline({
 			...forgetsAt["a plugin"],
 			routes: (app) => {

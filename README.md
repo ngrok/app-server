@@ -337,7 +337,7 @@ const auth: Plugin = { name: "basic-auth", middleware: basicAuth({ username, pas
 - A promise: an `async` plugin factory with no `await`.
 - A value that is not an object, such as `false` from `condition && plugin`. To add a plugin on a condition, spread a list: `...(condition ? [plugin] : [])`.
 
-A `middleware` returns a `Response`, or it calls `await next()`. If no stage answers a request, the client gets the answer of the app's `onError`, a 500 by default, and the log gets an `unhandled error` line. Each host gives this answer, and so does `createTestServer`.
+A `middleware` returns a `Response`, or it calls `await next()`. If a middleware returns no `Response` and does not call `await next()`, the request has no answer. The client then gets the answer of the app's `onError`. The default `onError` answers a 500 and writes an `unhandled error` line to the log. Each host gives this answer, and so does `createTestServer`.
 
 The app's `onError` must return a `Response` for each error. If it returns none, such as from a handler with no last `return`, the client gets a 500, and the log gets an `unhandled error` line that names the handler. That line has the error in its `error.cause.*` fields.
 
