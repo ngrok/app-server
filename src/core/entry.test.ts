@@ -13,7 +13,15 @@ import { buildId } from "./plugins/build-id.js";
 import { assets, prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
 import { requestContext } from "./request-context.js";
-import type { FetchHandler, HostRuntime, Listener, LogLine, LogSink, Plugin, StaticFiles } from "./types.js";
+import type {
+	FetchHandler,
+	HostRuntime,
+	Listener,
+	LogLine,
+	LogSink,
+	Plugin,
+	StaticFiles,
+} from "./types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
@@ -593,9 +601,8 @@ describe("createEntry", () => {
 			app: createServer({ plugins: [], logger: recordingLogger(lines) }),
 			host: {
 				...nodeHost,
-				listeners: () => [
+				listeners: [
 					{
-						name: "taken",
 						start: async () => {
 							throw new Error("address in use");
 						},

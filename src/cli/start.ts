@@ -9,7 +9,6 @@ import { requestListener } from "../node/response-writer.js";
 import { parsePort } from "../node/tcp.js";
 import { SERVER_ENTRY_ID } from "../vite/entry-source.js";
 import { devUrlLines, devUrls } from "./dev-urls.js";
-import { SERVER_ENTRY_ID } from "../vite/index.js";
 import { loadEntry } from "./load-entry.js";
 import { servedApps } from "./served-apps.js";
 import { boundPort, listenFromPort } from "./start-port.js";
