@@ -297,6 +297,20 @@ describe("streamingCompress", () => {
 		await expect(response.text()).resolves.toBe("abc");
 	});
 
+	it("sends a page as it is to a request with no Accept-Encoding", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/");
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+		await expect(response.text()).resolves.toBe(page);
+	});
+
 	it("follows the q values of Accept-Encoding, with q=0 as a refusal", async () => {
 		const page = `<p>${"hi ".repeat(500)}</p>`;
 		const { request } = await testServer({
