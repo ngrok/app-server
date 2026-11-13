@@ -467,8 +467,15 @@ async function checkLoadedModules(): Promise<void> {
 			return Array.isArray(logged) ? logged.map(String) : undefined;
 		};
 		await waitFor(async () => resolved() != null, "`serve` returns after the server listens");
+		const served = resolved() ?? [];
+		// Why: an empty list also passes the check for Hono. The import of the build shows that the
+		// script recorded what `serve` loads.
+		assert.ok(
+			served.some((specifier) => specifier.endsWith("/build/server/app-server.js")),
+			"the script records each specifier, to the import of the build",
+		);
 		assert.deepEqual(
-			resolved()?.filter((specifier) => /^@?hono(?:\/|$)/u.test(specifier)),
+			served.filter((specifier) => /^@?hono(?:\/|$)/u.test(specifier)),
 			[],
 			"`serve` loads no server of the CLI's copy for a build that has its own",
 		);
