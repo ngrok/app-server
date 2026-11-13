@@ -31,7 +31,7 @@ function tooLarge(): Response {
  * next stage runs, so an upload cannot stream.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog(), bodyLimit({ maxBytes: 1_048_576 })] });
+ * createServer({ plugins: [requestId(), accessLog(), bodyLimit({ maxBytes: 1_048_576 }), assets()] });
  */
 export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {

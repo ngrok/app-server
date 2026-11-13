@@ -77,7 +77,7 @@ function traceAttributes(
  * line of the request.
  *
  * @example
- * const app = createServer({ plugins: [requestId()] });
+ * const app = createServer({ plugins: [requestId(), assets()] });
  * const response = await app.request("/", { headers: { "X-Request-Id": "abc-123" } });
  * response.headers.get("X-Request-Id"); // => "abc-123"
  */

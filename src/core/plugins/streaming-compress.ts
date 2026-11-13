@@ -172,7 +172,7 @@ function keepsBody(headers: Pick<ResponseHeaders, "get" | "has">): boolean {
  * host gives the streams. On a host with none, the plugin does nothing.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog(), streamingCompress()] });
+ * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets()] });
  */
 export function streamingCompress(): Plugin {
 	/** The host's streams, in the order that the plugin prefers them. */

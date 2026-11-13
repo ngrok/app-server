@@ -85,7 +85,7 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  * - A request of the build's check of the CDN pages gets no line.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
+ * createServer({ plugins: [requestId(), accessLog({ redactQuery: false }), assets()] });
  * // {"level":"info","message":"request","http.status_code":200,"network.bytes_written":5120,"duration":1830000,...}
  */
 export function accessLog({
