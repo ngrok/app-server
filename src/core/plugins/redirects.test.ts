@@ -10,6 +10,18 @@ async function redirected(rules: RedirectRule[], path: string, init?: RequestIni
 	return { status: response.status, location: response.headers.get("Location") };
 }
 
+/**
+ * The answer to a request whose URL is `url` as it is, with no URL parse.
+ * Why: Deno gives the request target as the client sent it, and
+ * `new Request` parses it.
+ */
+async function redirectedAsSent(rules: RedirectRule[], url: string) {
+	const { app, framework } = await testServer({ plugins: [redirects(rules)] });
+	const request = Object.defineProperty(new Request("http://localhost/"), "url", { value: url });
+	const response = await app.fetch(request, { framework });
+	return { status: response.status, location: response.headers.get("Location") };
+}
+
 describe("redirects", () => {
 	it("redirects an exact path, a :param, and a * with the query string", async () => {
 		const rules: RedirectRule[] = [
@@ -62,6 +74,84 @@ describe("redirects", () => {
 		await expect(redirected(rules, "/news/new")).resolves.toMatchObject({
 			location: "/updates/new",
 		});
+	});
+
+	it("uses the first rule of the table among the patterns of one first segment and the patterns of each segment", async () => {
+		const rules: RedirectRule[] = [
+			{ from: "/docs/:page", to: "/first/:page" },
+			{ from: "/:section/intro", to: "/second/:section" },
+			{ from: "/docs/intro", to: "/third" },
+			{ from: "/docs/:page/edit", to: "/fourth/:page" },
+			{ from: "/:section/:page/edit", to: "/fifth/:section" },
+			{ from: "/blog/*", to: "/sixth/*" },
+			{ from: "/*", to: "/seventh/*" },
+		];
+		const locations = async (paths: string[]) =>
+			Promise.all(paths.map(async (path) => (await redirected(rules, path)).location));
+
+		await expect(
+			locations([
+				"/docs/intro",
+				"/guide/intro",
+				"/docs/a/edit",
+				"/guide/a/edit",
+				"/blog/a/b",
+				"/x",
+			]),
+		).resolves.toStrictEqual([
+			"/first/intro",
+			"/second/guide",
+			"/fourth/a",
+			"/fifth/guide",
+			"/sixth/a/b",
+			"/seventh/x",
+		]);
+		await expect(
+			redirected(
+				[
+					{ from: "/:section/intro", to: "/any/:section" },
+					{ from: "/docs/:page", to: "/docs-only/:page" },
+				],
+				"/docs/intro",
+			),
+		).resolves.toMatchObject({ location: "/any/docs" });
+	});
+
+	it("matches the path as the URL parse gives it, also for a URL that no parse changed", async () => {
+		const rules: RedirectRule[] = [
+			{ from: "/old", to: "/new" },
+			{ from: "/a%7Bb%7D", to: "/braces" },
+			{ from: "/A", to: "/upper" },
+			{ from: "/a%2Db", to: "/dash" },
+		];
+		const moved = { status: 301, location: "/new" };
+
+		// Each path is `/old` after the URL parse.
+		for (const path of ["/x/../old", "/./old", "/x/%2e%2e/old", String.raw`/x\..\old`]) {
+			await expect(redirected(rules, path)).resolves.toStrictEqual(moved);
+			await expect(redirectedAsSent(rules, `http://localhost${path}`)).resolves.toStrictEqual(
+				moved,
+			);
+		}
+		await expect(redirectedAsSent(rules, "http://localhost/a{b}")).resolves.toStrictEqual({
+			status: 301,
+			location: "/braces",
+		});
+		// Why: a rule is the path as it is in the URL, where `%41` is not `A` and `%2D` is not `-`.
+		await expect(redirected(rules, "/%41")).resolves.toMatchObject({ status: 200 });
+		await expect(redirected(rules, "/a%2Db")).resolves.toMatchObject({ location: "/dash" });
+		await expect(redirected(rules, "/A?next=%2Fold")).resolves.toStrictEqual({
+			status: 301,
+			location: "/upper?next=%2Fold",
+		});
+	});
+
+	it("goes on for a path with no rule when the request URL does not parse", async () => {
+		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header, and a request
+		// that matches no rule must not fail on it.
+		await expect(
+			redirectedAsSent([{ from: "/old", to: "/new" }], "http://1.2.3.4.5/other"),
+		).resolves.toStrictEqual({ status: 200, location: null });
 	});
 
 	it("encodes a value in the query of the target, so it stays one value", async () => {

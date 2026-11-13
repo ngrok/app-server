@@ -675,6 +675,7 @@ defaultPlugins({
 - The first rule that matches wins. A trailing slash does not change the match. The table runs before `trailingSlash`, so `/pricing-old/` gets one redirect to `/pricing`. In the `never` mode, a local target loses its trailing slash, so `trailingSlash` does not redirect it again.
 - The rules compile at startup. A rule that is not valid stops startup. A local target must be a safe local path, and an absolute target must keep the origin that its rule names. A request whose values break either check gets no redirect.
 - A request that is already at the target of its rule gets no redirect, so `{ from: "/tags/:tag", to: "/tags/:tag/" }` with `trailingSlash: "always"` does not loop.
+- An exact path costs one lookup, for a table of any size. A request tests a pattern only when the pattern starts with the first segment of the request path, or with `:name` or `*`. So each request tests each rule such as `/:lang/pricing` or `/*`. Where you can, start a pattern with a literal segment.
 
 ### Preview deploys
 
