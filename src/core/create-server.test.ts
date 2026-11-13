@@ -696,6 +696,37 @@ describe("createServer", () => {
 		await expect(fetch(server.urls[0] ?? "")).rejects.toThrow("fetch failed");
 	});
 
+	it("logs the shutdown error of a plugin while another plugin hangs, and names each plugin", async () => {
+		const { internals, lines } = await testServer({
+			plugins: [
+				{
+					name: "db-pool",
+					onShutdown: async () => {
+						throw new Error("pool close failed");
+					},
+				},
+				{ name: "queue", onShutdown: async () => new Promise(() => {}) },
+				{ name: "closes", onShutdown: async () => {} },
+			],
+			options: { shutdownDeadlineMs: 50 },
+		});
+
+		await internals.stopPlugins();
+
+		expect(lines).toMatchObject([
+			{
+				level: "error",
+				message: "plugin shutdown failed",
+				attributes: { "app_server.plugin": "db-pool", "error.message": "pool close failed" },
+			},
+			{
+				level: "warn",
+				message: "plugin shutdown passed the deadline",
+				attributes: { "app_server.deadline_ms": 50, "app_server.plugins": ["queue"] },
+			},
+		]);
+	});
+
 	it("logs the drain deadline and the access line of a response that it cuts, before `stopped`", async () => {
 		const { internals, framework, lines } = await testServer({
 			plugins: defaultPlugins(),

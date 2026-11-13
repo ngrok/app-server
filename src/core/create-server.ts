@@ -599,19 +599,27 @@ export function createServer({
 		},
 		stopPlugins: async () => {
 			stoppingPlugins ??= (async () => {
+				const open = new Set<Plugin>();
 				const hooks = (async () => {
-					const results = await Promise.allSettled(
-						plugins.map(async (plugin) => plugin.onShutdown?.()),
+					await Promise.all(
+						plugins.map(async (plugin) => {
+							if (plugin.onShutdown == null) {
+								return;
+							}
+							open.add(plugin);
+							try {
+								await plugin.onShutdown();
+							} catch (error) {
+								// Why here: a hook that hangs must not hold back the error of another hook.
+								logger.log({
+									level: "error",
+									message: "plugin shutdown failed",
+									attributes: { "app_server.plugin": plugin.name, error: asError(error) },
+								});
+							}
+							open.delete(plugin);
+						}),
 					);
-					for (const result of results) {
-						if (result.status === "rejected") {
-							logger.log({
-								level: "error",
-								message: "plugin shutdown failed",
-								attributes: { error: asError(result.reason) },
-							});
-						}
-					}
 				})();
 				if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
 					logger.log({
@@ -619,6 +627,7 @@ export function createServer({
 						message: "plugin shutdown passed the deadline",
 						attributes: {
 							"app_server.deadline_ms": shutdownDeadlineMs,
+							"app_server.plugins": [...open].map((plugin) => plugin.name),
 						},
 					});
 				}
