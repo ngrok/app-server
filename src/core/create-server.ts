@@ -481,13 +481,15 @@ export function createServer({
 				await run.rest();
 				return;
 			}
-			const part = stage.etagPart?.();
+			// Why locals: a call through `stage` makes this copy the `this` of the plugin's function.
+			const { middleware, etagPart } = stage;
+			const part = etagPart?.();
 			if (part != null) {
 				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
 			}
 			// oxlint-disable-next-line typescript/promise-function-async -- `runStage` is async, and a second async function costs each stage a promise.
 			const next = () => runStage(run, index + 1);
-			const answer = await (stage.middleware == null ? next() : stage.middleware(context, next));
+			const answer = await (middleware == null ? next() : middleware(context, next));
 			// Why a truthy test: as in Hono, a value such as `false` from `allowed && next()` is no answer.
 			// Why `finalized`: a response that a stage returns after its `next()` does not replace the answer.
 			if (answer && !context.finalized) {

@@ -1544,6 +1544,26 @@ describe("the pipeline", () => {
 		await expect(response.text()).resolves.toBe("hello");
 	});
 
+	it("calls the middleware and the etagPart of a plugin with no `this`", async () => {
+		const receivers: unknown[] = [];
+		const plugin: Plugin = {
+			name: "methods",
+			etagPart() {
+				receivers.push(this);
+				return "part";
+			},
+			async middleware(_context, next) {
+				receivers.push(this);
+				await next();
+			},
+		};
+		const { request } = await testServer({ plugins: [plugin] });
+
+		await request("/");
+
+		expect(receivers).toStrictEqual([undefined, undefined]);
+	});
+
 	it("adds the etagPart of each plugin that a request passed to the ETag of a file, in order", async () => {
 		const part = (value: string | undefined): Plugin => ({
 			name: `part-${value}`,
