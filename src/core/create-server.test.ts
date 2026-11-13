@@ -804,6 +804,23 @@ describe("createServer", () => {
 		]);
 	});
 
+	it("logs only the plugin line at the deadline when a plugin hangs and no request is open", async () => {
+		const { internals, framework, lines } = await testServer({
+			plugins: [{ name: "queue", onShutdown: async () => new Promise(() => {}) }],
+			options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })], shutdownDeadlineMs: 50 },
+		});
+		const server = await internals.listen(framework, []);
+
+		await server.shutdown();
+
+		expect(lines.map(({ level, message }) => [level, message])).toStrictEqual([
+			["info", "listening"],
+			["info", "draining"],
+			["warn", "plugin shutdown passed the deadline"],
+			["info", "stopped"],
+		]);
+	});
+
 	it("gives each request a logger whose methods write a line when taken off it", async () => {
 		const { request, lines } = await testServer({
 			plugins: [requestId()],
