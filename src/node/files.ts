@@ -120,6 +120,29 @@ function fileInfo(stats: Stats | undefined): FileInfo | undefined {
 }
 
 /**
+ * Files whose `stat` answers from `entries`, the {@link FileInfo} of each file
+ * and directory by its URL path, and whose bytes come from `openFile`.
+ *
+ * @example
+ * listedFiles(new Map([["/llms.txt", { kind: "file", size: 12, mtimeMs: 0 }]]), files.open).stat("/llms.txt");
+ */
+export function listedFiles(
+	entries: ReadonlyMap<string, FileInfo>,
+	openFile: StaticFiles["open"],
+): StaticFiles {
+	return {
+		stat: async (path) => {
+			const trimmed = path.length > 1 ? path.replace(/\/$/u, "") : path;
+			const info = entries.get(trimmed);
+			// Why only a directory after a `/`: as on the disk, `/docs/` finds `/docs`, and
+			// `/llms.txt/` finds nothing.
+			return trimmed === path || info?.kind === "directory" ? info : undefined;
+		},
+		open: openFile,
+	};
+}
+
+/**
  * The most file system calls of one `snapshot` in flight. Why a limit: each
  * call in flight holds about 4 KiB for its request, its path, and its
  * result, and a walk with no limit has a call in flight for each entry of
@@ -218,16 +241,7 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				}
 				depth = found;
 			}
-			return {
-				stat: async (path) => {
-					const trimmed = path.length > 1 ? path.replace(/\/$/u, "") : path;
-					const info = entries.get(trimmed);
-					// Why only a directory after a `/`: as on the disk, `/docs/` finds `/docs`, and
-					// `/llms.txt/` finds nothing.
-					return trimmed === path || info?.kind === "directory" ? info : undefined;
-				},
-				open: files.open,
-			};
+			return listedFiles(entries, files.open);
 		},
 	};
 	return files;

@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
-import { BROTLI_ONLY_LIST } from "./brotli-only.js";
+import { FILE_LIST } from "./brotli-only.js";
+import type { FunctionFiles } from "./brotli-only.js";
 import type { CdnPageReport, PagesReport } from "./pages.js";
 
 /** Options for {@link vercel}. */
@@ -82,9 +83,6 @@ const MARKDOWN = "text/markdown".replaceAll(
 	/[a-z]/gu,
 	(letter) => `[${letter}${letter.toUpperCase()}]`,
 );
-
-/** The variable that gives the function the time of the build, in milliseconds. */
-const BUILT_AT = "APP_SERVER_BUILT_AT";
 
 /** The function's file, next to the server entry. */
 const FUNCTION_FILE = "vercel-function.js";
@@ -318,8 +316,7 @@ function writeOutput(
 
 	const clientFiles = filesUnder(clientDirectory);
 	const listed = new Set(clientFiles);
-	/** The file of each brotli copy that the function keeps, with the size of the file. */
-	const brotliOnly: Record<string, number> = {};
+	const list: FunctionFiles = { builtAt: Date.now(), files: {}, brotliOnly: {} };
 	/**
 	 * Whether the function drops `file`, a file or a gzip copy, because the
 	 * brotli copy of its file takes its place. Why: the function then holds one
@@ -342,8 +339,9 @@ function writeOutput(
 		if (!isCdnFile(file)) {
 			if (!brotliCopyOnly(file)) {
 				copyFile(from, join(functionDirectory, fromRoot(from)));
+				list.files[`/${posix(file)}`] = statSync(from).size;
 			} else if (!basename(file).startsWith(".")) {
-				brotliOnly[`/${posix(file)}`] = statSync(from).size;
+				list.brotliOnly[`/${posix(file)}`] = statSync(from).size;
 			}
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
@@ -352,12 +350,11 @@ function writeOutput(
 		}
 	}
 
-	if (Object.keys(brotliOnly).length > 0) {
-		writeFileSync(
-			join(functionDirectory, fromRoot(clientDirectory), BROTLI_ONLY_LIST),
-			JSON.stringify(brotliOnly),
-		);
-	}
+	// Why a list: the function then reads one file at a cold start, not each directory of its
+	// client build. See `host` in `@ngrok/app-server/vercel`.
+	const listFile = join(functionDirectory, fromRoot(clientDirectory), FILE_LIST);
+	mkdirSync(dirname(listFile), { recursive: true });
+	writeFileSync(listFile, JSON.stringify(list));
 
 	// Why the whole server build: it runs with no install, and it keeps the client build's path.
 	const serverDirectory = dirname(entryFile);
@@ -386,9 +383,6 @@ function writeOutput(
 				handler: posix(fromRoot(functionFile)),
 				launcherType: "Nodejs",
 				supportsResponseStreaming: true,
-				// Why: the deploy gives each file of the function one fixed time, and the ETag of a file
-				// reads its time. See `host` in `@ngrok/app-server/vercel`.
-				environment: { [BUILT_AT]: String(Date.now()) },
 				...(regions == null ? {} : { regions }),
 				...(memory == null ? {} : { memory }),
 				...(maxDuration == null ? {} : { maxDuration }),
@@ -423,8 +417,8 @@ function checkCdnPaths(paths: readonly string[]): void {
  *   `build.assetsDir` gets a one-year immutable cache. It also holds the
  *   prerendered pages that the CDN serves, with `cdnPages`.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
- *   each other request, with the whole server build and the rest of the
- *   client build.
+ *   each other request, with the whole server build, the rest of the client
+ *   build, and the list of those client files, which the function serves.
  *
  * @example
  * appServer({ host: vercel() });

@@ -268,6 +268,7 @@ The function differs from a long-lived process:
 - The function does not compress a response, because the CDN compresses each response.
 - The function keeps only the brotli copy of a file that has one, so it holds one copy of each text file, not three. For a blog with 265 prerendered pages, that makes the function about 50 MB smaller. A client that accepts brotli, as each browser does, gets the copy. For any other client, the function decompresses the copy, and the CDN compresses the response. The build writes only the copies that the deploy holds, so `build/client` has no gzip copy, and no copy of a file under `cdnPaths` or Vite's `build.assetsDir`.
 - The deploy gives each file of the function one fixed modification time. So the function uses the time of the build for each file, and the ETag of each file it sends changes with each build.
+- The function serves the files of the client build that `vercel()` put in it. The build writes their sizes and its time to one list, `.app-server-files.json`, in the function's client build. At a cold start, the function reads that list, not each directory. If a later step adds a file to `.vercel/output/functions/index.func`, the function does not serve it. For a client build of 2,000 prerendered pages, the first request of a cold start takes 20 ms in place of 82 ms, in a new Node.js 26 process on an Apple M3 Max.
 - `app-server serve` cannot run the build. Use `app-server start` for development, as with the node host.
 
 ## The pipeline

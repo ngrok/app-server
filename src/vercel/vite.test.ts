@@ -90,6 +90,7 @@ describe("vercel", () => {
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
 			"functions/index.func/.vc-config.json",
+			"functions/index.func/build/client/.app-server-files.json",
 			"functions/index.func/build/client/.app-server.json",
 			"functions/index.func/build/client/about/index.html",
 			"functions/index.func/build/client/robots.txt",
@@ -113,7 +114,6 @@ describe("vercel", () => {
 			handler: "build/server/vercel-function.js",
 			launcherType: "Nodejs",
 			supportsResponseStreaming: true,
-			environment: { APP_SERVER_BUILT_AT: expect.stringMatching(/^\d+$/u) },
 			regions: ["iad1"],
 		});
 		expect(json(join(output, "config.json"))).toStrictEqual({
@@ -158,12 +158,13 @@ describe("vercel", () => {
 
 		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
 			"app-server.js",
+			"client/.app-server-files.json",
 			"client/robots.txt",
 			"vercel-function.js",
 		]);
 	});
 
-	it("keeps only the brotli copy of a file that has one in the function, with the size of the file", () => {
+	it("keeps only the brotli copy of a file that has one in the function, and lists the size of each file and the time of the build", () => {
 		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-brotli-only-"));
 		onTestFinished(() => {
 			rmSync(site, { recursive: true, force: true });
@@ -175,6 +176,9 @@ describe("vercel", () => {
 		write(join(site, "build/client/feed.xml"), "<rss/>");
 		write(join(site, "build/client/.feed.xml.gz"), "gzip");
 
+		write(join(site, "build/client/assets/app-abc.js"), "app();");
+		const before = Date.now();
+
 		vercel().output?.({
 			root: site,
 			clientDirectory: join(site, "build/client"),
@@ -185,14 +189,23 @@ describe("vercel", () => {
 
 		const client = join(site, ".vercel/output/functions/index.func/build/client");
 		expect(filesUnder(client)).toStrictEqual([
-			".app-server-brotli.json",
+			".app-server-files.json",
 			".feed.xml.gz",
 			"blog/.index.html.br",
 			"feed.xml",
 		]);
-		expect(json(join(client, ".app-server-brotli.json"))).toStrictEqual({
-			"/blog/index.html": "<h1>Blog</h1>".length,
+		const list = json(join(client, ".app-server-files.json")) as { builtAt: number };
+		expect(list).toStrictEqual({
+			builtAt: expect.any(Number),
+			files: {
+				"/.feed.xml.gz": "gzip".length,
+				"/blog/.index.html.br": "br".length,
+				"/feed.xml": "<rss/>".length,
+			},
+			brotliOnly: { "/blog/index.html": "<h1>Blog</h1>".length },
 		});
+		expect(list.builtAt).toBeGreaterThanOrEqual(before);
+		expect(list.builtAt).toBeLessThanOrEqual(Date.now());
 	});
 
 	it("keeps each prerendered page in the function by default, with no start of the server build", () => {
@@ -215,6 +228,7 @@ describe("vercel", () => {
 		const siteOutput = join(site, ".vercel/output");
 		expect(existsSync(join(siteOutput, "static"))).toBe(false);
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			".app-server-files.json",
 			"about/index.html",
 		]);
 	});
@@ -313,7 +327,7 @@ describe("vercel", () => {
 		);
 		// Why each file: a request that no page route matches, such as `/about/`, reaches the function.
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
-			".app-server-brotli.json",
+			".app-server-files.json",
 			"about/.index.html.br",
 			"app/index.html",
 			"docs.md",
@@ -529,7 +543,7 @@ describe("vercel", () => {
 		]);
 		expect(
 			filesUnder(join(site, ".vercel/output/functions/index.func/build/client")),
-		).toStrictEqual([".app-server-brotli.json", ".app-server.json", "about/.index.html.br"]);
+		).toStrictEqual([".app-server-files.json", ".app-server.json", "about/.index.html.br"]);
 		expect(filesUnder(join(site, ".vercel/output/static"))).toStrictEqual([
 			"assets/app-abc.js",
 			"blog-assets/post.css",

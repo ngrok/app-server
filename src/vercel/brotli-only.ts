@@ -5,11 +5,24 @@ import type { ByteRange, StaticFiles } from "../core/types.js";
 
 /**
  * The URL path of the list that `vercel()` writes in the function's client
- * build: the size of each file whose only copy in the function is its brotli
- * copy, by the URL path of the file. Why a dotfile: the static stages never
+ * build: a {@link FunctionFiles}. Why a dotfile: the static stages never
  * serve one.
  */
-export const BROTLI_ONLY_LIST = "/.app-server-brotli.json";
+export const FILE_LIST = "/.app-server-files.json";
+
+/** The files of the client build that a function holds, as `vercel()` lists them. */
+export type FunctionFiles = {
+	/**
+	 * The time of the build, in milliseconds. Why: the deploy gives each file
+	 * of the function one fixed time, so a file that changes and keeps its size
+	 * would keep its ETag.
+	 */
+	builtAt: number;
+	/** The size of each file in the function, by the URL path of the file. */
+	files: Record<string, number>;
+	/** The size of each file whose only copy in the function is its brotli copy, by the URL path of the file. */
+	brotliOnly: Record<string, number>;
+};
 
 /** The bytes of `range` in `stream`. It cancels `stream` after the last byte. */
 function sliced(stream: ReadableStream<Uint8Array>, { start, end }: ByteRange) {
@@ -60,58 +73,30 @@ function decodedOnRead(
 }
 
 /**
- * `files` that also find each file in {@link BROTLI_ONLY_LIST}, with the
- * size from the list and the time of its brotli copy. Each read of such a
- * file decompresses its brotli copy. Why: a function then keeps one copy of
- * the file, not three, and a client that accepts brotli, as each browser
- * does, gets the copy with no work.
+ * An `open` that reads each file of `brotliOnly` from its brotli copy, which
+ * it decompresses, and each other file with `open`. Why: a function then
+ * keeps one copy of the file, not three, and a client that accepts brotli, as
+ * each browser does, gets the copy with no work.
  *
  * @example
- * brotliOnlyFiles(nodeFiles("build/client")).open("/blog/index.html");
+ * brotliOnlyOpen(nodeFiles("build/client").open, new Set(["/blog/index.html"]))("/blog/index.html");
  */
-export function brotliOnlyFiles(files: StaticFiles): StaticFiles {
-	let sizes: Promise<ReadonlyMap<string, number>> | undefined;
-	// Why once and late: the list does not change while the function runs, and a file found on
-	// disk does not need it.
-	const readSizes = async () => {
-		sizes ??= files.stat(BROTLI_ONLY_LIST).then(async (info) => {
-			if (info?.kind !== "file") {
-				return new Map<string, number>();
-			}
-			const text = await new Response(await files.open(BROTLI_ONLY_LIST)).text();
-			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
-			return new Map(Object.entries(JSON.parse(text) as Record<string, number>));
+export function brotliOnlyOpen(
+	open: StaticFiles["open"],
+	brotliOnly: ReadonlySet<string>,
+): StaticFiles["open"] {
+	return async (path, range) => {
+		if (!brotliOnly.has(path)) {
+			return open(path, range);
+		}
+		return decodedOnRead(async () => {
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Node.js types its web streams apart from the global ones.
+			const decompress = Duplex.toWeb(createBrotliDecompress()) as ReadableWritablePair<
+				Uint8Array,
+				Uint8Array
+			>;
+			const decoded = (await open(copyPath(path, "br"))).pipeThrough(decompress);
+			return range == null ? decoded : sliced(decoded, range);
 		});
-		return sizes;
 	};
-	const wrap = (inner: StaticFiles): StaticFiles => {
-		const { snapshot } = inner;
-		return {
-			stat: async (path) => {
-				const info = await inner.stat(path);
-				const size = info == null ? (await readSizes()).get(path) : undefined;
-				if (size == null) {
-					return info;
-				}
-				const copy = await inner.stat(copyPath(path, "br"));
-				return copy?.kind === "file" ? { kind: "file", size, mtimeMs: copy.mtimeMs } : undefined;
-			},
-			open: async (path, range) => {
-				if (!(await readSizes()).has(path)) {
-					return inner.open(path, range);
-				}
-				return decodedOnRead(async () => {
-					// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Node.js types its web streams apart from the global ones.
-					const decompress = Duplex.toWeb(createBrotliDecompress()) as ReadableWritablePair<
-						Uint8Array,
-						Uint8Array
-					>;
-					const decoded = (await inner.open(copyPath(path, "br"))).pipeThrough(decompress);
-					return range == null ? decoded : sliced(decoded, range);
-				});
-			},
-			...(snapshot == null ? {} : { snapshot: async () => wrap(await snapshot()) }),
-		};
-	};
-	return wrap(files);
 }

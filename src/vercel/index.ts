@@ -3,37 +3,54 @@ import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
 import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
+import { listedFiles, nodeFiles } from "../node/files.js";
 import { host as nodeHost } from "../node/index.js";
 import { requestListener } from "../node/response-writer.js";
-import { brotliOnlyFiles } from "./brotli-only.js";
+import { brotliOnlyOpen, FILE_LIST } from "./brotli-only.js";
+import type { FunctionFiles } from "./brotli-only.js";
 
 /**
- * `files` that give each file and directory the modification time
- * `mtimeMs`. Why: the deploy gives each file of the function one fixed time,
- * so a file that changes and keeps its size would keep its ETag. `vercel()`
- * sets `APP_SERVER_BUILT_AT` to the time of the build.
+ * The files that {@link FILE_LIST} names in the client build `disk`, with no
+ * other read of the file system: each file with the size from the list and
+ * the time of the build, and each directory above a file. Gives `undefined`
+ * for a client build with no list.
  */
-function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
-	const { snapshot } = files;
-	return {
-		stat: async (path) => {
-			const info: FileInfo | undefined = await files.stat(path);
-			return info == null ? undefined : { ...info, mtimeMs };
-		},
-		open: files.open,
-		...(snapshot == null
-			? {}
-			: { snapshot: async () => withModifiedTime(await snapshot(), mtimeMs) }),
-	};
+async function listedBuild(disk: StaticFiles): Promise<StaticFiles | undefined> {
+	if ((await disk.stat(FILE_LIST))?.kind !== "file") {
+		return undefined;
+	}
+	const text = await new Response(await disk.open(FILE_LIST)).text();
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `vercel()` of this package wrote the file.
+	const { builtAt, files, brotliOnly } = JSON.parse(text) as FunctionFiles;
+	const entries = new Map<string, FileInfo>();
+	const directory: FileInfo = { kind: "directory", size: 0, mtimeMs: builtAt };
+	for (const sizes of [files, brotliOnly]) {
+		for (const [path, size] of Object.entries(sizes)) {
+			entries.set(path, { kind: "file", size, mtimeMs: builtAt });
+			// Why stop at a known directory: the directories above it are in `entries` already.
+			for (
+				let parent = path.slice(0, path.lastIndexOf("/")) || "/";
+				!entries.has(parent);
+				parent = parent.slice(0, parent.lastIndexOf("/")) || "/"
+			) {
+				entries.set(parent, directory);
+			}
+		}
+	}
+	return listedFiles(entries, brotliOnlyOpen(disk.open, new Set(Object.keys(brotliOnly))));
 }
 
 /**
- * The vercel host: one Vercel Function on Node.js. It reads the client build
- * from the function's files and keeps `requestContext()` in
- * `AsyncLocalStorage`, as the node host does. It has no listeners and no
- * lifecycle: Vercel starts and stops the function, and {@link handler} calls
- * the entry's `fetch`. It reads a file that the function keeps only as a
- * brotli copy through that copy (see `vercel()`).
+ * The vercel host: one Vercel Function on Node.js. It keeps
+ * `requestContext()` in `AsyncLocalStorage`, as the node host does. It has no
+ * listeners and no lifecycle: Vercel starts and stops the function, and
+ * {@link handler} calls the entry's `fetch`.
+ *
+ * It serves the files of the client build that the list of `vercel()` names
+ * ({@link FILE_LIST}), so a cold start reads one file, not each directory. It
+ * reads a file that the function keeps only as a brotli copy through that
+ * copy. A client build with no list, such as in development, comes from the
+ * file system, as on the node host.
  *
  * Why no gzip: Vercel's CDN compresses each response, with Brotli when the
  * client accepts it.
@@ -43,9 +60,18 @@ function withModifiedTime(files: StaticFiles, mtimeMs: number): StaticFiles {
  */
 export const host: HostRuntime = {
 	files: (clientDirectory) => {
-		const files = brotliOnlyFiles(nodeHost.files(clientDirectory));
-		const builtAt = Number(process.env.APP_SERVER_BUILT_AT);
-		return Number.isFinite(builtAt) ? withModifiedTime(files, builtAt) : files;
+		const disk = nodeFiles(clientDirectory);
+		let listed: Promise<StaticFiles | undefined> | undefined;
+		// Why once: the list does not change while the function runs.
+		const list = async () => {
+			listed ??= listedBuild(disk);
+			return listed;
+		};
+		return {
+			stat: async (path) => ((await list()) ?? disk).stat(path),
+			open: async (path, range) => ((await list()) ?? disk).open(path, range),
+			snapshot: async () => (await list()) ?? (await disk.snapshot?.()) ?? disk,
+		};
 	},
 	...(nodeHost.storage == null ? {} : { storage: nodeHost.storage }),
 };
