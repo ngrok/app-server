@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { appServerContext, isServerBuild, runtime } from "./index.js";
+import { reactRouterAdapter } from "./vite.js";
 import { testServer } from "../test-server.js";
 
 /** The module of a route in a server build. */
@@ -171,6 +172,12 @@ describe("runtime", () => {
 		expect(framework.isDataRequest?.("/whoami.data")).toBe(true);
 		expect(framework.isDataRequest?.("/whoami")).toBe(false);
 		expect(framework.contentTypes).toStrictEqual({ ".data": "text/x-script" });
+	});
+
+	it("gives the build the content types that the server sends, so the build compresses the same files", () => {
+		const framework = runtime(documentBuild(), { mode: "production" });
+
+		expect(reactRouterAdapter().contentTypes).toStrictEqual(framework.contentTypes);
 	});
 
 	it("marks the route discovery manifest as a data request when discovery is lazy", () => {

@@ -3,6 +3,7 @@ import { createContext, createRequestHandler, RouterContextProvider } from "reac
 import type { MiddlewareFunction, ServerBuild } from "react-router";
 import { outsideLogger, requestContextValues } from "../core/request-context.js";
 import type { AppServerEnv, FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
+import { CONTENT_TYPES } from "./content-types.js";
 
 /** What the server puts in React Router's context for each request. */
 export type AppServerContext = RequestContext;
@@ -110,7 +111,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 		clientDirectory: build.assetsBuildDirectory,
 		prerenderedPaths: build.prerender,
 		isDataRequest: (path) => path.endsWith(".data") || path === manifestPath,
-		contentTypes: { ".data": "text/x-script" },
+		contentTypes: CONTENT_TYPES,
 		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();
 			routerContext.set(appServerContext, requestContextValues(context));

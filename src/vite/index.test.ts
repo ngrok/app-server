@@ -317,19 +317,20 @@ describe("appServer", () => {
 		// Why after the start: the framework writes each file while the pass runs. TanStack Start with
 		// `autoSubfolderIndex: false` writes `/flat` to `flat.html`.
 		writeFileSync(join(client, "agents.txt"), text);
+		writeFileSync(join(client, "page.data"), text);
 		mkdirSync(join(client, "page"), { recursive: true });
 		writeFileSync(join(client, "page/index.html"), `<p>${text}</p>`);
 		writeFileSync(join(client, "flat.html"), `<p>${text}</p>`);
 
-		for (const path of ["/agents.txt", "/page", "/flat"]) {
+		for (const path of ["/agents.txt", "/page.data", "/page", "/flat"]) {
 			await (await fetch(new URL(path, server.resolvedUrls?.local[0]))).text();
 		}
 		await server.close();
 
-		expect(gunzipSync(readFileSync(join(client, ".agents.txt.gz"))).toString()).toBe(text);
-		expect(brotliDecompressSync(readFileSync(join(client, ".agents.txt.br"))).toString()).toBe(
-			text,
-		);
+		for (const file of [".agents.txt", ".page.data"]) {
+			expect(gunzipSync(readFileSync(join(client, `${file}.gz`))).toString()).toBe(text);
+			expect(brotliDecompressSync(readFileSync(join(client, `${file}.br`))).toString()).toBe(text);
+		}
 		for (const page of ["page/.index.html", ".flat.html"]) {
 			expect(brotliDecompressSync(readFileSync(join(client, `${page}.br`))).toString()).toBe(
 				`<p>${text}</p>`,
@@ -613,6 +614,8 @@ describe("appServer", () => {
 		const files: Record<string, string | Uint8Array> = {
 			"assets/app-abc.js": text,
 			"docs/llms.txt": text,
+			// Why: the server sends a React Router data file as `text/x-script`, which it compresses.
+			"docs/button.data": text,
 			"index.html": `<p>${text}</p>`,
 			"small.txt": "small",
 			// Why: copies from an earlier build of a file that is now too small.
@@ -630,8 +633,10 @@ describe("appServer", () => {
 			mkdirSync(dirname(join(client, path)), { recursive: true });
 			writeFileSync(join(client, path), content);
 		}
-		const [, copies] = appServer({ framework: reactRouterAdapter(), host: node() });
-		const hook = copies?.buildApp;
+		const plugins = appServer({ framework: reactRouterAdapter(), host: node() });
+		// Why: Vite gives each plugin the config before the build, and the plugin reads the framework from it.
+		await resolveConfig({ root, configFile: false, logLevel: "silent", plugins }, "build");
+		const hook = plugins[1]?.buildApp;
 		const builder = {
 			config: {
 				root,
@@ -649,7 +654,7 @@ describe("appServer", () => {
 
 		const copy = (path: string, extension: string) =>
 			join(client, dirname(path), `.${basename(path)}.${extension}`);
-		for (const path of ["assets/app-abc.js", "docs/llms.txt", "index.html"]) {
+		for (const path of ["assets/app-abc.js", "docs/llms.txt", "docs/button.data", "index.html"]) {
 			const content = files[path]?.toString();
 			expect(gunzipSync(readFileSync(copy(path, "gz"))).toString()).toBe(content);
 			expect(brotliDecompressSync(readFileSync(copy(path, "br"))).toString()).toBe(content);

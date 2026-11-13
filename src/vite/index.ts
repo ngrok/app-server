@@ -99,6 +99,14 @@ export type FrameworkBuild = {
 	 * it, because the source is part of the server entry.
 	 */
 	runtimeOptions?: string;
+	/**
+	 * Content types that `mime` does not know, by file extension, such as
+	 * `{ ".data": "text/x-script" }`. Give the `contentTypes` of the run side.
+	 * Why: the build writes the compressed copies of each file with a
+	 * compressible type. With no copy, the server compresses such a file for
+	 * each request.
+	 */
+	contentTypes?: Readonly<Record<string, string>>;
 	/** Whether a preview server runs the framework's prerender pass. */
 	isPrerenderPass: (server: PreviewServer) => boolean;
 	/** Throws for a config that the adapter does not support, so the build fails, not the first request. */
@@ -732,7 +740,13 @@ function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildI
  * the client build when the preview server closes, with the script hashes of
  * each HTML file.
  */
-function capture(server: PreviewServer, afterPass: () => void): void {
+function capture(
+	server: PreviewServer,
+	{
+		contentTypes,
+		afterPass,
+	}: { contentTypes: FrameworkBuild["contentTypes"]; afterPass: () => void },
+): void {
 	const clientDirectory = outDir(server.config, "client");
 	const started = Date.now();
 	const paths = new Set<string>();
@@ -779,7 +793,7 @@ function capture(server: PreviewServer, afterPass: () => void): void {
 		// Why each file that the pass changed, not each path: a path does not name its file, as
 		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
 		// modification time in steps of 1 or 2 s.
-		writeAllCopies(clientDirectory, { changedSince: started - 2000 });
+		writeAllCopies(clientDirectory, { changedSince: started - 2000, contentTypes });
 		afterPass();
 	});
 }
@@ -794,13 +808,14 @@ const BROTLI_QUALITY = 9;
 /**
  * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of the file at
  * `path` when the server compresses the file: a compressible type of 1 KiB
- * or more. It writes a copy only when it is smaller: the gzip copy than the
+ * or more. `contentTypes` are the framework's types, as the server reads
+ * them. It writes a copy only when it is smaller: the gzip copy than the
  * file, and the brotli copy than the gzip copy. Else it removes an old copy,
  * so a copy from an earlier build never replaces a changed file.
  */
-function writeCopies(path: string): void {
+function writeCopies(path: string, contentTypes: Readonly<Record<string, string>>): void {
 	const bytes =
-		isCompressible(contentType(path, {})) &&
+		isCompressible(contentType(path, contentTypes)) &&
 		statSync(path, { throwIfNoEntry: false })?.isFile() === true
 			? readFileSync(path)
 			: undefined;
@@ -846,7 +861,10 @@ function writeCopies(path: string): void {
  */
 function writeAllCopies(
 	clientDirectory: string,
-	{ changedSince }: { changedSince?: number } = {},
+	{
+		changedSince,
+		contentTypes = {},
+	}: { changedSince?: number; contentTypes: FrameworkBuild["contentTypes"] },
 ): void {
 	if (!existsSync(clientDirectory)) {
 		return;
@@ -858,7 +876,7 @@ function writeAllCopies(
 			(changedSince == null ||
 				(statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= changedSince)
 		) {
-			writeCopies(path);
+			writeCopies(path, contentTypes);
 		}
 	}
 }
@@ -931,7 +949,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientDirectory,
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
-				writeAllCopies(clientDirectory);
+				writeAllCopies(clientDirectory, { contentTypes: resolved?.framework.contentTypes });
 				host.output?.(hostOutput(builder.config, host));
 			},
 		},
@@ -1018,8 +1036,11 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		},
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
-				// Why the preview's config: the framework starts the preview with a new instance of this plugin.
-				capture(server, () => host.output?.(hostOutput(server.config, host)));
+				capture(server, {
+					contentTypes: resolved.framework.contentTypes,
+					// Why the preview's config: the framework starts the preview with a new instance of this plugin.
+					afterPass: () => host.output?.(hostOutput(server.config, host)),
+				});
 			}
 		},
 	};
