@@ -232,7 +232,10 @@ export function bodyHooks(context: Context<AppServerEnv>): readonly HeaderHook[]
 
 /**
  * A view of the flat `[name, value, …]` list `head` after `hooks`, in the
- * order that the server runs them. The hooks change `head`.
+ * order that the server runs them. Why: a stage that picks a body by a
+ * header, such as `Cache-Control: no-transform`, must see the value that a
+ * hook sets where the response leaves. So a hook can run more than once. The
+ * hooks change `head`.
  *
  * @example
  * hookedView(hooks, ["cache-control", "public"]).get("Cache-Control");
@@ -249,23 +252,4 @@ export function hookedView(hooks: readonly HeaderHook[], head: string[]): Respon
 		}
 	}
 	return view;
-}
-
-/**
- * A view of `headers` after the header hook of each stage that the request
- * passed. Why: a stage that picks a body by a header, such as
- * `Cache-Control: no-transform`, must see the value that a hook sets where
- * the response leaves. So a hook can run more than once. Why a view: the
- * hooks change only the view, so `headers` needs no copy. When each hook is
- * from {@link withBuiltInHeaderHook}, it gives `headers` and runs no hook.
- *
- * @example
- * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
- */
-export function hookedHeaders(
-	context: Context<AppServerEnv>,
-	headers: Headers,
-): Pick<ResponseHeaders, "get" | "has"> {
-	const hooks = bodyHooks(context);
-	return hooks == null ? headers : hookedView(hooks, headerList(headers));
 }

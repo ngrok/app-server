@@ -6,7 +6,13 @@ import {
 	readIfQueued,
 } from "../compression.js";
 import type { Encoding, ReadResult } from "../compression.js";
-import { hookedHeaders, replaceResponse, withBuiltInHeaderHook } from "../header-hook.js";
+import {
+	bodyHooks,
+	headerList,
+	hookedView,
+	replaceResponse,
+	withBuiltInHeaderHook,
+} from "../header-hook.js";
 import type { CompressStream, Plugin, ResponseHeaders } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -254,9 +260,12 @@ export function streamingCompress(): Plugin {
 				compress = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
-			// Why the hooks: a header hook of a later stage can set these headers, and it runs only where
-			// the response leaves.
-			compress &&= !keepsBody(hookedHeaders(context, response.headers));
+			// Why the hooks: a header hook can set these headers, and it runs only where the response
+			// leaves. With no such hook, the check before the parse is the answer.
+			const hooks = compress ? bodyHooks(context) : undefined;
+			if (hooks != null) {
+				compress = !keepsBody(hookedView(hooks, headerList(response.headers)));
+			}
 			if (compress) {
 				compressing = true;
 				replaceResponse(
