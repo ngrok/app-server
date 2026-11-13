@@ -28,7 +28,7 @@ edge.close(status, aborted, head);
 edge.close({ status, aborted, head });
 ```
 
-The object costs about 56 bytes of heap for each response on Node.js and Vercel, and no time that the benchmark shows. Measured on Node.js 26.13 on an Apple M3 Max, with the built `ResponseEdge` of one build and only the `close` line changed: one edge for one response (`new`, `claim`, `useHeaders`, `onSent`, `close`) takes 38.3 ns with each shape, and 957 bytes of heap before against 1,013 bytes after. Each number is the median of 5 runs in turn, and each run is the median of 9 rounds of 3,000,000 edges. For scale, one `/ping` request through `defaultPlugins()` allocates about 38,700 bytes.
+The object costs about 60 bytes of heap for each response on Node.js and Vercel, and no time that the benchmark shows. Measured on Node.js 26.13 on an Apple M3 Max, with the built `ResponseEdge` of one build and only the `close` line changed: one edge for one response (`new`, `claim`, `useHeaders`, `onSent`, `close`) takes 36.2 ns before and 35.5 ns after, and 956 bytes of heap before against 1,015 bytes after. Each number is the median of 5 runs in turn, and each run is the median of 9 rounds of 3,000,000 edges. Three sets of runs gave a cost from 56 to 64 bytes. For scale, one `/ping` request through `defaultPlugins()` allocates about 38,700 bytes.
 
 Breaking change: `health()` now stops startup for a `livePath` or a `readyPath` that does not start with `/`, and for one path for both probes. Before, a path with no `/` never answered. One path for both probes always answered 200, so `ready` never ran, and the path did not answer 503 at shutdown. The check also finds one option that has the default of the other, such as `readyPath: "/livez"`. For a platform with one health URL, set only `readyPath`.
 
@@ -92,7 +92,7 @@ createServer({
 });
 ```
 
-Breaking change: a plugin of the options `securityHeaders`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` that comes after `prerendered()` in the plugin list now stops startup. Before, the server started, and each prerendered page went out with no CSP, no `X-Robots-Tag`, no build ID, or no public `runtimeEnv` values, while each rendered page had them. Development serves no prerendered page, so only production showed the failure. Use the option, or put the plugin before `prerendered()`, such as in `beforeStatic`:
+Breaking change: a plugin of the options `securityHeaders`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` that comes after `prerendered()` in the plugin list now stops startup. Before, the server started, and each prerendered page went out with no CSP, no `X-Robots-Tag`, no build ID, or no public `runtimeEnv` values, while each rendered page had them. Development serves no prerendered page, so only production showed the failure. The check does not read the build, so such a list also stops startup for an app with no prerendered page. Use the option, or put the plugin before `prerendered()`, such as in `beforeStatic`:
 
 ```ts
 // Before
