@@ -457,6 +457,46 @@ describe("runtimeEnv, the bytes of a document", () => {
 		expect(wrong).toStrictEqual([]);
 	});
 
+	it("takes a chunk that is an ArrayBuffer or another view of one, as Bun does, and fails the body for a string", async () => {
+		const page = "<html><head></head><body>page</body></html>\n";
+		// Why the other bytes: a view can start after the start of its buffer, and end before its end.
+		const { buffer } = new Uint8Array(encoder.encode(`<!--${page}-->`));
+		const kinds = [
+			buffer.slice(4, 4 + page.length),
+			new DataView(buffer, 4, page.length),
+			new Uint16Array(buffer, 4, page.length / 2),
+		];
+		/** The text that a client reads for an HTML document whose body gives `chunks`. */
+		const sent = async (chunks: readonly unknown[]) => {
+			const { request } = await testServer({
+				plugins: [runtimeEnv(schema, { source: validSource })],
+				render: async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								for (const chunk of chunks) {
+									controller.enqueue(chunk);
+								}
+								controller.close();
+							},
+						}),
+						{ headers: { "Content-Type": "text/html" } },
+					),
+			});
+			return (await request("/")).text();
+		};
+		const withValues = `<html><head>${script}</head><body>page</body></html>\n`;
+
+		// Why two times: the second chunk comes after the script, where the search is over.
+		for (const chunk of kinds) {
+			await expect(sent([chunk, chunk])).resolves.toBe(`${withValues}${page}`);
+		}
+		await expect(sent([page])).rejects.toThrow("A response body gave a chunk that is not bytes.");
+		await expect(sent([kinds[0], page])).rejects.toThrow(
+			"A response body gave a chunk that is not bytes.",
+		);
+	});
+
 	it("stops the search after 1 MiB, so a longer body with no </head> before it stays as it is", async () => {
 		const filler = "x".repeat(65_536);
 		const within = [...Array.from({ length: 15 }, () => filler), "</head>"];

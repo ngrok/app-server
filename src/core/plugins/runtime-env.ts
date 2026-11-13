@@ -147,6 +147,24 @@ function joined(...parts: Uint8Array[]): Uint8Array {
 }
 
 /**
+ * `chunk` as a `Uint8Array` of the same bytes. Why: Bun also takes a body
+ * chunk that is an `ArrayBuffer` or another view of one, and the search
+ * reads the bytes of a `Uint8Array`.
+ */
+function asBytes(chunk: unknown): Uint8Array {
+	if (chunk instanceof Uint8Array) {
+		return chunk;
+	}
+	if (ArrayBuffer.isView(chunk)) {
+		return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+	}
+	if (chunk instanceof ArrayBuffer) {
+		return new Uint8Array(chunk);
+	}
+	throw new TypeError("A response body gave a chunk that is not bytes.");
+}
+
+/**
  * `body` with `html` before its first `</head>`, in any letter case. It
  * changes no other byte, so a document that is not UTF-8 stays whole. It
  * holds only the end of a chunk that can start `</head>`, 6 bytes at most,
@@ -194,11 +212,12 @@ function injectBeforeHeadEnd(
 						controller.close();
 						return;
 					}
+					const chunk = asBytes(value);
 					if (!searching) {
-						controller.enqueue(value);
+						controller.enqueue(chunk);
 						return;
 					}
-					const bytes = search(value);
+					const bytes = search(chunk);
 					if (bytes.length > 0) {
 						controller.enqueue(bytes);
 						return;
