@@ -240,6 +240,15 @@ describe("eventStream", () => {
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
 	});
 
+	it("ignores an event that the producer sends after the stream ended", async () => {
+		const { send, reader } = await openStream();
+		await reader.cancel();
+
+		expect(() => {
+			send({ data: "late" });
+		}).not.toThrow();
+	});
+
 	it("sends each event of a burst of more than 1 MiB to a client that reads", async () => {
 		const clientRead = Promise.withResolvers<undefined>();
 		const response = eventStream({}, async ({ send }) => {
