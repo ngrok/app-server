@@ -81,13 +81,21 @@ function checkedOnError(handler: ErrorHandler<AppServerEnv>): ErrorHandler<AppSe
 }
 
 /**
- * Throws for an entry of `plugins` that is not an object, so a wrong plugin
- * list stops startup. Why: a function has no `middleware`, so the server
- * would start and never run it. Why `unknown`: the `Plugin` type rejects
- * these values, but a build can skip the type check, as Vite's does.
+ * Throws for a `plugins` value that is not a list, and for an entry of it that
+ * is a function, a list, a promise, or not an object, so a wrong plugin list
+ * stops startup. Why: such an entry has no `middleware`, so the server would
+ * start and never run it. Why `unknown`: the `Plugin` type rejects these
+ * values, but a build can skip the type check, as Vite's does.
  */
-function checkPluginObjects(plugins: readonly unknown[]): void {
-	for (const [index, plugin] of plugins.entries()) {
+function checkPluginObjects(plugins: unknown): void {
+	if (!Array.isArray(plugins)) {
+		throw new TypeError(
+			"plugins is not a list of plugins. Give a list, such as defaultPlugins() or [requestId()].",
+		);
+	}
+	// Why the type: `Array.isArray` gives each entry the type `any`.
+	const entries: readonly unknown[] = plugins;
+	for (const [index, plugin] of entries.entries()) {
 		if (typeof plugin === "function") {
 			const value = plugin.name === "" ? "a function" : `the function ${plugin.name}`;
 			throw new TypeError(
@@ -97,6 +105,16 @@ function checkPluginObjects(plugins: readonly unknown[]): void {
 		if (typeof plugin !== "object" || plugin == null) {
 			throw new TypeError(
 				`plugins[${index}] is ${String(plugin)}, not a plugin. Remove it. To add a plugin on a condition, spread a list: ...(condition ? [plugin] : []).`,
+			);
+		}
+		if (Array.isArray(plugin)) {
+			throw new TypeError(
+				`plugins[${index}] is a list, not a plugin. Spread the list, such as ...defaultPlugins().`,
+			);
+		}
+		if ("then" in plugin && typeof plugin.then === "function") {
+			throw new TypeError(
+				`plugins[${index}] is a promise, not a plugin. Wait for the plugin with await, such as await auth().`,
 			);
 		}
 	}
@@ -388,7 +406,8 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  * `app-server` CLI starts it.
  *
  * Two plugins of one option of `defaultPlugins()`, such as two `buildId()`,
- * stop startup.
+ * stop startup. So does an entry of `plugins` that is not a plugin, such as a
+ * Hono middleware with no plugin around it.
  *
  * @example
  * // server.ts

@@ -276,6 +276,29 @@ describe("createServer", () => {
 		},
 	);
 
+	it.each([
+		[
+			"a list of plugins",
+			defaultPlugins(),
+			"plugins[1] is a list, not a plugin. Spread the list, such as ...defaultPlugins().",
+		],
+		[
+			"a promise of a plugin",
+			Promise.resolve(requestId()),
+			"plugins[1] is a promise, not a plugin. Wait for the plugin with await, such as await auth().",
+		],
+	])("stops startup for %s in the plugin list, and names the fix", (_, entry, message) => {
+		expect(() => createServer({ plugins: [health(), entry as unknown as Plugin] })).toThrow(
+			message,
+		);
+	});
+
+	it("stops startup for a plugin list that is not a list, such as defaultPlugins with no call", () => {
+		expect(() => createServer({ plugins: defaultPlugins as unknown as Plugin[] })).toThrow(
+			"plugins is not a list of plugins. Give a list, such as defaultPlugins() or [requestId()].",
+		);
+	});
+
 	it("runs a Hono middleware that a plugin holds", async () => {
 		const auth: Plugin = {
 			name: "basic-auth",
