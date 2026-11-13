@@ -1035,6 +1035,9 @@ describe("the pipeline", () => {
 		"a plugin that is not async": (fail) => ({
 			plugins: [{ name: "thrower", middleware: () => fail() }],
 		}),
+		"the etagPart of a plugin": (fail) => ({
+			plugins: [{ name: "thrower", etagPart: () => fail() }],
+		}),
 		"a plugin after next()": (fail) => ({
 			plugins: [
 				{
