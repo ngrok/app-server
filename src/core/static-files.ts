@@ -127,46 +127,78 @@ function matchesEtag(ifNoneMatch: string | undefined, etag: string): boolean {
 	);
 }
 
-/**
- * The last `etagParts` and their hash. Why one entry: each request has the
- * same parts for the life of the process.
- */
-let lastParts: { key: string; hash: string } | undefined;
+/** The most lists of `etagParts` whose hash the process keeps. */
+const MAX_PARTS_HASHES = 16;
 
-/** A short hash of the request's `etagParts`. */
-async function partsHash(parts: readonly string[]): Promise<string> {
-	const key = parts.join("\0");
-	if (lastParts?.key === key) {
-		return lastParts.hash;
+/**
+ * The hash of each list of `etagParts` that a request had, oldest first. Why
+ * more than one: a plugin with an `etagPart` between two static stages gives
+ * the requests of each stage their own list, and so does each app of the
+ * process. Why a limit: a part can change while the server runs.
+ */
+const partsHashes: { parts: readonly string[]; hash: string }[] = [];
+
+/** The kept hash of `parts`, or `undefined` before the first request with them ends its digest. */
+function keptPartsHash(parts: readonly string[]): string | undefined {
+	for (const kept of partsHashes) {
+		let same = kept.parts.length === parts.length;
+		for (let index = 0; same && index < parts.length; index += 1) {
+			same = kept.parts[index] === parts[index];
+		}
+		if (same) {
+			return kept.hash;
+		}
 	}
+	return undefined;
+}
+
+/** A short hash of the request's `etagParts`, which the process then keeps. */
+async function partsHash(parts: readonly string[]): Promise<string> {
 	// Why Web Crypto: each host has it, and the core imports no Node module.
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(parts.join("\0")));
 	const hash = btoa(String.fromCodePoint(...new Uint8Array(digest)))
 		.replaceAll("+", "-")
 		.replaceAll("/", "_")
 		.slice(0, 16);
-	lastParts = { key, hash };
+	// Why the check: another request with the same parts can end its digest first.
+	if (keptPartsHash(parts) == null) {
+		if (partsHashes.length === MAX_PARTS_HASHES) {
+			partsHashes.shift();
+		}
+		partsHashes.push({ parts, hash });
+	}
 	return hash;
 }
 
+const UINT32 = 2 ** 32;
+
 /**
- * A weak ETag from a file's size, its modification time, the request's
- * `etagParts`, and the encoding of the body. Why the encoding: after a 304,
- * a cache that holds more than one encoding of the file picks the stored
- * response by its ETag (RFC 9111, section 4.3.4).
+ * The whole milliseconds of a time in hexadecimal, as
+ * `Math.trunc(ms).toString(16)` gives them. Why two halves: V8 converts a
+ * whole number under 2^32 in about 15 ns, and a larger one, as the time of
+ * a file is, in about 340 ns.
  */
-async function fileEtag(
+function hexTime(ms: number): string {
+	const whole = Math.trunc(ms);
+	return whole >= UINT32 && whole <= Number.MAX_SAFE_INTEGER
+		? `${Math.floor(whole / UINT32).toString(16)}${(whole % UINT32).toString(16).padStart(8, "0")}`
+		: whole.toString(16);
+}
+
+/**
+ * A weak ETag from a file's size, its modification time, the hash of the
+ * request's `etagParts`, and the encoding of the body. Why the encoding:
+ * after a 304, a cache that holds more than one encoding of the file picks
+ * the stored response by its ETag (RFC 9111, section 4.3.4).
+ */
+function fileEtag(
 	file: StaticFile,
-	parts: readonly string[],
+	hash: string | undefined,
 	encoding: Encoding | undefined,
-): Promise<string> {
-	const tag = [
-		file.size.toString(16),
-		Math.trunc(file.mtimeMs).toString(16),
-		...(parts.length === 0 ? [] : [await partsHash(parts)]),
-		...(encoding == null ? [] : [encoding]),
-	];
-	return `W/"${tag.join("-")}"`;
+): string {
+	const parts = hash == null ? "" : `-${hash}`;
+	const coding = encoding == null ? "" : `-${encoding}`;
+	return `W/"${file.size.toString(16)}-${hexTime(file.mtimeMs)}${parts}${coding}"`;
 }
 
 /**
@@ -362,9 +394,14 @@ export async function staticResponse(
 	// Why before the 304: a 304 sends the `Vary` and the ETag of its 200.
 	const copy = await preferredCopy(context, { files, path: file.path, headers: responseHeaders });
 	// Why the header first: `headers` can replace the ETag.
-	const etag =
-		responseHeaders.get("ETag") ??
-		(await fileEtag(file, context.get("etagParts") ?? [], copy?.encoding));
+	let etag = responseHeaders.get("ETag");
+	if (etag == null) {
+		const parts = context.get("etagParts") ?? [];
+		// Why `await` only for a new list of parts: each later request has the hash at once.
+		const hash =
+			parts.length === 0 ? undefined : (keptPartsHash(parts) ?? (await partsHash(parts)));
+		etag = fileEtag(file, hash, copy?.encoding);
+	}
 	responseHeaders.set("ETag", etag);
 	if (matchesEtag(context.req.header("If-None-Match"), etag)) {
 		responseHeaders.delete("Content-Type");

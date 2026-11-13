@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
@@ -140,6 +140,59 @@ describe("prerendered", () => {
 
 		await expect(etag("v1")).resolves.toBe(await etag("v1"));
 		await expect(etag("v1")).resolves.not.toBe(await etag("v2"));
+	});
+
+	it("makes the ETag from the size and the time in hexadecimal, then the hash of the parts", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-etag-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		// Why two times: one is under 2^32 milliseconds, and one is over it.
+		const times = { "old.txt": 86_400_000, "new.txt": 1_767_323_045_000 };
+		for (const [name, time] of Object.entries(times)) {
+			writeFileSync(join(directory, name), "0123456789abcdef");
+			utimesSync(join(directory, name), new Date(time), new Date(time));
+		}
+		const plain = await testServer({ plugins: [prerendered()], clientDirectory: directory });
+		const versioned = await testServer({
+			plugins: [{ name: "versioned", etagPart: () => "v1" }, prerendered()],
+			clientDirectory: directory,
+		});
+		const etag = async (server: typeof plain, path: string) =>
+			(await server.request(path)).headers.get("ETag");
+
+		await expect(etag(plain, "/old.txt")).resolves.toBe('W/"10-5265c00"');
+		await expect(etag(plain, "/new.txt")).resolves.toBe('W/"10-19b7ca98c88"');
+		await expect(etag(versioned, "/new.txt")).resolves.toBe('W/"10-19b7ca98c88-O_wmlZTvZJIo6adL"');
+	});
+
+	it("gives each list of parts its own ETag when requests with other parts come between", async () => {
+		const part = { value: "" };
+		const { request } = await testServer({
+			plugins: [{ name: "versioned", etagPart: () => part.value }, prerendered()],
+			clientDirectory,
+		});
+		// Why 40: more lists of parts than the server keeps a hash for.
+		const values = Array.from({ length: 40 }, (_, index) => `v${index}`);
+		/** The ETags of three requests at one time for each value. Each can be the first with its parts. */
+		const etags = async () => {
+			const tags: (string | null)[][] = [];
+			for (const value of values) {
+				part.value = value;
+				const responses = await Promise.all(
+					Array.from({ length: 3 }, async () => request("/llms.txt")),
+				);
+				tags.push(responses.map((response) => response.headers.get("ETag")));
+			}
+			return tags;
+		};
+
+		const first = await etags();
+		const again = await etags();
+
+		expect(first.map((tags) => new Set(tags).size)).toStrictEqual(values.map(() => 1));
+		expect(new Set(first.flat()).size).toBe(values.length);
+		expect(again).toStrictEqual(first);
 	});
 
 	it("applies the request-path rules to a rewritten path", async () => {
