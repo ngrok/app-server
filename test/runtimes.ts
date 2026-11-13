@@ -327,6 +327,42 @@ async function checkStart(): Promise<void> {
 	}
 }
 
+/**
+ * The source of a script that imports the module at the URL `module`. It then writes each module
+ * specifier that the process resolved, with `import` or `require`, as one log line.
+ */
+function resolveLogScript(module: string): string {
+	return [
+		'import { registerHooks } from "node:module";',
+		"const specifiers = [];",
+		"registerHooks({",
+		"\tresolve(specifier, context, nextResolve) {",
+		"\t\tspecifiers.push(specifier);",
+		"\t\treturn nextResolve(specifier, context);",
+		"\t},",
+		"});",
+		`await import(${JSON.stringify(module)});`,
+		'console.log(JSON.stringify({ level: "info", message: "resolved", specifiers }));',
+	].join("\n");
+}
+
+/** What a process loads on Node: no module that only another command or a rare build uses. */
+function checkLoadedModules(): void {
+	const plugin = pathToFileURL(join(import.meta.dirname, "../dist/vite.js")).href;
+	const { specifiers }: { specifiers: string[] } = JSON.parse(
+		execFileSync("node", ["--input-type=module", "-e", resolveLogScript(plugin)], {
+			encoding: "utf8",
+		}),
+	);
+	assert.ok(specifiers.includes(plugin), "the script records each specifier");
+	assert.deepEqual(
+		specifiers.filter((specifier) => specifier.startsWith("@vercel/nft")),
+		[],
+		"the import of the Vite plugin does not load the tracer, which only a build that removes files uses",
+	);
+	process.stdout.write("ok node loaded modules\n");
+}
+
 /** The first chunk of a response body, and the whole body. */
 async function chunks(url: string, headers: Record<string, string> = {}) {
 	const response = await request(url, headers);
@@ -700,6 +736,7 @@ for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
 	if (runtime === "node") {
 		await checkStart();
+		checkLoadedModules();
 	}
 	await checkReactRouter(runtime);
 	await checkTanstackStart(runtime);
