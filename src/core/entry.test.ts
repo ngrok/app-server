@@ -367,8 +367,10 @@ describe("createEntry", () => {
 			"config server down",
 		);
 		const response = await entry.fetch(new Request("http://localhost/about"), {});
+		const later = await entry.fetch(new Request("http://localhost/about"), {});
 
 		await expect(response.text()).resolves.toBe("rendered");
+		await expect(later.text()).resolves.toBe("rendered");
 		expect(setup).toHaveBeenCalledTimes(2);
 		expect(lines).toStrictEqual([expect.stringMatching(/^setup failed .*config server down/u)]);
 	});

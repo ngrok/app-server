@@ -114,6 +114,8 @@ export function createEntry({
 		};
 	};
 	let prerenderedPaths: readonly string[] = [];
+	/** The production run side, after each `setup` ran. */
+	let ready: FrameworkRuntime | undefined;
 	/** Runs each plugin's `setup` for production, and gives the framework's run side. */
 	const prepareProduction = async (): Promise<FrameworkRuntime> => {
 		const runtime = framework("production");
@@ -135,6 +137,7 @@ export function createEntry({
 		};
 		await internals.prepare(info);
 		({ prerenderedPaths } = info);
+		ready = runtime;
 		return runtime;
 	};
 	let preparing: Promise<FrameworkRuntime> | undefined;
@@ -148,6 +151,22 @@ export function createEntry({
 			throw error;
 		});
 		return preparing;
+	};
+	/** Answers a request that comes before the setup ends. */
+	const fetchAfterSetup = async (
+		request: Request,
+		bindings: ListenerBindings | undefined,
+	): Promise<Response> => {
+		// Why log it: the host sends a 500 with no log, and no app handler runs before setup ends.
+		const runtime = await production().catch((error: unknown) => {
+			internals.logger.log({
+				level: "error",
+				message: "setup failed",
+				attributes: { error: asError(error) },
+			});
+			throw error;
+		});
+		return app.fetch(request, { ...bindings, framework: runtime });
 	};
 	let development: FrameworkRuntime | undefined;
 	let developmentReady = false;
@@ -168,18 +187,11 @@ export function createEntry({
 				}),
 			);
 		},
-		fetch: async (request, bindings) => {
-			// Why log it: the host sends a 500 with no log, and no app handler runs before setup ends.
-			const runtime = await production().catch((error: unknown) => {
-				internals.logger.log({
-					level: "error",
-					message: "setup failed",
-					attributes: { error: asError(error) },
-				});
-				throw error;
-			});
-			return app.fetch(request, { ...bindings, framework: runtime });
-		},
+		// Why not `async`: after the setup, a request then waits for the app's promise alone.
+		fetch: (request, bindings): Response | Promise<Response> =>
+			ready == null
+				? fetchAfterSetup(request, bindings)
+				: app.fetch(request, { ...bindings, framework: ready }),
 		fetchDev: async (request, bindings, devServer) => {
 			development ??= framework("development");
 			// Why only until it succeeds: `prepare` reads the info of its first call. After a failure,
