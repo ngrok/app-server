@@ -50,6 +50,26 @@ describe("createTestServer", () => {
 		);
 	});
 
+	it("gives a data request its production headers when `framework` is the run side of an adapter", async () => {
+		const server = await testServer({
+			files: { "page.data": "[1]" },
+			framework: {
+				name: "test",
+				fetch: async () => new Response("[]"),
+				isDataRequest: (path) => path.endsWith(".data"),
+				contentTypes: { ".data": "text/x-script" },
+				clientDirectory: "/not-the-client-build",
+			},
+		});
+
+		const rendered = await server.request("/dashboard.data");
+		const file = await server.request("/page.data");
+
+		expect(rendered.headers.get("Cache-Control")).toBe("private, no-cache");
+		expect(file.headers.get("Content-Type")).toBe("text/x-script");
+		await expect(file.text()).resolves.toBe("[1]");
+	});
+
 	it("answers a request that no stage answers with a 404", async () => {
 		const server = await testServer({});
 

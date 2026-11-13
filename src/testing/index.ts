@@ -26,10 +26,13 @@ export type TestServerOptions = {
 	 */
 	files?: Readonly<Record<string, string | Uint8Array>>;
 	/**
-	 * The framework's answer to a request that no stage answers.
+	 * The framework's answer to a request that no stage answers. Give the run
+	 * side of a framework adapter in its place to also set `isDataRequest`,
+	 * `contentTypes`, or `prerenderedPaths`. The client build is always
+	 * `files`: the test server ignores a `clientDirectory`.
 	 * @default a 404
 	 */
-	framework?: FrameworkRuntime["fetch"];
+	framework?: FrameworkRuntime["fetch"] | FrameworkRuntime;
 };
 
 /** What {@link createTestServer} gives. */
@@ -70,7 +73,8 @@ async function startEntry(
 		app,
 		host,
 		clientDirectory,
-		framework: () => ({ name: "test", fetch: framework }),
+		framework: () =>
+			typeof framework === "function" ? { name: "test", fetch: framework } : framework,
 	});
 }
 

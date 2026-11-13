@@ -1005,7 +1005,7 @@ For other long work, stop on `shutdownSignal()`.
 
 `@ngrok/app-server/testing` runs an app in a test, with no build and no listener.
 
-`createTestServer({ app, files, framework })` starts the app in production mode over a client build of `files`. It records the hashes of the inline scripts of each HTML file, as the build does. `framework` answers each request that no stage answers. The default is a 404. Give each test server a new app, because an app runs the `setup` of its plugins one time. `close()` cancels each body that the test did not read, runs each plugin's `onShutdown`, and removes the files.
+`createTestServer({ app, files, framework })` starts the app in production mode over a client build of `files`. It records the hashes of the inline scripts of each HTML file, as the build does. `framework` answers each request that no stage answers. The default is a 404. To test data requests, give the run side of an adapter in place of the function: `{ name: "test", fetch, isDataRequest: (path) => path.endsWith(".data") }`. A data request then gets its production headers, such as `Cache-Control: private, no-cache`. Give each test server a new app, because an app runs the `setup` of its plugins one time. `close()` cancels each body that the test did not read, runs each plugin's `onShutdown`, and removes the files.
 
 ```ts
 import { createTestServer } from "@ngrok/app-server/testing";
