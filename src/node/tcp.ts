@@ -3,13 +3,30 @@ import type { Listener } from "../core/types.js";
 /** Above the ngrok edge's 90 s idle pool, so the edge never reuses a socket that the server is closing. */
 const DEFAULT_IDLE_TIMEOUT_MS = 95_000;
 
+/**
+ * The largest `idleTimeoutMs`. Why 1 s under the limit of a timer: Node.js
+ * adds 1 s to the value for the timer of each socket.
+ */
+const MAX_IDLE_TIMEOUT_MS = 2_147_483_647 - 1_000;
+
 /** Options for {@link tcp}. */
 export type TcpOptions = {
 	/** @default the `PORT` environment variable, else 3000 */
 	port?: number;
 	/** @default the `HOST` environment variable, else every interface */
 	host?: string;
-	/** @default 95000 */
+	/**
+	 * How long an idle keep-alive connection stays open, in milliseconds. Set
+	 * it above the idle time of the proxy in front of the server, so the proxy
+	 * never sends a request on a connection that the server closes.
+	 *
+	 * - Node.js keeps an idle connection for this time.
+	 * - Bun counts whole seconds, 255 at most. It also closes a response that
+	 *   sends no bytes for this time.
+	 * - Deno has no idle timeout, so the option has no effect there.
+	 *
+	 * @default 95000, above the 90 s idle pool of the ngrok edge
+	 */
 	idleTimeoutMs?: number;
 };
 
@@ -31,7 +48,8 @@ export function parsePort(value: string): number {
 /**
  * The default listener: a TCP port, served by the runtime's own HTTP server
  * (`node:http` on Node, `Bun.serve` on Bun, `Deno.serve` on Deno). It reads
- * `PORT` and `HOST` when it starts.
+ * `PORT` and `HOST` when it starts. An `idleTimeoutMs` that is not an integer
+ * from 0 to 2147482647 throws, so a bad value stops startup.
  *
  * @example
  * createServer({ listeners: [tcp({ port: 8080 })] });
@@ -41,6 +59,15 @@ export function tcp({
 	host,
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 }: TcpOptions = {}): Listener {
+	if (
+		!Number.isInteger(idleTimeoutMs) ||
+		idleTimeoutMs < 0 ||
+		idleTimeoutMs > MAX_IDLE_TIMEOUT_MS
+	) {
+		throw new Error(
+			`idleTimeoutMs must be an integer from 0 to ${MAX_IDLE_TIMEOUT_MS}, not ${idleTimeoutMs}.`,
+		);
+	}
 	return {
 		name: "tcp",
 		start: async (fetch, { trustForwardedProto = false } = {}) => {
