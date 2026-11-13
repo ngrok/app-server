@@ -1,8 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Context } from "hono";
 import { asError } from "../core/log.js";
 import { logger } from "../core/request-context.js";
-import type { AppServerEnv, HostRuntime } from "../core/types.js";
+import type { HostRuntime, RequestScope } from "../core/types.js";
 import { exitAfterFlush } from "./exit.js";
 import { nodeFiles } from "./files.js";
 import { brotliStream, gzipStream } from "./compress.js";
@@ -23,7 +22,7 @@ export type {
 	TcpOptions,
 } from "./tcp.js";
 
-const storage = new AsyncLocalStorage<Context<AppServerEnv>>();
+const storage = new AsyncLocalStorage<RequestScope>();
 
 /**
  * The node host: one long-lived process on Node, Bun, or Deno, such as a

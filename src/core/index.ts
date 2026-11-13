@@ -185,6 +185,7 @@ export type {
 	Plugin,
 	RequestContext,
 	RequestLogger,
+	RequestScope,
 	RequestStore,
 	ResponseHeaders,
 	SentResponse,

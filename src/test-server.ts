@@ -1,4 +1,6 @@
 // Test helper: a prepared app server with a recording log sink and a stub framework.
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { onTestFinished } from "vitest";
 import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./core/build-manifest.js";
 import { createServer, serverInternals } from "./core/create-server.js";
@@ -16,6 +18,14 @@ export type LoggedLine = {
 };
 
 const encoder = new TextEncoder();
+
+/** Runs a full garbage collection. Why this way: Vitest starts no worker with `--expose-gc`. */
+export function collectGarbage(): void {
+	setFlagsFromString("--expose-gc");
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `gc` exists in a new context after the flag is set.
+	const collect = runInNewContext("gc") as () => void;
+	collect();
+}
 
 /** A response that sends `first` at once and the rest when `release` runs. */
 export function heldStream(first: string): { response: Response; release: () => void } {

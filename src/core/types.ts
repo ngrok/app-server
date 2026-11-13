@@ -136,12 +136,23 @@ export type StaticFiles = {
 	snapshot?: () => Promise<StaticFiles>;
 };
 
+/**
+ * What a {@link RequestStore} holds for one request. A host passes it through
+ * and reads no field of it.
+ */
+export type RequestScope = {
+	/** The Hono context of the request, until its response is sent. */
+	context: Context<AppServerEnv> | undefined;
+	/** The values of the request, when the scope has no `context`. */
+	values: RequestContext | undefined;
+};
+
 /** Request-scoped storage, such as `AsyncLocalStorage`. */
 export type RequestStore = {
 	/** Runs `work` with `value` as the stored value. */
-	run: <Result>(value: Context<AppServerEnv>, work: () => Result) => Result;
+	run: <Result>(value: RequestScope, work: () => Result) => Result;
 	/** The stored value of the request that runs, else `undefined`. */
-	get: () => Context<AppServerEnv> | undefined;
+	get: () => RequestScope | undefined;
 };
 
 /** What went out for a response, when it ends or its client goes away. */

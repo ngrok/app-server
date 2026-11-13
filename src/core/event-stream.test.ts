@@ -1,10 +1,9 @@
 import { getEventListeners } from "node:events";
-import { setFlagsFromString } from "node:v8";
-import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { eventStream } from "./event-stream.js";
 import type { EventStreamSink } from "./event-stream.js";
 import { abortShutdownSignal, renewShutdownSignal, shutdownSignal } from "./shutdown.js";
+import { collectGarbage } from "../test-server.js";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -37,13 +36,6 @@ async function nextTurn(): Promise<void> {
 	return new Promise((resolve) => {
 		setImmediate(resolve);
 	});
-}
-
-/** Runs a full garbage collection. Why this way: Vitest starts no worker with `--expose-gc`. */
-function collectGarbage(): void {
-	setFlagsFromString("--expose-gc");
-	const collect = runInNewContext("gc") as () => void;
-	collect();
 }
 
 describe("eventStream", () => {

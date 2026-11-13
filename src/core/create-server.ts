@@ -29,7 +29,7 @@ import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
 import { checkOptionPlugins, perRequestHeadersOf, presenceHeadersOf } from "./plugin-options.js";
 import { checkCount, MAX_TIMER_MS } from "./check-count.js";
-import { setProcessSink, withRequestContext } from "./request-context.js";
+import { releaseContext, setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
 import type {
@@ -41,6 +41,7 @@ import type {
 	LogOptions,
 	LogSink,
 	Plugin,
+	RequestScope,
 	RequestStore,
 	SentResponse,
 	SetupInfo,
@@ -521,8 +522,9 @@ export function createServer({
 		// Why claim before the stages: a request that the app sends through itself again with `c.env`
 		// gets the same edge, and must change its own response.
 		const edge = given?.claim(requestLog) === true ? given : undefined;
+		const scope: RequestScope = { context, values: undefined };
 		// Why finish in the request context: a header hook can read `requestContext()`.
-		await withRequestContext(requestStore, context, async () => {
+		await withRequestContext(requestStore, scope, async () => {
 			await runStage({ context, rest: next, reached: -1 }, 0);
 			// Why here: Hono makes this check after this stage returns. By then, with no edge, the
 			// header hooks have made an empty 200 the response of the request.
@@ -533,6 +535,13 @@ export function createServer({
 					),
 					context,
 				);
+			}
+			// Why not for each request: with no edge, a report makes the server put a stream around the
+			// body, and a request with no report had none.
+			if (requestStore != null && (edge != null || reports.length > 0)) {
+				reports.push(() => {
+					releaseContext(scope, logger, requestLog);
+				});
 			}
 			const finishing = finishResponse(context, { hooks, reports, edge, fail: answerThrown });
 			if (finishing != null) {
