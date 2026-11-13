@@ -16,6 +16,6 @@ The transform alone, for one document, as the median of 3 runs of 31 rounds in t
 
 In process, with the default plugins and a `ResponseEdge` as the node listener calls the server, for a first visit with public values (3 processes, each with 31 rounds in turn of 500 requests, the build before and this change):
 
-- With no compression streams, as on the vercel host: a prerendered page of 40 KB takes 0.90 of its time before (24.6 µs to 22.1 µs), a page of 400 KB 0.76, a page of 6 KB 0.96, and a rendered document of 6 KB the same time (1.00). A page of 36 KB whose head has 30 KB of inline CSS in ASCII, which is the case that helps the search least, takes 0.96.
-- On the node host, brotli takes most of the time, and a page of 40 KB takes 0.99 (122 µs to 121 µs).
-- An asset and a data request take the same time (0.97 and 1.00 of the CPU time).
+- With no compression streams, as on the vercel host: a prerendered page of 40 KB takes 0.89 of its time before (23.1 µs to 20.1 µs; 6 processes gave 0.84 to 0.93), a page of 400 KB 0.76, a page of 6 KB 0.96, and a rendered document of 6 KB the same time (1.00). A page of 36 KB whose head has 30 KB of inline CSS in ASCII, which is the case that helps the search least, takes 0.96.
+- On the node host, brotli takes most of the time: a page of 40 KB takes 0.98 (119 µs to 116 µs), and a page of 6 KB and a rendered document of 6 KB take the same time (1.01 and 0.99).
+- An asset and a data request take the same CPU time (1.00 and 1.01).
