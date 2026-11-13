@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { nodeFiles } from "./files.js";
 
 /** The `stat` and `readdir` calls in flight now, and the most at one time. */
@@ -11,8 +11,9 @@ const calls = vi.hoisted(() => ({ now: 0, most: 0 }));
 /**
  * Why: a read of a regular file can give fewer bytes than it asks for, so
  * each read gives 3. A deploy can remove a directory between its `stat` and
- * its listing, so the listing of each `vanished` directory fails. Each `stat`
- * and each listing counts in `calls` while it is in flight.
+ * its listing, so the listing of each `vanished` directory fails. The process
+ * can lack the permission for an entry, so the `stat` of each `denied` entry
+ * fails. Each `stat` and each listing counts in `calls` while it is in flight.
  */
 vi.mock(import("node:fs/promises"), async (importOriginal) => {
 	const original = await importOriginal();
@@ -28,7 +29,12 @@ vi.mock(import("node:fs/promises"), async (importOriginal) => {
 	return {
 		...original,
 		stat: (async (path: string) =>
-			counted(async () => original.stat(path))) as typeof original.stat,
+			counted(async () => {
+				if (path.endsWith("denied")) {
+					throw Object.assign(new Error(`EACCES: ${path}`), { code: "EACCES" });
+				}
+				return original.stat(path);
+			})) as typeof original.stat,
 		readdir: (async (path: string) =>
 			counted(async () => {
 				if (path.endsWith("vanished")) {
@@ -95,5 +101,32 @@ describe("nodeFiles", () => {
 		expect(calls.most).toBeGreaterThan(1);
 		expect(calls.most).toBeLessThanOrEqual(64);
 		expect(kinds).toStrictEqual(names.map(() => "file"));
+	});
+
+	it("waits for each file system call in flight before a snapshot fails", async () => {
+		const client = mkdtempSync(join(tmpdir(), "app-server-files-fault-"));
+		onTestFinished(() => {
+			rmSync(client, { recursive: true, force: true });
+		});
+		// Why more entries: the snapshot reads them at one time, so their calls are in flight at the failure.
+		for (const name of [
+			"denied",
+			...Array.from({ length: 8 }, (_, index) => `page-${index}.html`),
+		]) {
+			writeFileSync(join(client, name), "page");
+		}
+		calls.most = 0;
+		let atFailure: number | undefined;
+
+		const failure: unknown = await nodeFiles(client)
+			.snapshot?.()
+			.catch((error: unknown) => {
+				atFailure = calls.now;
+				return error;
+			});
+
+		expect(failure).toMatchObject({ code: "EACCES" });
+		expect(calls.most).toBeGreaterThan(1);
+		expect(atFailure).toBe(0);
 	});
 });
