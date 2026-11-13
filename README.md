@@ -1077,4 +1077,3 @@ export const appServer = createEntry({
 ## Contributing
 
 Each change meets the six goals of the [north star](./docs/north-star.md): correct, least surprising, fast, delightful, clean, and efficient. [AGENTS.md](./AGENTS.md) is the guide for humans and agents. It lists the goals, the [principles](./docs/principles/README.md) that serve them, and the checks to run before a pull request.
-
