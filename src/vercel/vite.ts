@@ -104,22 +104,23 @@ function copyFile(from: string, to: string): void {
 }
 
 /**
- * The path of each file under `directory`, relative to it. Why follow links:
- * the CDN and the function each get a copy of the linked file, not a link
- * whose target can be in the other part. Why the inodes of the parents: a
- * link to a parent directory must not make the walk endless.
+ * The path of each file under `directory`, relative to it, with the size of
+ * the file. Why follow links: the CDN and the function each get a copy of the
+ * linked file, not a link whose target can be in the other part. Why the
+ * inodes of the parents: a link to a parent directory must not make the walk
+ * endless.
  */
 function filesUnder(
 	directory: string,
 	under = "",
 	parents: ReadonlySet<string> = new Set(),
-): string[] {
+): [file: string, size: number][] {
 	const stats = statSync(join(directory, under), { throwIfNoEntry: false });
 	if (stats == null) {
 		return [];
 	}
 	if (!stats.isDirectory()) {
-		return [under];
+		return [[under, stats.size]];
 	}
 	const inode = `${stats.dev}:${stats.ino}`;
 	if (parents.has(inode)) {
@@ -314,8 +315,7 @@ function writeOutput(
 	const isCdnFile = (file: string): boolean =>
 		prefixes.some((prefix) => `/${posix(file)}`.startsWith(prefix));
 
-	const clientFiles = filesUnder(clientDirectory);
-	const listed = new Set(clientFiles);
+	const clientFiles = new Map(filesUnder(clientDirectory));
 	const list: FunctionFiles = { builtAt: Date.now(), files: {}, brotliOnly: {} };
 	/**
 	 * Whether the function drops `file`, a file or a gzip copy, because the
@@ -328,20 +328,20 @@ function writeOutput(
 		const original = name.startsWith(".") ? /^\.(?<name>.+)\.gz$/u.exec(name)?.groups?.name : name;
 		return (
 			original != null &&
-			listed.has(join(dirname(file), original)) &&
-			listed.has(join(dirname(file), copyName(original, "br")))
+			clientFiles.has(join(dirname(file), original)) &&
+			clientFiles.has(join(dirname(file), copyName(original, "br")))
 		);
 	};
-	for (const file of clientFiles) {
+	for (const [file, size] of clientFiles) {
 		const from = join(clientDirectory, file);
 		// Why the function keeps the file of a page that the CDN serves: a request that no page route
 		// matches, such as the other trailing slash form, or a markdown request, reaches the function.
 		if (!isCdnFile(file)) {
 			if (!brotliCopyOnly(file)) {
 				copyFile(from, join(functionDirectory, fromRoot(from)));
-				list.files[`/${posix(file)}`] = statSync(from).size;
+				list.files[`/${posix(file)}`] = size;
 			} else if (!basename(file).startsWith(".")) {
-				list.brotliOnly[`/${posix(file)}`] = statSync(from).size;
+				list.brotliOnly[`/${posix(file)}`] = size;
 			}
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
