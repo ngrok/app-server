@@ -30,7 +30,12 @@ import {
 	SERVER_ENTRY_FILE,
 } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
-import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
+import {
+	COPY_ENCODINGS,
+	copyName,
+	isCompressible,
+	MIN_COMPRESS_BYTES,
+} from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
 import { scriptHashesOf } from "../node/script-hashes.js";
@@ -119,6 +124,15 @@ export type FrameworkBuild = {
 export type HostBuild = {
 	/** The module whose `host` export is the run side, a `HostRuntime`. */
 	runtimeModule: string;
+	/**
+	 * The encodings of the compressed copies that the host reads for one file
+	 * of the client build. `path` is the URL path of the file, such as
+	 * `/assets/app-abc.js`, and `assetsPath` is the URL path of Vite's
+	 * `build.assetsDir`. The build writes no other copy of the file. Why: a
+	 * host whose output holds only some copies does not pay for the others.
+	 * @default each encoding: gzip and brotli
+	 */
+	copies?: (file: { path: string; assetsPath: string }) => readonly Encoding[];
 	/**
 	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
 	 * runs one time, after the build and the prerender pass. When `appServer`
@@ -223,11 +237,14 @@ function hostOutput(config: ResolvedConfig): HostOutput {
 		root: config.root,
 		clientDirectory: outDir(config, "client"),
 		entryFile: join(outDir(config, SERVER_ENVIRONMENT), SERVER_ENTRY_FILE),
-		assetsPath: urlPathOfAssetsDir(
-			config.environments.client?.build.assetsDir ?? config.build.assetsDir,
-		),
+		assetsPath: assetsPathOf(config),
 		logger: config.logger,
 	};
+}
+
+/** The URL path of Vite's `build.assetsDir` in the client build of `config`. */
+function assetsPathOf(config: ResolvedConfig): string {
+	return urlPathOfAssetsDir(config.environments.client?.build.assetsDir ?? config.build.assetsDir);
 }
 
 /**
@@ -689,14 +706,12 @@ function clientBuildFields(
  * the framework's prerender pass runs. It writes them to `.app-server.json` in
  * the client build when the preview server closes. When the post step of the
  * build ran before the pass, it also does the work of that step for the files
- * of the pass: the script hashes, the copies, and `afterPass`.
+ * of the pass: the script hashes, the copies (see {@link writeAllCopies}), and
+ * `afterPass`.
  */
 function capture(
 	server: PreviewServer,
-	{
-		contentTypes,
-		afterPass,
-	}: { contentTypes: FrameworkBuild["contentTypes"]; afterPass: () => void },
+	{ afterPass, ...copies }: Omit<CopyOptions, "changedSince"> & { afterPass: () => void },
 ): void {
 	const clientDirectory = outDir(server.config, "client");
 	const started = Date.now();
@@ -749,7 +764,7 @@ function capture(
 			// Why each file that the pass changed, not each path: a path does not name its file, as
 			// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
 			// modification time in steps of 1 or 2 s.
-			writeAllCopies(clientDirectory, { changedSince: started - 2000, contentTypes });
+			writeAllCopies(clientDirectory, { ...copies, changedSince: started - 2000 });
 			afterPass();
 		}
 	});
@@ -762,44 +777,78 @@ function capture(
  */
 const BROTLI_QUALITY = 9;
 
+/** Which compressed copies the build writes. */
+type CopyOptions = {
+	/** The framework's content types, as the server reads them. */
+	contentTypes: FrameworkBuild["contentTypes"];
+	/** The encodings of the copies that the host reads for the file at a URL path. */
+	encodingsOf: (path: string) => readonly Encoding[];
+	/** Only for a file that changed at or after this time, in milliseconds since the epoch. */
+	changedSince?: number;
+};
+
+/**
+ * The bytes of the file at `path` when the server compresses the file: a
+ * compressible type of 1 KiB or more. `contentTypes` are the framework's
+ * types, as the server reads them.
+ */
+function compressibleBytes(
+	path: string,
+	contentTypes: Readonly<Record<string, string>>,
+): Uint8Array | undefined {
+	if (
+		!isCompressible(contentType(path, contentTypes)) ||
+		statSync(path, { throwIfNoEntry: false })?.isFile() !== true
+	) {
+		return undefined;
+	}
+	const bytes = readFileSync(path);
+	return bytes.byteLength < MIN_COMPRESS_BYTES ? undefined : bytes;
+}
+
+/** `copy` when it is smaller than `source`. */
+function ifSmaller(copy: Uint8Array, source: Uint8Array): Uint8Array | undefined {
+	return copy.byteLength < source.byteLength ? copy : undefined;
+}
+
 /**
  * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of the file at
- * `path` when the server compresses the file: a compressible type of 1 KiB
- * or more. `contentTypes` are the framework's types, as the server reads
- * them. It writes a copy only when it is smaller: the gzip copy than the
- * file, and the brotli copy than the gzip copy. Else it removes an old copy,
- * so a copy from an earlier build never replaces a changed file.
+ * `path` when the server compresses the file ({@link compressibleBytes}). It
+ * writes only the `encodings`, and a copy only when it is smaller: the gzip
+ * copy than the file, and the brotli copy than the gzip copy. With no gzip in
+ * `encodings`, it writes the brotli copy when it is smaller than the file.
+ * Else it removes an old copy, so a copy from an earlier build never replaces
+ * a changed file.
  */
-function writeCopies(path: string, contentTypes: Readonly<Record<string, string>>): void {
-	const bytes =
-		isCompressible(contentType(path, contentTypes)) &&
-		statSync(path, { throwIfNoEntry: false })?.isFile() === true
-			? readFileSync(path)
-			: undefined;
+function writeCopies(
+	path: string,
+	{
+		contentTypes,
+		encodings,
+	}: { contentTypes: Readonly<Record<string, string>>; encodings: readonly Encoding[] },
+): void {
+	const bytes = encodings.length === 0 ? undefined : compressibleBytes(path, contentTypes);
 	// Why the highest gzip level: the build compresses each file once, and each response sends fewer bytes.
 	const gzip =
-		bytes == null || bytes.byteLength < MIN_COMPRESS_BYTES
-			? undefined
-			: gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION });
-	const gzipCopy =
-		gzip != null && bytes != null && gzip.byteLength < bytes.byteLength ? gzip : undefined;
+		bytes != null && encodings.includes("gzip")
+			? ifSmaller(gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION }), bytes)
+			: undefined;
 	const brotli =
-		gzipCopy == null || bytes == null
-			? undefined
-			: brotliCompressSync(bytes, {
-					params: {
-						[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
-						[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
-						[constants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
-					},
-				});
-	const brotliCopy =
-		brotli != null && gzipCopy != null && brotli.byteLength < gzipCopy.byteLength
-			? brotli
+		bytes != null && encodings.includes("br") && (gzip != null || !encodings.includes("gzip"))
+			? ifSmaller(
+					brotliCompressSync(bytes, {
+						params: {
+							[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+							[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+							[constants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
+						},
+					}),
+					gzip ?? bytes,
+				)
 			: undefined;
 	const copies: readonly (readonly [Encoding, Uint8Array | undefined])[] = [
-		["gzip", gzipCopy],
-		["br", brotliCopy],
+		["gzip", gzip],
+		["br", brotli],
 	];
 	for (const [encoding, copy] of copies) {
 		const copyPath = join(dirname(path), copyName(basename(path), encoding));
@@ -813,15 +862,11 @@ function writeCopies(path: string, contentTypes: Readonly<Record<string, string>
 
 /**
  * Runs {@link writeCopies} for each file in the client build, except dotfiles
- * such as the copies, and except a link or a file in a linked directory. With `changedSince`, only for a file that changed at or
- * after that time, in milliseconds since the epoch.
+ * such as the copies, and except a link or a file in a linked directory.
  */
 function writeAllCopies(
 	clientDirectory: string,
-	{
-		changedSince,
-		contentTypes = {},
-	}: { changedSince?: number; contentTypes: FrameworkBuild["contentTypes"] },
+	{ contentTypes = {}, encodingsOf, changedSince }: CopyOptions,
 ): void {
 	if (!existsSync(clientDirectory)) {
 		return;
@@ -833,7 +878,10 @@ function writeAllCopies(
 			(changedSince == null ||
 				(statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= changedSince)
 		) {
-			writeCopies(path, contentTypes);
+			writeCopies(path, {
+				contentTypes,
+				encodings: encodingsOf(`/${relative(clientDirectory, path).split(sep).join("/")}`),
+			});
 		}
 	}
 }
@@ -881,7 +929,8 @@ function filesInside(directory: string): string[] {
  *   `contentSecurityPolicy` plugin. It also writes a gzip copy (`.<file>.gz`)
  *   and a brotli copy (`.<file>.br`) next to each text file of 1 KiB or more
  *   in the client build, HTML included. The static stages send a copy, so the
- *   server does not compress these files for each request.
+ *   server does not compress these files for each request. A host can ask
+ *   for fewer copies with `copies` of `HostBuild`, as `vercel()` does.
  *
  * @example
  * // vite.config.ts
@@ -894,6 +943,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
+	/** The `CopyOptions` of the build of `config`: the types of the framework and the encodings of the host. */
+	const copyOptions = (config: ResolvedConfig): CopyOptions => ({
+		contentTypes: resolved?.framework.contentTypes,
+		encodingsOf: (path) =>
+			host.copies?.({ path, assetsPath: assetsPathOf(config) }) ?? COPY_ENCODINGS,
+	});
 	const postStep: Plugin = {
 		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
@@ -906,7 +961,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientDirectory,
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
-				writeAllCopies(clientDirectory, { contentTypes: resolved?.framework.contentTypes });
+				writeAllCopies(clientDirectory, copyOptions(builder.config));
 				host.output?.(hostOutput(builder.config));
 			},
 		},
@@ -998,9 +1053,9 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		},
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
+				// Why the preview's config: the framework starts the preview with a new instance of this plugin.
 				capture(server, {
-					contentTypes: resolved.framework.contentTypes,
-					// Why the preview's config: the framework starts the preview with a new instance of this plugin.
+					...copyOptions(server.config),
 					afterPass: () => host.output?.(hostOutput(server.config)),
 				});
 			}

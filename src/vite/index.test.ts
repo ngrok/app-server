@@ -840,6 +840,77 @@ describe("appServer", () => {
 		expect(readFileSync(join(client, "data.json.br"), "utf8")).toBe("app data");
 	});
 
+	it("writes only the copies that the host reads, after the build and after a late prerender pass", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-host-copies-"));
+		const client = join(directory, "build/client");
+		const text = "export const value = 1;\n".repeat(100);
+		const files = {
+			"static/app-abc.js": text,
+			"docs/llms.txt": text,
+			// Why: copies from an earlier build with another host.
+			"static/.app-abc.js.gz": "stale",
+			"static/.app-abc.js.br": "stale",
+			"docs/.llms.txt.gz": "stale",
+		};
+		for (const [path, content] of Object.entries(files)) {
+			mkdirSync(dirname(join(client, path)), { recursive: true });
+			writeFileSync(join(client, path), content);
+		}
+		const asked: unknown[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				// Why: as a host whose CDN serves the hashed files and whose function reads brotli only.
+				copies: (file) => {
+					asked.push(file);
+					return file.path.startsWith(file.assetsPath) ? [] : ["br"];
+				},
+			},
+		};
+		const config = { root: directory, build: { outDir: "build/client", assetsDir: "static" } };
+
+		const buildApp = appServer(options)[1]?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{ config: { ...config, environments: {} } } as never,
+		);
+		const afterBuild = {
+			static: readdirSync(join(client, "static")),
+			docs: readdirSync(join(client, "docs")).toSorted(),
+		};
+		const server = await preview({
+			...config,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer(options), responder()],
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+		writeFileSync(join(client, "agents.txt"), text);
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(afterBuild).toStrictEqual({
+			static: ["app-abc.js"],
+			docs: [".llms.txt.br", "llms.txt"],
+		});
+		expect(brotliDecompressSync(readFileSync(join(client, "docs/.llms.txt.br"))).toString()).toBe(
+			text,
+		);
+		expect(asked).toContainEqual({ path: "/docs/llms.txt", assetsPath: "/static/" });
+		expect(asked).toContainEqual({ path: "/static/app-abc.js", assetsPath: "/static/" });
+		expect(
+			readdirSync(client)
+				.filter((name) => name.includes("agents"))
+				.toSorted(),
+		).toStrictEqual([".agents.txt.br", "agents.txt"]);
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("writes no copy through a linked directory, so each copy stays in the client build", async () => {
 		const client = join(root, "linked-build");
 		const outside = join(root, "linked-public");

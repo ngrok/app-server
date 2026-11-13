@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { reactRouterAdapter } from "../react-router/vite.js";
+import { appServer } from "../vite/index.js";
 import { vercel } from "./vite.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
@@ -485,6 +487,52 @@ describe("vercel", () => {
 				"@ngrok/app-server/vercel: the CDN serves 0 prerendered paths, and the function serves 25.",
 				...kept.map(({ path, reason }) => `  ${path}: ${reason}`),
 			].join("\n"),
+		]);
+	});
+
+	it("makes the build write only the copies that the output holds: brotli, and none for a CDN file", async () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-copies-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const text = "Prerendered text for an agent.\n".repeat(50);
+		write(join(site, "build/server/app-server.js"), entrySource());
+		for (const file of ["assets/app-abc.js", "blog-assets/post.css", "about/index.html"]) {
+			write(join(site, "build/client", file), text);
+		}
+		const [, postStep] = appServer({
+			framework: reactRouterAdapter(),
+			host: vercel({ cdnPaths: ["/blog-assets/"] }),
+		});
+
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields of `config`.
+			{
+				config: {
+					root: site,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: { ssr: { build: { outDir: "build/server" } } },
+					logger: quiet,
+				},
+			} as never,
+		);
+
+		expect(filesUnder(join(site, "build/client"))).toStrictEqual([
+			".app-server.json",
+			"about/.index.html.br",
+			"about/index.html",
+			"assets/app-abc.js",
+			"blog-assets/post.css",
+		]);
+		expect(
+			filesUnder(join(site, ".vercel/output/functions/index.func/build/client")),
+		).toStrictEqual([".app-server-brotli.json", ".app-server.json", "about/.index.html.br"]);
+		expect(filesUnder(join(site, ".vercel/output/static"))).toStrictEqual([
+			"assets/app-abc.js",
+			"blog-assets/post.css",
 		]);
 	});
 

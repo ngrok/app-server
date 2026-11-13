@@ -280,14 +280,21 @@ function reportPages({ cdn, server }: PagesReport, logger: HostOutput["logger"])
 	);
 }
 
+/**
+ * The URL path prefixes of the files that the CDN serves. Why `assetsPath`
+ * last: Vercel applies each matched rule in order, so its immutable cache wins
+ * over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
+ */
+function cdnPrefixes(cdnPaths: readonly string[], assetsPath: string): string[] {
+	return [...cdnPaths.filter((path) => path !== assetsPath), assetsPath];
+}
+
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
 	{ root, clientDirectory, entryFile, assetsPath, logger }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, cdnPages = false, regions, memory, maxDuration }: VercelOptions,
 ): void {
-	// Why `assetsPath` last: Vercel applies each matched rule in order, so its immutable cache wins
-	// over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
-	const prefixes = [...cdnPaths.filter((path) => path !== assetsPath), assetsPath];
+	const prefixes = cdnPrefixes(cdnPaths, assetsPath);
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
 	const pages = findCdnPages(entryFile, output, {
@@ -426,6 +433,12 @@ export function vercel(options: VercelOptions = {}): HostBuild {
 	checkCdnPaths(options.cdnPaths ?? []);
 	return {
 		runtimeModule: "@ngrok/app-server/vercel",
+		// Why brotli only: the function keeps the brotli copy in place of the file and its gzip copy.
+		// Why no copy of a CDN file: the CDN compresses it, and the output holds no dotfile of it.
+		copies: ({ path, assetsPath }) =>
+			cdnPrefixes(options.cdnPaths ?? [], assetsPath).some((prefix) => path.startsWith(prefix))
+				? []
+				: ["br"],
 		output: (build) => {
 			writeOutput(build, options);
 		},
