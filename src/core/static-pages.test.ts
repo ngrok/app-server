@@ -89,6 +89,14 @@ describe("staticPages", () => {
 		);
 	});
 
+	it("gives the CDN a page when the request ID has another header name, with no request ID", async () => {
+		const [about] = await pagesOf({ requestId: { headerName: "X-Correlation-Id" } }, ["/about"]);
+
+		expect(about).toMatchObject({ path: "/about", cdn: { file: "/about/index.html" } });
+		const headers = about != null && "cdn" in about ? about.cdn.answers[0]?.headers : {};
+		expect(Object.keys(headers ?? {})).not.toContain("x-correlation-id");
+	});
+
 	it("keeps a page on the server when an auth check refuses an anonymous request", async () => {
 		await expect(pagesOf({ beforeStatic: [auth] }, ["/about"])).resolves.toStrictEqual([
 			{ path: "/about", reason: "the status is 302" },

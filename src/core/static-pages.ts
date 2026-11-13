@@ -30,7 +30,11 @@ export type PipelineFetch = (
 	bindings: { remoteAddress: string; onServedFile: (path: string) => void },
 ) => Promise<Response>;
 
-/** The headers that change with each request, such as the request ID. A CDN answer drops them. */
+/**
+ * The headers that change with each request. A CDN answer drops them. Why
+ * `x-request-id`: `requestId()` sends no header to the check, but the app's
+ * own request ID plugin can send one.
+ */
 const PER_REQUEST = new Set(["x-request-id", "date"]);
 
 /** The headers that the CDN sets for each file itself. */

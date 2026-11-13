@@ -71,7 +71,8 @@ function traceAttributes(
 /**
  * Gives each request an ID: a valid incoming header (up to 255 word
  * characters, `-`, and `=`), else a new UUID. The ID goes on the response, on
- * every log line, and into the framework's context.
+ * every log line, and into the framework's context. A request of the build's
+ * check of the CDN pages gets no ID on the response.
  *
  * A valid W3C `traceparent` header adds `trace_id` and `span_id` to each log
  * line of the request.
@@ -100,6 +101,11 @@ export function requestId({
 			const incoming = context.req.header(headerName);
 			const id = incoming != null && VALID_ID.test(incoming) ? incoming : crypto.randomUUID();
 			context.set("requestId", id);
+			// Why no header for the build's check of the CDN pages: a CDN answer has no request ID, and
+			// the check keeps a page in the function when a header changes with each request.
+			if (context.env?.onServedFile != null) {
+				return next();
+			}
 			// Why a header hook: a dev server middleware sends its own response, and runs the hooks first.
 			return withHeaderHook(context, next, (headers) => {
 				headers.set(headerName, id);
