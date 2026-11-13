@@ -1,4 +1,4 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { checkHeaderName, optionPlugin, perRequestHeaders } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
@@ -101,7 +101,7 @@ export function requestId({
 			const id = incoming != null && VALID_ID.test(incoming) ? incoming : crypto.randomUUID();
 			context.set("requestId", id);
 			// Why a header hook: a dev server middleware sends its own response, and runs the hooks first.
-			return withHeaderHook(context, next, (headers) => {
+			return withBuiltInHeaderHook(context, next, (headers) => {
 				headers.set(headerName, id);
 			});
 		},

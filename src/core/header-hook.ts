@@ -66,6 +66,14 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
 }
 
 /**
+ * The hook list of a request. `viewed` marks a list that holds a hook from
+ * {@link withHeaderHook}: only such a hook can change the body that a stage
+ * picks, so only such a list needs a run on a view. Why a property: a
+ * `WeakSet` of the lists costs about 80 ns for each marked request.
+ */
+type HookList = HeaderHook[] & { viewed?: true };
+
+/**
  * Runs `hook` on the response headers after the later stages. In an app
  * server, the hook changes the head once, where the response leaves, so the
  * response needs no copy. That run comes after the code that each stage runs
@@ -85,6 +93,30 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
  */
 // oxlint-disable-next-line typescript/promise-function-async -- nothing here throws before `next()`, and an `async` function adds a promise to each stage with a hook.
 export function withHeaderHook(
+	context: Context<AppServerEnv>,
+	next: Next,
+	hook: HeaderHook,
+): Promise<void> {
+	const hooks: HookList | undefined = context.get("headerHooks");
+	if (hooks != null) {
+		hooks.viewed = true;
+	}
+	return withBuiltInHeaderHook(context, next, hook);
+}
+
+/**
+ * {@link withHeaderHook} for a hook that keeps the body that a stage picked,
+ * as each hook of a built-in plugin does: it never adds `no-transform` to
+ * `Cache-Control` or removes it, and it never sets or deletes
+ * `Content-Encoding` or `Content-Range`. So a stage runs no view for it.
+ *
+ * @example
+ * withBuiltInHeaderHook(context, next, (headers) => {
+ * 	headers.set("X-Robots-Tag", "noindex, nofollow");
+ * });
+ */
+// oxlint-disable-next-line typescript/promise-function-async -- nothing here throws before `next()`, and an `async` function adds a promise to each stage with a hook.
+export function withBuiltInHeaderHook(
 	context: Context<AppServerEnv>,
 	next: Next,
 	hook: HeaderHook,
@@ -183,19 +215,28 @@ export function listView(head: string[]): ResponseHeaders {
 }
 
 /**
- * A view of `headers` after the header hook of each stage that the request
- * passed, in the order that the server runs them. Why: a stage that picks a
- * body by a header, such as `Cache-Control: no-transform`, must see the value
- * that a hook sets where the response leaves. So a hook can run more than
- * once. Why a view: the hooks change only the view, so `headers` needs no
- * copy.
+ * The header hooks of the request, when one of them is from
+ * {@link withHeaderHook} and so can change the body that a stage picks. With
+ * `undefined`, a stage reads the headers as they are.
  *
  * @example
- * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
+ * const hooks = bodyHooks(context);
+ * const sent = hooks == null ? undefined : hookedView(hooks, ["cache-control", "public"]);
  */
-export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers): ResponseHeaders {
-	const view = listView(headerList(headers));
-	const hooks = context.get("headerHooks") ?? [];
+export function bodyHooks(context: Context<AppServerEnv>): readonly HeaderHook[] | undefined {
+	const hooks: HookList | undefined = context.get("headerHooks");
+	return hooks?.viewed === true ? hooks : undefined;
+}
+
+/**
+ * A view of the flat `[name, value, …]` list `head` after `hooks`, in the
+ * order that the server runs them. The hooks change `head`.
+ *
+ * @example
+ * hookedView(hooks, ["cache-control", "public"]).get("Cache-Control");
+ */
+export function hookedView(hooks: readonly HeaderHook[], head: string[]): ResponseHeaders {
+	const view = listView(head);
 	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
 	for (let index = hooks.length - 1; index >= 0; index -= 1) {
 		try {
@@ -206,4 +247,23 @@ export function hookedHeaders(context: Context<AppServerEnv>, headers: Headers):
 		}
 	}
 	return view;
+}
+
+/**
+ * A view of `headers` after the header hook of each stage that the request
+ * passed. Why: a stage that picks a body by a header, such as
+ * `Cache-Control: no-transform`, must see the value that a hook sets where
+ * the response leaves. So a hook can run more than once. Why a view: the
+ * hooks change only the view, so `headers` needs no copy. With no hook from
+ * {@link withHeaderHook}, it gives `headers` and runs no hook.
+ *
+ * @example
+ * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));
+ */
+export function hookedHeaders(
+	context: Context<AppServerEnv>,
+	headers: Headers,
+): Pick<ResponseHeaders, "get" | "has"> {
+	const hooks = bodyHooks(context);
+	return hooks == null ? headers : hookedView(hooks, headerList(headers));
 }

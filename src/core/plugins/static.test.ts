@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
-import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
 import { createEntry } from "../entry.js";
@@ -13,6 +13,8 @@ import { withHeaderHook } from "../header-hook.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { handler, host as vercelHost } from "../../vercel/index.js";
+import { buildId } from "./build-id.js";
+import { requestId } from "./request-id.js";
 import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
@@ -805,6 +807,40 @@ describe("compressed copies from the build", () => {
 			copied.headers.get("Cache-Control"),
 			copied.headers.get("Content-Encoding"),
 		]).toStrictEqual(["public, max-age=60", "br"]);
+	});
+
+	it("lets an app hook mark no-transform by a header that a built-in hook sets", async () => {
+		const byRequestId: Plugin = {
+			name: "by-request-id",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					if (response.has("X-Request-Id")) {
+						response.set("Cache-Control", "public, no-transform");
+					}
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [byRequestId, requestId(), prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+	});
+
+	it("calls the paths of buildId one time for a file with a copy", async () => {
+		const paths = vi.fn<(path: string) => boolean>(() => false);
+		const { request } = await testServer({
+			plugins: [buildId({ value: "b1", paths }), prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Content-Encoding")).toBe("br");
+		expect(paths).toHaveBeenCalledTimes(1);
 	});
 
 	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {

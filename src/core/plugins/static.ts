@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { getPath } from "hono/utils/url";
 import { manifestKey } from "../build-manifest.js";
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { optionPlugin } from "../plugin-options.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
@@ -222,7 +222,7 @@ async function noLaterStage(): Promise<void> {}
 async function negotiate(context: Context<AppServerEnv>, twinPath?: string): Promise<void> {
 	const link =
 		twinPath == null ? undefined : `<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`;
-	await withHeaderHook(context, noLaterStage, (headers) => {
+	await withBuiltInHeaderHook(context, noLaterStage, (headers) => {
 		const vary = withVary(headers.get("Vary"), "Accept");
 		if (vary != null) {
 			headers.set("Vary", vary);

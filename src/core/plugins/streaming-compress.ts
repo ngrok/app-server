@@ -6,7 +6,7 @@ import {
 	readIfQueued,
 } from "../compression.js";
 import type { Encoding, ReadResult } from "../compression.js";
-import { hookedHeaders, replaceResponse, withHeaderHook } from "../header-hook.js";
+import { hookedHeaders, replaceResponse, withBuiltInHeaderHook } from "../header-hook.js";
 import type { CompressStream, Plugin, ResponseHeaders } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -204,7 +204,7 @@ export function streamingCompress(): Plugin {
 			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
 			// not compress then needs no copy for it.
 			let compressing = false;
-			await withHeaderHook(context, next, (headers) => {
+			await withBuiltInHeaderHook(context, next, (headers) => {
 				// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
 				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
 				const type = headers.get("Content-Type");

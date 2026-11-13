@@ -2,8 +2,8 @@ import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
 import { COPY_ENCODINGS, copyPath, forbidsTransform, preferredEncoding } from "./compression.js";
 import type { Encoding } from "./compression.js";
-import { listView } from "./header-hook.js";
-import type { AppServerEnv, ByteRange, ResponseHeaders, StaticFiles } from "./types.js";
+import { bodyHooks, hookedView } from "./header-hook.js";
+import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
 /** A file under the client build that answers a request. */
@@ -323,26 +323,20 @@ function fileHead(type: string, layers: StaticResponseOptions["headers"]): Head 
 }
 
 /**
- * A view of `head` after the header hook of each stage that the request
- * passed, as `hookedHeaders` gives for the headers of a response. The hooks
- * change only the view.
+ * The `Cache-Control` of `head` where the response leaves: after the header
+ * hook of each stage that the request passed, when one of them can change
+ * the body that the stage picks. The hooks change only a copy of `head`.
  */
-function hookedHead(context: Context<AppServerEnv>, head: Head): ResponseHeaders {
+function sentCacheControl(context: Context<AppServerEnv>, head: Head): string | null {
+	const hooks = bodyHooks(context);
+	if (hooks == null) {
+		return head.get("cache-control") ?? null;
+	}
 	const list: string[] = [];
 	for (const [name, value] of head) {
 		list.push(name, value);
 	}
-	const view = listView(list);
-	const hooks = context.get("headerHooks") ?? [];
-	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
-	for (let index = hooks.length - 1; index >= 0; index -= 1) {
-		try {
-			hooks[index]?.(view);
-		} catch {
-			// Why drop it: the run where the response leaves answers the error, and logs it once.
-		}
-	}
-	return view;
+	return hookedView(hooks, list).get("Cache-Control");
 }
 
 /**
@@ -374,7 +368,7 @@ async function preferredCopy(
 	if (vary != null) {
 		head.set("vary", vary);
 	}
-	if (forbidsTransform(hookedHead(context, head).get("Cache-Control"))) {
+	if (forbidsTransform(sentCacheControl(context, head))) {
 		return undefined;
 	}
 	const encoding = preferredEncoding(

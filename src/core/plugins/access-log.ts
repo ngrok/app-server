@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { asError } from "../log.js";
 import { optionPlugin } from "../plugin-options.js";
 import { onResponseSent } from "../response-edge.js";
@@ -97,16 +97,17 @@ export function accessLog({
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
-			let clientLeft = false;
-			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
-			// There it reads the time for the header, and whether the client left before the answer. Why
-			// not later: the Node.js listener also aborts the signal when a body fails after the head.
-			await withHeaderHook(context, next, (headers) => {
-				clientLeft = context.req.raw.signal.aborted;
-				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
-					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
-				}
-			});
+			// Why a hook: it runs when the head is ready, which is the time that the header gives.
+			await (serverTiming
+				? withBuiltInHeaderHook(context, next, (headers) => {
+						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
+							headers.append(
+								"Server-Timing",
+								`app;dur=${(performance.now() - started).toFixed(1)}`,
+							);
+						}
+					})
+				: next());
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;

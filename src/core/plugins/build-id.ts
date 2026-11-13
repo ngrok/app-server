@@ -1,4 +1,4 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { checkHeaderName, checkHeaderValue, optionPlugin } from "../plugin-options.js";
 import type { Plugin, ResponseHeaders, SetupInfo } from "../types.js";
 
@@ -141,7 +141,7 @@ export function buildId({
 		etagPart: () => value,
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) =>
-			withHeaderHook(context, next, (response) => {
+			withBuiltInHeaderHook(context, next, (response) => {
 				const { path } = context.req;
 				const isRouter =
 					(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);

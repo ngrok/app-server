@@ -1,4 +1,4 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { checkHeaderName, optionPlugin, presenceHeaders } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 import { withVary } from "../vary.js";
@@ -36,7 +36,7 @@ export function noindex(options?: NoindexOptions): Plugin {
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
 			const hidden = unlessHeader == null || context.req.header(unlessHeader) == null;
-			return withHeaderHook(context, next, (response) => {
+			return withBuiltInHeaderHook(context, next, (response) => {
 				if (hidden) {
 					response.set("X-Robots-Tag", "noindex, nofollow");
 				}
