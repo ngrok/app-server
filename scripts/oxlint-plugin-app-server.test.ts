@@ -124,11 +124,14 @@ describe.each([
 			"function flagRow(label: string, enabled: boolean) {}",
 			"const toggle = (value: string, force?: boolean | undefined) => value;",
 			"function flagRow(label: string, enabled: boolean = false) {}",
+			"class Edge { close(status: number, aborted: boolean) {} }",
 		],
 		valid: [
 			"function flagRow({ label, enabled }: { label: string; enabled: boolean }) {}",
 			"function onOpenChange(id: string, open: boolean) {}",
 			"function setEnabled(enabled: boolean) {}",
+			"class Edge { close({ status, aborted }: { status: number; aborted: boolean }) {} }",
+			"class Menu { onOpenChange(id: string, open: boolean) {} }",
 		],
 	},
 	{

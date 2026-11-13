@@ -170,11 +170,20 @@ export class ResponseEdge {
 	}
 
 	/**
-	 * Reports what went out, once: the status and the headers that the
-	 * listener sent, the bytes, and whether the body stopped before its end.
-	 * `head` is the flat list that the listener gave `writeHead`.
+	 * Reports what went out, once: `status`, the headers that the listener
+	 * sent, the bytes, and `aborted`, which says whether the body stopped
+	 * before its end. `head` is the flat list that the listener gave
+	 * `writeHead`.
 	 */
-	public close(status: number, aborted: boolean, head: string[]): void {
+	public close({
+		status,
+		aborted,
+		head,
+	}: {
+		status: number;
+		aborted: boolean;
+		head: string[];
+	}): void {
 		if (this.#sent != null) {
 			return;
 		}

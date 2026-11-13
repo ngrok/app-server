@@ -235,13 +235,13 @@ async function writeResponse(
 		// Why: the dev server stage answered through Node's response, and gave its status and length.
 		// Node sends no body for HEAD.
 		edge.bytes = sendsBody ? Number(response.headers.get("content-length") ?? 0) : 0;
-		edge.close(status, false, sentHead(outgoing));
+		edge.close({ status, aborted: false, head: sentHead(outgoing) });
 		return;
 	}
 	// Why one list: `writeBody` adds the headers that it sets, so the report gets the head that went out.
 	let head = edge.headersFor(response) ?? headerList(response.headers);
 	if (outgoing.destroyed) {
-		edge.close(status, true, head);
+		edge.close({ status, aborted: true, head });
 		await body?.cancel().catch(() => {});
 		return;
 	}
@@ -249,7 +249,7 @@ async function writeResponse(
 	// Why one listener: it reports what went out and stops the body that the client no longer reads.
 	// Why `on`: a response emits `close` once, and `once` adds a wrapper for each request.
 	outgoing.on("close", () => {
-		edge.close(status, !outgoing.writableFinished, head);
+		edge.close({ status, aborted: !outgoing.writableFinished, head });
 		reader?.cancel().catch(() => {});
 	});
 	try {
@@ -405,7 +405,7 @@ function listenerOf(
 				response = await answer(request, { remoteAddress, incoming, outgoing, edge });
 			} catch (error) {
 				// Why 500 with no headers: `@hono/node-server` answers a failed request with one.
-				edge.close(500, false, []);
+				edge.close({ status: 500, aborted: false, head: [] });
 				throw error;
 			}
 			// Why here and not when the request comes: the head of a request that was in flight

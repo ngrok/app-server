@@ -1253,7 +1253,7 @@ describe("the pipeline", () => {
 			);
 			const head = edge.headersFor(response) ?? [];
 			const text = await response.text();
-			edge.close(response.status, false, head);
+			edge.close({ status: response.status, aborted: false, head });
 
 			expect([response.status, text]).toStrictEqual([500, "Internal Server Error"]);
 			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
@@ -1367,7 +1367,7 @@ describe("the pipeline", () => {
 			);
 			const head = edge.headersFor(response) ?? [];
 			const text = await response.text();
-			edge.close(response.status, false, head);
+			edge.close({ status: response.status, aborted: false, head });
 
 			expect([response.status, text]).toStrictEqual([500, "Internal Server Error"]);
 			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
@@ -1651,7 +1651,7 @@ describe("the pipeline", () => {
 			);
 			const head = edge.headersFor(response) ?? [];
 			const text = await response.text();
-			edge.close(response.status, false, head);
+			edge.close({ status: response.status, aborted: false, head });
 
 			expect([response.status, text]).toStrictEqual(answer);
 			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
