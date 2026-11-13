@@ -1,6 +1,6 @@
 import { Agent, get } from "node:http";
 import type { IncomingMessage } from "node:http";
-import { text } from "node:stream/consumers";
+import { buffer, text } from "node:stream/consumers";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { heldStream } from "../test-server.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
@@ -107,5 +107,19 @@ describe("tcp", () => {
 
 		expect(performance.now() - begin).toBeLessThan(DEADLINE_MS / 2);
 		await expect(text(response)).resolves.toBe("first,rest");
+	});
+
+	it("sends a large body whole when the drain begins while its bytes still go out", async () => {
+		// Why 32 MiB: the socket buffers of the client and the server hold less, so the rest waits in Node.
+		const body = new Uint8Array(32 * 1024 * 1024);
+		const started = await tcp({ port: 0, host: "127.0.0.1" }).start(async () => new Response(body));
+		// Why no read yet: the client then takes no more bytes than its buffers hold.
+		const response = await request(started.url);
+
+		const stopped = started.stop({ deadlineMs: 30_000 });
+		const received = await buffer(response);
+		await stopped;
+
+		expect(received.byteLength).toBe(body.byteLength);
 	});
 });

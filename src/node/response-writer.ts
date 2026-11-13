@@ -160,19 +160,27 @@ async function writeBody(
 		} else if (index !== -1 && Number(head[index + 1]) !== ahead.size) {
 			throw new Error("The body does not match its Content-Length.");
 		}
-		outgoing.writeHead(status, head);
-		outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
-		edge.bytes += ahead.size;
-		return;
+		// Why only a small body: Node counts a response as done from `end()`, and a server that
+		// stops closes the connection of a done response, with the bytes that its socket still holds.
+		if (ahead.size < outgoing.writableHighWaterMark) {
+			outgoing.writeHead(status, head);
+			outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
+			edge.bytes += ahead.size;
+			return;
+		}
 	}
 	outgoing.writeHead(status, head);
+	let flowing = true;
 	for (const chunk of ahead.chunks) {
-		outgoing.write(chunk);
+		flowing = outgoing.write(chunk);
 		edge.bytes += chunk.byteLength;
 	}
 	if (ahead.chunks.length === 0) {
 		// Why: the client gets the head at once, such as the open of an event stream.
 		outgoing.flushHeaders();
+	}
+	if (!flowing) {
+		await drained(outgoing);
 	}
 	await pump(reader, ahead.pending ?? reader.read(), { outgoing, edge });
 }
@@ -188,6 +196,9 @@ async function writeBody(
  *   is the exception: zlib finishes it soon, so the head waits for it.
  * - It reads the next chunk only when Node takes the last one, and it cancels
  *   the body when the socket closes.
+ * - It ends the response only after the socket takes each write that was at
+ *   or over its high-water mark, so a server that stops does not cut a large
+ *   body that still goes out.
  * - When a step fails before the head goes out, such as a body that fails or
  *   a header that Node rejects, a 500 goes out. After the head, a failure or
  *   a body that does not match its `Content-Length` destroys the socket, so
