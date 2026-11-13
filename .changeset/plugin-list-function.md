@@ -62,6 +62,16 @@ defaultPlugins({ beforeStatic: [loadAuth()] });
 defaultPlugins({ beforeStatic: [await loadAuth()] });
 ```
 
+Breaking change: a function with a `middleware` field of its own now stops startup, as each function does. So does an object with a `then` function, which the server takes as a promise. Before, the server ran the `middleware` of both. Give the plugin as an object with no `then` field.
+
+```ts
+// Before
+const auth = Object.assign(() => {}, { middleware: basicAuth({ username, password }) });
+
+// After
+const auth = { name: "auth", middleware: basicAuth({ username, password }) };
+```
+
 Breaking change for TypeScript: the `Plugin` type has a new `call?: never` field, which a function cannot meet. So the compiler also rejects a plugin object that has a `call` field. Give that field another name.
 
 A `plugins` option that is not a list, such as `defaultPlugins` with no call, stopped startup before too. Its error now names the fix.
