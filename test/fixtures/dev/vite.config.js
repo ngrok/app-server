@@ -57,6 +57,12 @@ export default {
 						const urls = server.resolvedUrls?.local;
 						process.stdout.write(`${JSON.stringify({ message: "resolved URLs", urls })}\n`);
 					});
+					// Why: the check restarts Vite, as an edit to this file does, and reads the URLs after it.
+					server.middlewares.use("/restart", (_request, response) => {
+						void server.restart().then(() => {
+							response.end(JSON.stringify(server.resolvedUrls?.local ?? null));
+						});
+					});
 				},
 			},
 		},

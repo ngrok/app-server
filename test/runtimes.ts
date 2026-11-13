@@ -453,6 +453,11 @@ async function checkStart(): Promise<void> {
 			async () => lines.some((line) => line.message === "browser opened" && line.url === base),
 			"`start` opens the browser for `server.open`",
 		);
+		assert.deepEqual(
+			await (await fetch(new URL("/restart", base))).json(),
+			[base],
+			"a Vite plugin reads `server.resolvedUrls` after a Vite restart",
+		);
 		// Why: the `exit` event can come before the last stdout line.
 		const stdoutEnded = new Promise<void>((resolve) => {
 			child.stdout.once("end", resolve);
@@ -463,8 +468,8 @@ async function checkStart(): Promise<void> {
 		await stdoutEnded;
 		assert.deepEqual(
 			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
-			["vite plugin saw listening", "vite plugin saw close"],
-			"a Vite plugin gets the HTTP server's events",
+			["vite plugin saw listening", "vite plugin saw close", "vite plugin saw close"],
+			"a Vite plugin gets the HTTP server's events, and its instance from the Vite restart gets `close` too",
 		);
 		assert.deepEqual(
 			lines.filter((line) => line.message === "resolved URLs").map((line) => line.urls),
