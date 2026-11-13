@@ -580,12 +580,21 @@ A proxy route on this server forwards a request from the browser to the app's AP
 
 ```ts
 // server.ts
+import { proxy } from "hono/proxy";
+
 const app = createServer({
 	plugins: defaultPlugins({ buildId: { paths: (path) => path.startsWith("/api/") } }),
 });
+app.all("/api/*", (c) => {
+	const { pathname, search } = new URL(c.req.url);
+	return proxy(`${process.env.API_URL}${pathname}${search}`, c.req.raw);
+});
+export default app;
 ```
 
-- The proxy route does not change. It can be a Hono route in `server.ts` or a React Router resource route.
+- Write the route with `proxy()` from `hono/proxy`, not with a plain `return fetch(url)`. `fetch` decodes the body, but it keeps the `Content-Encoding` and the `Content-Length` of the encoded bytes. The browser then gets a response that it cannot read. `proxy()` removes both headers, and `streamingCompress()` encodes the body for the client.
+- The route can also be a React Router resource route. Its loader and its action return the same call: `proxy(url, request)`.
+- `proxy()` sends each request header to the API, cookies and `Authorization` included. Use this form only for the app's own API. On Bun, the API also gets the `Host` header of the browser. On Node.js and Deno, it gets its own host.
 - Each query and mutation through the route now tells the tab about a new build, so a tab finds a deploy at its next request, and moves to the new build at its next navigation.
 - The tab never reloads the page that the visitor reads. A query that finds a new build only marks the tab.
 - The response carries the build in `Server-Timing` only, with no `X-Build-Id`. The client reads it from resource timing, so a fetch client that keeps its own copy of `fetch` still reports the build. `staleBuildTanStack()` also reads it from each `fetch` response, so a loader that gets the new build's data in a navigation loads the page as a document.
