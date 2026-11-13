@@ -101,10 +101,20 @@ async function checkPort(runtime: string): Promise<void> {
 			stderr: "ignore",
 		});
 		busy.url.catch(() => {});
+		// Why: the `exit` event can come before the last stdout line.
+		const stdoutEnded = new Promise<void>((resolve) => {
+			busy.child.stdout.once("end", resolve);
+		});
 		assert.notEqual(
 			await exited(busy.child, 5_000),
 			0,
 			"`serve` stops at once when its port is in use",
+		);
+		await stdoutEnded;
+		assert.deepEqual(
+			busy.lines.filter((line) => line.level === "error").map((line) => line.message),
+			["startup failed"],
+			"a failed start writes one error line to the log",
 		);
 	} finally {
 		await close(held.server);

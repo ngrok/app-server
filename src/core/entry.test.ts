@@ -474,6 +474,53 @@ describe("createEntry", () => {
 		await expect(entry.start()).rejects.toThrow("has no listener");
 	});
 
+	it("logs one error line when a setup stops the start", async () => {
+		const lines: string[] = [];
+		const entry = createEntry({
+			app: createServer({
+				plugins: [
+					{
+						name: "remote-config",
+						setup: () => {
+							throw new Error("config server down");
+						},
+					},
+				],
+				logger: recordingLogger(lines),
+			}),
+			host: testHost().host,
+			clientDirectory,
+			framework: () => stubFramework(),
+		});
+
+		await expect(entry.start()).rejects.toThrow("config server down");
+		expect(lines).toStrictEqual([expect.stringMatching(/^startup failed .*config server down/u)]);
+	});
+
+	it("logs one error line when a listener stops the start", async () => {
+		const lines: string[] = [];
+		const entry = createEntry({
+			app: createServer({ plugins: [], logger: recordingLogger(lines) }),
+			host: {
+				...nodeHost,
+				listeners: () => [
+					{
+						name: "taken",
+						start: async () => {
+							throw new Error("address in use");
+						},
+					},
+				],
+				lifecycle: { onStop: () => {} },
+			},
+			clientDirectory,
+			framework: () => stubFramework(),
+		});
+
+		await expect(entry.start()).rejects.toThrow("address in use");
+		expect(lines).toStrictEqual([expect.stringMatching(/^startup failed .*address in use/u)]);
+	});
+
 	it("names the adapter when no client directory is known", async () => {
 		const { host } = testHost();
 		const entry = createEntry({

@@ -3,7 +3,7 @@ import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { ENTRY_PROTOCOL } from "./entry-protocol.js";
-import { asError, sinkLogger } from "./log.js";
+import { asError, flushLogs, sinkLogger } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { staticPages } from "./static-pages.js";
 import type { StaticPage } from "./static-pages.js";
@@ -179,8 +179,19 @@ export function createEntry({
 		protocol: ENTRY_PROTOCOL,
 		app,
 		start: async () => {
-			const runtime = await production();
-			const server = await internals.listen(runtime, host.listeners);
+			const server = await production()
+				.then(async (runtime) => internals.listen(runtime, host.listeners))
+				.catch((error: unknown) => {
+					internals.logger.log({
+						level: "error",
+						message: "startup failed",
+						attributes: { error: asError(error) },
+					});
+					// Why flush: the caller's top-level `await` rejects next. On Deno, the process then
+					// ends with no `exit` event, so a line that waits for the next turn is lost.
+					flushLogs();
+					throw error;
+				});
 			host.lifecycle?.onStop(async () =>
 				server.shutdown().catch((error: unknown) => {
 					internals.logger.log({
