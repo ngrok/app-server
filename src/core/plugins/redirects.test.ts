@@ -15,9 +15,11 @@ async function redirected(rules: RedirectRule[], path: string, init?: RequestIni
  * Why: Deno gives the request target as the client sent it, and
  * `new Request` parses it.
  */
-async function redirectedAsSent(rules: RedirectRule[], url: string) {
+async function redirectedAsSent(rules: RedirectRule[], url: string, init?: RequestInit) {
 	const { app, framework } = await testServer({ plugins: [redirects(rules)] });
-	const request = Object.defineProperty(new Request("http://localhost/"), "url", { value: url });
+	const request = Object.defineProperty(new Request("http://localhost/", init), "url", {
+		value: url,
+	});
 	const response = await app.fetch(request, { framework });
 	return { status: response.status, location: response.headers.get("Location") };
 }
@@ -194,11 +196,17 @@ describe("redirects", () => {
 	});
 
 	it("goes on for a path with no rule when the request URL does not parse", async () => {
-		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header, and a request
-		// that matches no rule must not fail on it.
-		await expect(
-			redirectedAsSent([{ from: "/old", to: "/new" }], "http://1.2.3.4.5/other"),
-		).resolves.toStrictEqual({ status: 200, location: null });
+		const rules: RedirectRule[] = [{ from: "/old", to: "/new" }];
+		const noRedirect = { status: 200, location: null };
+
+		// Why: Node.js, Bun, and Deno give such a URL for a `Host: 1.2.3.4.5` header, and Bun and Deno
+		// give it also with an escape in the query. A request that matches no rule must not fail on it.
+		for (const url of ["http://1.2.3.4.5/other", "http://1.2.3.4.5/other?next=%2Fold"]) {
+			await expect(redirectedAsSent(rules, url)).resolves.toStrictEqual(noRedirect);
+			await expect(redirectedAsSent(rules, url, { method: "HEAD" })).resolves.toStrictEqual(
+				noRedirect,
+			);
+		}
 	});
 
 	it("goes on for a path with no rule when a URL parse takes a path with a rule from the Host header", async () => {
