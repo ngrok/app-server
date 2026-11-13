@@ -204,6 +204,22 @@ describe("textSink", () => {
 		]);
 	});
 
+	it("writes no field for undefined, as jsonSink does, and writes null", () => {
+		const lines: string[] = [];
+
+		textSink((line) => {
+			lines.push(line);
+		}).log({
+			level: "info",
+			message: "request",
+			attributes: { "http.referer": undefined, "usr.id": null, "http.status_code": 200 },
+		});
+
+		expect(lines).toStrictEqual([
+			expect.stringMatching(/ msg=request usr\.id=null http\.status_code=200\n$/u),
+		]);
+	});
+
 	it("writes a bigint as a string", () => {
 		const lines: string[] = [];
 

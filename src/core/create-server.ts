@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import type { ErrorHandler, HTTPResponseError } from "hono/types";
-import { asError, hookSink, jsonSink, requestLogger } from "./log.js";
+import { asError, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
@@ -301,7 +301,10 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 export type CreateServerOptions = {
 	/** @default defaultPlugins() */
 	plugins?: readonly Plugin[];
-	/** @default jsonSink() */
+	/**
+	 * @default jsonSink(). In `app-server start`, the default writes the text format of the CLI's
+	 * lines, because a person reads those lines.
+	 */
 	logger?: LogSink;
 	/**
 	 * Hooks that change each log line of the server and of `logger()`, such
@@ -423,7 +426,7 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  */
 export function createServer({
 	plugins = defaultPlugins(),
-	logger: sink = jsonSink(),
+	logger: appSink,
 	log,
 	listeners,
 	trustForwardedProto = false,
@@ -436,6 +439,7 @@ export function createServer({
 	checkCount("trustedProxyHops", trustedProxyHops);
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
+	const sink = appSink ?? jsonSink();
 	const logger = hookSink(sink, log);
 	setProcessSink(logger);
 	const app = new Hono<AppServerEnv>();
@@ -563,6 +567,11 @@ export function createServer({
 		},
 		prepare: async (info) => {
 			prepared ??= (async () => {
+				// Why: a person reads the lines of `app-server start`, so the default sink writes text
+				// there, as the CLI's own lines do. An app's own sink does not change.
+				if (appSink == null && info.mode === "development") {
+					sink.log = textSink().log;
+				}
 				for (const plugin of plugins) {
 					await plugin.setup?.(info);
 				}

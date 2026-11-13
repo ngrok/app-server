@@ -89,14 +89,15 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
  * A log sink that writes one line of `key=value` pairs per event, in the text
  * format of Go's `log/slog`. A value with a space, a quote, `=`, or a control
  * character is quoted, so an escape sequence cannot reach the terminal.
- * `app-server start` uses it, because a person reads those lines.
+ * `app-server start` uses it, and so does the default sink of `createServer`
+ * in development, because a person reads those lines.
  *
  * @param write - Where each line goes. Defaults to stdout, at once. Why not
  * one write for each turn: the lines then keep their order with Vite's lines.
  *
  * @example
- * textSink().log({ level: "info", message: "port in use, trying the next port", attributes: { "server.port": 3000 } });
- * // time=2026-11-11T12:00:00.000Z level=INFO msg="port in use, trying the next port" server.port=3000
+ * textSink().log({ level: "error", message: "dev request failed", attributes: { "error.kind": "TypeError" } });
+ * // time=2026-11-11T12:00:00.000Z level=ERROR msg="dev request failed" error.kind=TypeError
  */
 export function textSink(
 	write: (line: string) => void = (line) => {
@@ -107,7 +108,11 @@ export function textSink(
 		log: ({ level, message, attributes }) => {
 			let line = `time=${isoNow()} level=${level.toUpperCase()} msg=${textValue(message)}`;
 			for (const [key, value] of Object.entries(attributes)) {
-				line += ` ${key}=${textValue(value)}`;
+				// Why skip it: `jsonSink()` writes no field for `undefined`, and a `log` hook removes a field with it.
+				// oxlint-disable-next-line app-server/prefer-null-check -- `null` is a value, and the line shows it.
+				if (value !== undefined) {
+					line += ` ${key}=${textValue(value)}`;
+				}
 			}
 			write(`${line}\n`);
 		},

@@ -7,6 +7,8 @@ import { renderedFramework, stubFramework } from "../test-server.js";
 import type { AppServer } from "./create-server.js";
 import { createServer } from "./create-server.js";
 import { createEntry } from "./entry.js";
+import { flushLogs } from "./log.js";
+import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
 import { prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
@@ -81,6 +83,54 @@ describe("createEntry", () => {
 		);
 
 		await expect(response.text()).resolves.toBe("rendered");
+	});
+
+	it("writes the lines of the default sink as text in development, and as JSON in production", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const written = () => write.mock.calls.map(([line]) => String(line));
+		const entry = () =>
+			createEntry({
+				app: createServer({ plugins: [accessLog()] }),
+				host: testHost().host,
+				clientDirectory,
+				framework: () => stubFramework(),
+			});
+
+		const page = await entry().fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
+			next(),
+		);
+		await page.text();
+
+		expect(written()).toStrictEqual([
+			expect.stringMatching(/^time=\S+ level=INFO msg=request .*http\.status_code=200/u),
+		]);
+
+		write.mockClear();
+		const built = await entry().fetch(new Request("http://localhost/about"), {});
+		await built.text();
+		flushLogs();
+
+		expect(written().map((line): unknown => JSON.parse(line))).toStrictEqual([
+			expect.objectContaining({ level: "info", message: "request", "http.status_code": 200 }),
+		]);
+	});
+
+	it("gives each development line to the app's own sink", async () => {
+		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		const lines: string[] = [];
+		const entry = createEntry({
+			app: createServer({ plugins: [accessLog()], logger: recordingLogger(lines) }),
+			host: nodeHost,
+			framework: () => stubFramework(),
+		});
+
+		const page = await entry.fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
+			next(),
+		);
+		await page.text();
+
+		expect(lines).toStrictEqual([expect.stringMatching(/^request /u)]);
+		expect(write).not.toHaveBeenCalled();
 	});
 
 	it("in development, gives a twin when the framework does not know the prerendered paths", async () => {
