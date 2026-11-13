@@ -149,6 +149,16 @@ describe("buildId", () => {
 		]);
 	});
 
+	it("removes a Server-Timing that holds only the build of an upstream API", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42" })],
+			render: async () =>
+				Response.json({}, { headers: { "Server-Timing": 'build;desc="api-v7"' } }),
+		});
+
+		expect((await request("/status.json")).headers.get("Server-Timing")).toBeNull();
+	});
+
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {
 		const serve = async (value: string) =>
 			testServer({ plugins: [buildId({ value }), prerendered()], clientDirectory });
