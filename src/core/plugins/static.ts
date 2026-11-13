@@ -9,7 +9,8 @@ import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
 
-const IMMUTABLE = "public, max-age=31536000, immutable";
+/** The headers of a hashed asset. Why one list for all responses: `staticResponse` only reads it. */
+const ASSET_HEADERS = [{ "Cache-Control": "public, max-age=31536000, immutable" }];
 
 /** The requests that the dev server answered. */
 const devServerAnswers = new WeakSet<Context<AppServerEnv>>();
@@ -68,12 +69,7 @@ export function assets(): Plugin {
 					// Why `no-store`: an old tab asks for the chunks of the build it runs, and a CDN must not keep the miss.
 					return context.text("Not Found", 404, { "Cache-Control": "no-store" });
 				}
-				return staticResponse(context, {
-					files,
-					file,
-					headers: { "Cache-Control": IMMUTABLE },
-					contentTypes,
-				});
+				return staticResponse(context, { files, file, headers: ASSET_HEADERS, contentTypes });
 			};
 		},
 		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
@@ -350,20 +346,14 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				context.env.onServedFile?.(file.path);
 				const value = cacheControl(file.path);
-				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });
-				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.
-				for (const layer of [
-					capturedHeaders.get(manifestKey(path)),
-					options.headers?.({ path, context }),
-				]) {
-					for (const [name, layerValue] of Object.entries(layer ?? {})) {
-						headers.set(name, layerValue);
-					}
-				}
 				return staticResponse(context, {
 					files,
 					file,
-					headers: Object.fromEntries(headers),
+					headers: [
+						value == null ? undefined : { "Cache-Control": value },
+						capturedHeaders.get(manifestKey(path)),
+						options.headers?.({ path, context }),
+					],
 					contentTypes,
 				});
 			};

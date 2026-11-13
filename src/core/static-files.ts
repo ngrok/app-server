@@ -2,8 +2,8 @@ import type { Context } from "hono";
 import { getMimeType } from "hono/utils/mime";
 import { COPY_ENCODINGS, copyPath, forbidsTransform, preferredEncoding } from "./compression.js";
 import type { Encoding } from "./compression.js";
-import { hookedHeaders } from "./header-hook.js";
-import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
+import { listView } from "./header-hook.js";
+import type { AppServerEnv, ByteRange, ResponseHeaders, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
 /** A file under the client build that answers a request. */
@@ -291,19 +291,74 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 type Copy = StaticFile & { encoding: Encoding };
 
 /**
+ * The headers of a static response by lowercase name, until the response is
+ * made. Why not `Headers`: each call on one checks and converts its
+ * arguments, and a response copies the `Headers` that it gets.
+ */
+type Head = Map<string, string>;
+
+/**
+ * `value` as `Headers` keeps it. Why `Headers` only for a value with white
+ * space at its ends, or one that is not a string: it removes only the HTTP
+ * white space, converts the value, and throws for one that is not valid.
+ */
+function headerValue(name: string, value: unknown): string {
+	return typeof value === "string" && value.trim() === value
+		? value
+		: (new Headers([[name, String(value)]]).get(name) ?? "");
+}
+
+/**
+ * The headers of a file: its content type, then each record of `layers`. A
+ * later header replaces an earlier one, and a name matches in any case.
+ */
+function fileHead(type: string, layers: StaticResponseOptions["headers"]): Head {
+	const head: Head = new Map([["content-type", type]]);
+	for (const layer of layers) {
+		for (const [name, value] of Object.entries(layer ?? {})) {
+			head.set(name.toLowerCase(), headerValue(name, value));
+		}
+	}
+	return head;
+}
+
+/**
+ * A view of `head` after the header hook of each stage that the request
+ * passed, as `hookedHeaders` gives for the headers of a response. The hooks
+ * change only the view.
+ */
+function hookedHead(context: Context<AppServerEnv>, head: Head): ResponseHeaders {
+	const list: string[] = [];
+	for (const [name, value] of head) {
+		list.push(name, value);
+	}
+	const view = listView(list);
+	const hooks = context.get("headerHooks") ?? [];
+	// Why reversed: the hook of an inner stage runs first, so an outer stage has the last word.
+	for (let index = hooks.length - 1; index >= 0; index -= 1) {
+		try {
+			hooks[index]?.(view);
+		} catch {
+			// Why drop it: the run where the response leaves answers the error, and logs it once.
+		}
+	}
+	return view;
+}
+
+/**
  * The copy of the file at `path` that the request prefers, from the copies
  * that the build wrote. When a copy exists, it adds `Accept-Encoding` to the
- * `Vary` in `headers`, also for a request that gets no copy.
+ * `Vary` in `head`, also for a request that gets no copy.
  */
 async function preferredCopy(
 	context: Context<AppServerEnv>,
-	{ files, path, headers }: { files: StaticFiles; path: string; headers: Headers },
+	{ files, path, head }: { files: StaticFiles; path: string; head: Head },
 ): Promise<Copy | undefined> {
 	// Why not for an encoded file: the copy would encode it again, under one `Content-Encoding`.
 	if (
-		headers.has("Content-Encoding") ||
+		head.has("content-encoding") ||
 		(context.get("rewritesHtml") === true &&
-			(headers.get("Content-Type")?.startsWith("text/html") ?? false))
+			(head.get("content-type")?.startsWith("text/html") ?? false))
 	) {
 		return undefined;
 	}
@@ -319,11 +374,11 @@ async function preferredCopy(
 	if (copies.length === 0) {
 		return undefined;
 	}
-	const vary = withVary(headers.get("Vary"), "Accept-Encoding");
+	const vary = withVary(head.get("vary") ?? null, "Accept-Encoding");
 	if (vary != null) {
-		headers.set("Vary", vary);
+		head.set("vary", vary);
 	}
-	if (forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"))) {
+	if (forbidsTransform(hookedHead(context, head).get("Cache-Control"))) {
 		return undefined;
 	}
 	const encoding = preferredEncoding(
@@ -345,12 +400,29 @@ async function wholeFile(
 	return file.size === 0 ? null : files.open(file.path, { start: 0, end: file.size - 1 });
 }
 
+/**
+ * A response with the headers of `head`. Why not a `headers` option: the
+ * response converts and copies it, which costs about 30% more for six
+ * headers than a `set` for each.
+ */
+function respond(body: ReadableStream<Uint8Array> | null, status: number, head: Head): Response {
+	const response = new Response(body, { status });
+	for (const [name, value] of head) {
+		response.headers.set(name, value);
+	}
+	return response;
+}
+
 /** What {@link staticResponse} needs besides the request. */
 export type StaticResponseOptions = {
 	files: StaticFiles;
 	file: StaticFile;
-	/** Headers that replace the defaults, so a captured `Content-Type` wins over the one from the file name. */
-	headers: Readonly<Record<string, string>>;
+	/**
+	 * Headers that replace the defaults, so a captured `Content-Type` wins
+	 * over the one from the file name. A later record replaces an earlier one,
+	 * and a name matches in any case.
+	 */
+	headers: readonly (Readonly<Record<string, string>> | undefined)[];
 	contentTypes: Readonly<Record<string, string>>;
 };
 
@@ -375,51 +447,47 @@ export type StaticResponseOptions = {
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
  * if (file != null) {
- *   return staticResponse(context, { files, file, headers: {}, contentTypes: {} });
+ *   return staticResponse(context, { files, file, headers: [], contentTypes: {} });
  * }
  */
 export async function staticResponse(
 	context: Context<AppServerEnv>,
 	{ files, file, headers, contentTypes }: StaticResponseOptions,
 ): Promise<Response> {
-	const responseHeaders = new Headers({ "Content-Type": contentType(file.path, contentTypes) });
-	for (const [name, value] of Object.entries(headers)) {
-		responseHeaders.set(name, value);
-	}
+	const head = fileHead(contentType(file.path, contentTypes), headers);
 	// Why no ranges for HTML: a stage such as `runtimeEnv` can change the bytes of a page.
-	const html = responseHeaders.get("Content-Type")?.startsWith("text/html") ?? false;
+	const html = head.get("content-type")?.startsWith("text/html") ?? false;
 	if (html) {
 		context.set("staticDocument", file.path);
 	}
 	// Why before the 304: a 304 sends the `Vary` and the ETag of its 200.
-	const copy = await preferredCopy(context, { files, path: file.path, headers: responseHeaders });
+	const copy = await preferredCopy(context, { files, path: file.path, head });
 	// Why the header first: `headers` can replace the ETag.
-	let etag = responseHeaders.get("ETag");
+	let etag = head.get("etag");
 	if (etag == null) {
 		const parts = context.get("etagParts") ?? [];
 		// Why `await` only for a new list of parts: each later request has the hash at once.
 		const hash =
 			parts.length === 0 ? undefined : (keptPartsHash(parts) ?? (await partsHash(parts)));
 		etag = fileEtag(file, hash, copy?.encoding);
+		head.set("etag", etag);
 	}
-	responseHeaders.set("ETag", etag);
 	if (matchesEtag(context.req.header("If-None-Match"), etag)) {
-		responseHeaders.delete("Content-Type");
-		return new Response(null, { status: 304, headers: responseHeaders });
+		head.delete("content-type");
+		return respond(null, 304, head);
 	}
 	if (copy != null) {
 		// Why no ranges: a client asks for a range of the file, not of its compressed copy.
-		responseHeaders.set("Content-Encoding", copy.encoding);
-		responseHeaders.set("Content-Length", String(copy.size));
-		const body = context.req.method === "HEAD" ? null : await wholeFile(files, copy);
-		return new Response(body, { headers: responseHeaders });
+		head.set("content-encoding", copy.encoding);
+		head.set("content-length", String(copy.size));
+		return respond(context.req.method === "HEAD" ? null : await wholeFile(files, copy), 200, head);
 	}
 	if (!html) {
-		responseHeaders.set("Accept-Ranges", "bytes");
+		head.set("accept-ranges", "bytes");
 	}
-	responseHeaders.set("Content-Length", String(file.size));
+	head.set("content-length", String(file.size));
 	if (context.req.method === "HEAD") {
-		return new Response(null, { headers: responseHeaders });
+		return respond(null, 200, head);
 	}
 	const rangeHeader = context.req.header("Range");
 	const range =
@@ -427,17 +495,14 @@ export async function staticResponse(
 			? undefined
 			: byteRange(rangeHeader, file.size);
 	if (range === "unsatisfiable") {
-		responseHeaders.set("Content-Range", `bytes */${file.size}`);
-		responseHeaders.delete("Content-Length");
-		return new Response(null, { status: 416, headers: responseHeaders });
+		head.set("content-range", `bytes */${file.size}`);
+		head.delete("content-length");
+		return respond(null, 416, head);
 	}
 	if (range != null) {
-		responseHeaders.set("Content-Range", `bytes ${range.start}-${range.end}/${file.size}`);
-		responseHeaders.set("Content-Length", String(range.end - range.start + 1));
-		return new Response(await files.open(file.path, range), {
-			status: 206,
-			headers: responseHeaders,
-		});
+		head.set("content-range", `bytes ${range.start}-${range.end}/${file.size}`);
+		head.set("content-length", String(range.end - range.start + 1));
+		return respond(await files.open(file.path, range), 206, head);
 	}
-	return new Response(await wholeFile(files, file), { headers: responseHeaders });
+	return respond(await wholeFile(files, file), 200, head);
 }

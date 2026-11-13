@@ -115,6 +115,32 @@ describe("prerendered", () => {
 		expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
 	});
 
+	it("takes a value of the headers option as Headers does: with no white space at its ends, and a number as text", async () => {
+		const { request } = await staticServer({
+			headers: ({ path }) =>
+				path === "/llms.txt"
+					? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- an app in JavaScript can give a number.
+						({ "Content-Type": "\ttext/html ", "Access-Control-Max-Age": 600 } as unknown as Record<
+							string,
+							string
+						>)
+					: undefined,
+		});
+
+		const response = await request("/llms.txt", { headers: { Range: "bytes=0-1" } });
+
+		expect(response.headers.get("Content-Type")).toBe("text/html");
+		expect(response.headers.get("Access-Control-Max-Age")).toBe("600");
+		// Why: the server reads the type as it sends it, so the file is an HTML page with no ranges.
+		expect([response.status, response.headers.get("Accept-Ranges")]).toStrictEqual([200, null]);
+	});
+
+	it("answers 500 for a value of the headers option that no header can hold", async () => {
+		const { request } = await staticServer({ headers: () => ({ "X-Note": "first\nsecond" }) });
+
+		expect((await request("/llms.txt")).status).toBe(500);
+	});
+
 	it("serves the file that rewrite names, with that file's headers", async () => {
 		const { request } = await staticServer({
 			rewrite: ({ path, context }) =>
@@ -710,6 +736,37 @@ describe("compressed copies from the build", () => {
 			expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
 			expect(response.headers.get("Content-Encoding")).toBeNull();
 		}
+	});
+
+	it("lets the header hook of an outer stage have the last word on no-transform", async () => {
+		const sets = (name: string, value: string): Plugin => ({
+			name,
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.set("Cache-Control", value);
+				}),
+		});
+		const forbids = sets("forbids", "public, no-transform");
+		const allows = sets("allows", "public, max-age=60");
+		const outerForbids = await testServer({
+			plugins: [forbids, allows, prerendered()],
+			clientDirectory,
+		});
+		const outerAllows = await testServer({
+			plugins: [allows, forbids, prerendered()],
+			clientDirectory,
+		});
+
+		const kept = await outerForbids.request("/copy.txt", withBrotli);
+		const copied = await outerAllows.request("/copy.txt", withBrotli);
+
+		expect([kept.headers.get("Cache-Control"), kept.headers.get("Content-Encoding")]).toStrictEqual(
+			["public, no-transform", null],
+		);
+		expect([
+			copied.headers.get("Cache-Control"),
+			copied.headers.get("Content-Encoding"),
+		]).toStrictEqual(["public, max-age=60", "br"]);
 	});
 
 	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {
