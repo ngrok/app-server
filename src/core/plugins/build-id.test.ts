@@ -29,6 +29,18 @@ describe("buildId", () => {
 		expect((await request("/api.json")).headers.get("X-Build-Id")).toBeNull();
 	});
 
+	it("sends the build in the header of the headerName option, and no X-Build-Id", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42", headerName: "X-App-Build" })],
+			render: async () => new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/page");
+
+		expect(response.headers.get("X-App-Build")).toBe("v42");
+		expect(response.headers.get("X-Build-Id")).toBeNull();
+	});
+
 	it("puts the build in the Server-Timing of documents and data responses", async () => {
 		const { request } = await testServer({
 			plugins: [buildId({ value: 'v"42' })],

@@ -12,6 +12,17 @@ describe("requestId", () => {
 		expect(response.headers.get("X-Request-Id")).toBe("abc-123");
 	});
 
+	it("reads and sets the header of the headerName option, and no X-Request-Id", async () => {
+		const { request } = await testServer({ plugins: [requestId({ headerName: "X-Trace-Id" })] });
+
+		const response = await request("/", {
+			headers: { "X-Trace-Id": "abc-123", "X-Request-Id": "other-456" },
+		});
+
+		expect(response.headers.get("X-Trace-Id")).toBe("abc-123");
+		expect(response.headers.get("X-Request-Id")).toBeNull();
+	});
+
 	it("replaces an incoming ID that is not valid with a new UUID", async () => {
 		const { request } = await testServer({ plugins: [requestId()] });
 

@@ -14,8 +14,12 @@ export const BUILD_ID_METRIC = "build";
 
 /** Options for {@link buildId}. */
 export type BuildIdOptions = {
-	/** @default "X-Build-Id" */
-	header?: string;
+	/**
+	 * The response header that carries the build. Give the same name to
+	 * `staleBuildReactRouter()` or `staleBuildTanStack()`.
+	 * @default "X-Build-Id"
+	 */
+	headerName?: string;
 	/**
 	 * The deployed build, such as the image tag. With no value or `""`, the
 	 * plugin sends the ID that the `appServer` Vite plugin derives from the
@@ -110,7 +114,7 @@ function buildMetric(value: string | undefined): string | undefined {
  * buildId({ value: process.env.IMAGE_TAG });
  */
 export function buildId({
-	header = BUILD_ID_HEADER,
+	headerName = BUILD_ID_HEADER,
 	value: given,
 	paths,
 }: BuildIdOptions = {}): Plugin {
@@ -150,9 +154,9 @@ export function buildId({
 					response.set("Server-Timing", metrics);
 				}
 				if (isRouter && value != null) {
-					response.set(header, value);
+					response.set(headerName, value);
 				} else {
-					response.delete(header);
+					response.delete(headerName);
 				}
 			}),
 	});
