@@ -27,7 +27,7 @@ import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
-import { checkOptionPlugins, presenceHeadersOf } from "./plugin-options.js";
+import { checkOptionPlugins, perRequestHeadersOf, presenceHeadersOf } from "./plugin-options.js";
 import { setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
 import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
@@ -143,6 +143,8 @@ export type ServerInternals = {
 	logger: LogSink;
 	/** The request headers whose presence alone changes the answer of a plugin. See `presenceHeaders`. */
 	presenceHeaders: readonly string[];
+	/** The response headers that a plugin gives a new value for each request. See `perRequestHeaders`. */
+	perRequestHeaders: readonly string[];
 	/** Runs each plugin's `setup` once and adds the framework handler after the app's routes. */
 	prepare: (info: SetupInfo) => Promise<void>;
 	/**
@@ -555,6 +557,7 @@ export function createServer({
 	const internals: ServerInternals = {
 		logger,
 		presenceHeaders: presenceHeadersOf(plugins),
+		perRequestHeaders: perRequestHeadersOf(plugins),
 		setRequestStore: (store) => {
 			requestStore = store;
 		},

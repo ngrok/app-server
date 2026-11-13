@@ -30,15 +30,9 @@ export type PipelineFetch = (
 	bindings: { remoteAddress: string; onServedFile: (path: string) => void },
 ) => Promise<Response>;
 
-/**
- * The headers that change with each request. A CDN answer drops them. Why
- * `x-request-id`: `requestId()` sends no header to the check, but the app's
- * own request ID plugin can send one.
- */
-const PER_REQUEST = new Set(["x-request-id", "date"]);
-
 /** The headers that the CDN sets for each file itself. */
 const CDN_OWN = new Set([
+	"date",
 	"content-length",
 	"etag",
 	"last-modified",
@@ -61,6 +55,17 @@ const PLAIN_PATH = /^\/(?:[\w.~-]+\/)*[\w.~-]*$/u;
 
 /** The most presence headers. Why: each one doubles the requests and the CDN routes. */
 const MAX_PRESENCE_HEADERS = 3;
+
+/** The header names that the app's plugins marked, in lowercase. */
+type MarkedHeaders = {
+	/** The request headers whose presence alone changes the answer. See `presenceHeaders`. */
+	presence: readonly string[];
+	/**
+	 * The response headers that get a new value for each request, such as the
+	 * request ID. A CDN answer drops them. See `perRequestHeaders`.
+	 */
+	perRequest: readonly string[];
+};
 
 /** One answer of the pipeline. */
 type Answer = {
@@ -165,10 +170,13 @@ function sameBytes(first: Uint8Array, second: Uint8Array): boolean {
 	return true;
 }
 
-/** The headers of `headers` that a CDN answer keeps, sorted by name. */
-function keptHeaders(headers: Headers): [string, string][] {
+/**
+ * The headers of `headers` that a CDN answer keeps, sorted by name. `perRequest`
+ * names the headers that a plugin gives a new value for each request.
+ */
+function keptHeaders(headers: Headers, perRequest: readonly string[]): [string, string][] {
 	return [...headers]
-		.filter(([name]) => !PER_REQUEST.has(name) && !CDN_OWN.has(name))
+		.filter(([name]) => !perRequest.includes(name) && !CDN_OWN.has(name))
 		.toSorted(([first], [second]) => (first < second ? -1 : 1));
 }
 
@@ -211,12 +219,18 @@ function uncacheable(first: Answer, allowedVary: ReadonlySet<string>): string | 
 }
 
 /** Why `second` differs from `first`, or `undefined` when they match. */
-function difference(first: Answer, second: Answer): string | undefined {
+function difference(
+	first: Answer,
+	second: Answer,
+	perRequest: readonly string[],
+): string | undefined {
 	if (first.status !== second.status || first.file !== second.file) {
 		return "the status or the file changes with the request";
 	}
 	const names = new Set(
-		[...keptHeaders(first.headers), ...keptHeaders(second.headers)].map(([name]) => name),
+		[...keptHeaders(first.headers, perRequest), ...keptHeaders(second.headers, perRequest)].map(
+			([name]) => name,
+		),
 	);
 	const changed = [...names].find((name) => first.headers.get(name) !== second.headers.get(name));
 	if (changed != null) {
@@ -238,15 +252,16 @@ function subsets(names: readonly string[]): string[][] {
 async function staticPage(
 	fetch: PipelineFetch,
 	path: string,
-	presence: readonly string[],
+	marked: MarkedHeaders,
 ): Promise<StaticPage> {
+	const { presence, perRequest } = marked;
 	if (!PLAIN_PATH.test(path)) {
 		return { path, reason: "the path has a character that a CDN route can match two ways" };
 	}
 	// Why: the build records a path with no trailing slash, and `trailingSlash: "always"` sends it on.
 	const probe = await answer(fetch, path, { client: CLIENTS[0], presence, present: [] });
 	if (probe.status === 308 && probe.headers.get("location") === `${path}/`) {
-		return staticPage(fetch, `${path}/`, presence);
+		return staticPage(fetch, `${path}/`, marked);
 	}
 	if (presence.length > MAX_PRESENCE_HEADERS) {
 		return { path, reason: `more than ${MAX_PRESENCE_HEADERS} presence headers` };
@@ -268,7 +283,7 @@ async function staticPage(
 			...presence,
 			...(caseTwin == null ? [] : ["accept"]),
 		]);
-		const reason = uncacheable(first, allowedVary) ?? difference(first, second);
+		const reason = uncacheable(first, allowedVary) ?? difference(first, second, perRequest);
 		if (reason != null) {
 			return { path, reason };
 		}
@@ -281,7 +296,7 @@ async function staticPage(
 		}
 		base ??= first;
 		twin = caseTwin;
-		answers.push({ present, headers: Object.fromEntries(keptHeaders(first.headers)) });
+		answers.push({ present, headers: Object.fromEntries(keptHeaders(first.headers, perRequest)) });
 	}
 	if (base?.file == null) {
 		return { path, reason: "the answer does not come from a prerendered file" };
@@ -301,11 +316,11 @@ async function staticPage(
  *
  * - is a 200 from a prerendered file, with no cookie and no `private`,
  *   `no-store`, or `no-cache`
- * - is the same, except for the request ID, for a second client with another
- *   host, client address, query, and value of each presence header, and with
- *   a cookie, `Authorization`, `Accept-Language`, and geo headers. Why: a CDN
- *   route matches only the path, a markdown `Accept`, and the presence of
- *   each presence header.
+ * - is the same, except for the `perRequest` headers, for a second client
+ *   with another host, client address, query, and value of each presence
+ *   header, and with a cookie, `Authorization`, `Accept-Language`, and geo
+ *   headers. Why: a CDN route matches only the path, a markdown `Accept`, and
+ *   the presence of each presence header.
  * - varies only on `Accept-Encoding`, on `Accept` for a markdown twin, and on
  *   the presence headers. Each case of the presence headers gets its own
  *   headers, and all cases must send the same body.
@@ -315,16 +330,17 @@ async function staticPage(
  *
  * @yields Each path with its CDN answer, or with the reason that the server must answer it, in the order of `paths`.
  * @example
- * for await (const page of staticPages(fetch, ["/", "/about"], { presence: ["x-ngrok-edge"] })) {
+ * const marked = { presence: ["x-ngrok-edge"], perRequest: ["x-request-id"] };
+ * for await (const page of staticPages(fetch, ["/", "/about"], marked)) {
  * 	console.log(page.path, "cdn" in page ? "CDN" : page.reason);
  * }
  */
 export async function* staticPages(
 	fetch: PipelineFetch,
 	paths: readonly string[],
-	{ presence }: { presence: readonly string[] },
+	marked: MarkedHeaders,
 ): AsyncGenerator<StaticPage> {
 	for (const path of paths) {
-		yield await staticPage(fetch, path, presence);
+		yield await staticPage(fetch, path, marked);
 	}
 }

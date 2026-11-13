@@ -84,6 +84,18 @@ export function presenceHeaders<P extends Plugin>(headers: readonly string[], pl
 	return plugin;
 }
 
+/** The headers that `marks` holds for `plugins`, in lowercase, once each. */
+function markedHeaders(
+	marks: WeakMap<Plugin, readonly string[]>,
+	plugins: readonly Plugin[],
+): string[] {
+	return [
+		...new Set(
+			plugins.flatMap((plugin) => marks.get(plugin) ?? []).map((name) => name.toLowerCase()),
+		),
+	];
+}
+
 /**
  * The headers that {@link presenceHeaders} marked on `plugins`, in lowercase,
  * once each.
@@ -92,11 +104,34 @@ export function presenceHeaders<P extends Plugin>(headers: readonly string[], pl
  * presenceHeadersOf(defaultPlugins({ noindex: { unlessHeader: "X-Ngrok-Edge" } })); // => ["x-ngrok-edge"]
  */
 export function presenceHeadersOf(plugins: readonly Plugin[]): string[] {
-	return [
-		...new Set(
-			plugins.flatMap((plugin) => presence.get(plugin) ?? []).map((name) => name.toLowerCase()),
-		),
-	];
+	return markedHeaders(presence, plugins);
+}
+
+/** The response headers that each plugin gives a new value for each request, by plugin object. */
+const perRequest = new WeakMap<Plugin, readonly string[]>();
+
+/**
+ * Marks `plugin` as one that gives each of the response headers `headers` a
+ * new value for each request. Why: the build's check of the CDN pages drops
+ * these headers, so they do not keep a prerendered page off the CDN.
+ *
+ * @example
+ * return perRequestHeaders(["X-Request-Id"], { name: "request-id", middleware });
+ */
+export function perRequestHeaders<P extends Plugin>(headers: readonly string[], plugin: P): P {
+	perRequest.set(plugin, headers);
+	return plugin;
+}
+
+/**
+ * The headers that {@link perRequestHeaders} marked on `plugins`, in
+ * lowercase, once each.
+ *
+ * @example
+ * perRequestHeadersOf(defaultPlugins({ requestId: { headerName: "X-Correlation-Id" } })); // => ["x-correlation-id"]
+ */
+export function perRequestHeadersOf(plugins: readonly Plugin[]): string[] {
+	return markedHeaders(perRequest, plugins);
 }
 
 /** An HTTP header name: a token of RFC 9110. */
