@@ -105,6 +105,13 @@ const routes = {
 		void Promise.reject(new Error("no handler"));
 		return new Response("rejected", { headers: { "Content-Type": "text/plain" } });
 	},
+	// Throws outside the request, as a callback of a timer or of an event emitter can.
+	"/throw": () => {
+		setTimeout(() => {
+			throw new Error("thrown in a timer");
+		}, 0);
+		return new Response("thrown", { headers: { "Content-Type": "text/plain" } });
+	},
 	// A page of one chunk, which a pooled zlib stream compresses.
 	"/page": () =>
 		new Response("<p>page</p>".repeat(200), { headers: { "Content-Type": "text/html" } }),

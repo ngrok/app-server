@@ -299,8 +299,14 @@ async function check(runtime: string): Promise<void> {
 	}
 }
 
-/** An error with no handler: the server logs one line, drains, and exits with code 1. */
-async function checkCrash(runtime: string): Promise<void> {
+/**
+ * An error with no handler: the server logs one line, drains, and exits with code 1. `path` is the
+ * fixture route that leaves the error, and `origin` is how the runtime reports it.
+ */
+async function checkCrash(
+	runtime: string,
+	{ path, origin, message }: { path: string; origin: string; message: string },
+): Promise<void> {
 	const { child, lines, url } = startServer(runtime, serveArgs);
 	try {
 		const base = await url;
@@ -318,22 +324,29 @@ async function checkCrash(runtime: string): Promise<void> {
 			child.stdout.once("end", resolve);
 		});
 		const exitCode = exited(child, 10_000);
-		assert.equal(await (await fetch(new URL("/reject", base))).text(), "rejected");
+		await (await fetch(new URL(path, base), { headers: { "X-Request-Id": "crash-1" } })).text();
 		assert.equal(await eventsEnd, "end", "an error with no handler does not cut an open response");
 		assert.equal(await exitCode, 1, "the server drains, then exits with code 1");
 		await stdoutEnded;
+		const errors = lines.filter((line) => line.level === "error");
 		assert.deepEqual(
-			lines
-				.filter((line) => line.level === "error")
-				.map((line) => [line.message, line["error.message"]]),
-			[["uncaught exception", "no handler"]],
-			"one log line has the error",
+			errors.map((line) => [line.message, line["error.message"], line["app_server.origin"]]),
+			[["uncaught exception", message, origin]],
+			"one log line has the error and its origin",
 		);
+		// Why Node only: Bun and Deno do not keep the request context for each origin.
+		if (runtime === "node") {
+			assert.equal(
+				errors[0]?.["http.request_id"],
+				"crash-1",
+				"the line has the fields of the request that the error came from",
+			);
+		}
 		assert.ok(
 			lines.some((line) => line.message === "stopped"),
 			"the drain ends before the exit",
 		);
-		process.stdout.write(`ok ${runtime} crash\n`);
+		process.stdout.write(`ok ${runtime} crash ${origin}\n`);
 	} finally {
 		child.kill("SIGKILL");
 	}
@@ -848,7 +861,16 @@ buildFixtures();
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
-	await checkCrash(runtime);
+	await checkCrash(runtime, {
+		path: "/reject",
+		origin: "unhandledRejection",
+		message: "no handler",
+	});
+	await checkCrash(runtime, {
+		path: "/throw",
+		origin: "uncaughtException",
+		message: "thrown in a timer",
+	});
 	await checkOwnRejectionListener(runtime);
 	if (runtime === "node") {
 		await checkStart();
