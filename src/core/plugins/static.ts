@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { getPath } from "hono/utils/url";
-import { manifestKey } from "../build-manifest.js";
+import { IMMUTABLE, manifestKey } from "../build-manifest.js";
 import { withBuiltInHeaderHook } from "../header-hook.js";
 import { optionPlugin } from "../plugin-options.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
@@ -11,7 +11,7 @@ import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
 
 /** The headers of a hashed asset. Why one list for all responses: `staticResponse` only reads it. */
-const ASSET_HEADERS = [{ "Cache-Control": "public, max-age=31536000, immutable" }];
+const ASSET_HEADERS = [{ "Cache-Control": IMMUTABLE }];
 
 /** The requests that the dev server answered. */
 const devServerAnswers = new WeakSet<Context<AppServerEnv>>();
@@ -338,8 +338,10 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			}
 			if (missing.length > 0) {
 				// Why a warning: a path with no file falls through to the framework, which still answers.
+				// Why 20 paths: a server with no client build has each prerendered path here.
 				info.logger.warn("prerendered paths with no file", {
-					"app_server.missing_paths": missing,
+					"app_server.missing_count": missing.length,
+					"app_server.missing_paths": missing.slice(0, 20),
 				});
 			}
 			const defaultCacheControl = (file: string) => {

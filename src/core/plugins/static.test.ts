@@ -380,7 +380,24 @@ describe("prerendered", () => {
 			{
 				level: "warn",
 				message: "prerendered paths with no file",
-				attributes: { "app_server.missing_paths": ["/gone"] },
+				attributes: { "app_server.missing_count": 1, "app_server.missing_paths": ["/gone"] },
+			},
+		]);
+	});
+
+	it("names 20 of the prerendered paths with no file, and counts each one", async () => {
+		const gone = Array.from({ length: 25 }, (_, index) => `/gone-${index}`);
+
+		const { lines } = await staticServer({}, gone);
+
+		expect(lines).toStrictEqual([
+			{
+				level: "warn",
+				message: "prerendered paths with no file",
+				attributes: {
+					"app_server.missing_count": 25,
+					"app_server.missing_paths": gone.slice(0, 20),
+				},
 			},
 		]);
 	});

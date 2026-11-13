@@ -359,7 +359,7 @@ describe("createEntry", () => {
 		await entry.start();
 
 		expect(lines).toContain(
-			`prerendered paths with no file ${JSON.stringify({ "app_server.missing_paths": ["/gone"] })}`,
+			`prerendered paths with no file ${JSON.stringify({ "app_server.missing_count": 1, "app_server.missing_paths": ["/gone"] })}`,
 		);
 	});
 
