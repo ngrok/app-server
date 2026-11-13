@@ -224,14 +224,12 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 					for (let entry = unread[next]; entry != null && failure == null; entry = unread[next]) {
 						next += 1;
 						try {
-							// oxlint-disable-next-line no-await-in-loop -- each worker reads one entry at a time.
 							await read(entry, found);
 						} catch (error) {
 							failure ??= { error };
 						}
 					}
 				};
-				// oxlint-disable-next-line no-await-in-loop -- the entries of a depth come from the depth above.
 				await Promise.all(Array.from({ length: Math.min(SNAPSHOT_CALLS, unread.length) }, worker));
 				// Why after each worker ends: no call of a failed walk then runs on while the caller tries again.
 				if (failure != null) {

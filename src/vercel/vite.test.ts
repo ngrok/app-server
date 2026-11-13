@@ -521,9 +521,8 @@ describe("vercel", () => {
 
 		const buildApp = postStep?.buildApp;
 		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
-			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			// Why the casts: the hook reads only these fields of `config`.
 			{} as never,
-			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields of `config`.
 			{
 				config: {
 					root: site,

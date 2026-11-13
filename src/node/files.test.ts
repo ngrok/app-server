@@ -19,7 +19,7 @@ chmodSync(join(root, "client/unreadable.txt"), 0o000);
 /** Runs full garbage collections, and waits for the cleanup that each one queues. */
 async function collectGarbage(): Promise<void> {
 	setFlagsFromString("--expose-gc");
-	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `gc` exists in a new context after the flag is set.
+	// Why the cast: `gc` exists in a new context after the flag is set.
 	const gc = runInNewContext("gc") as () => void;
 	// Why three: a stream and its file handle can need more than one collection.
 	for (let round = 0; round < 3; round += 1) {

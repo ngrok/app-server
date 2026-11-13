@@ -39,7 +39,7 @@ vi.mock(import("node:fs/promises"), async (importOriginal) => {
 		open: async (...args: Parameters<typeof original.open>) => {
 			const handle = await original.open(...args);
 			const read = handle.read.bind(handle);
-			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the test calls `read` with an options object only.
+			// Why the cast: the test calls `read` with an options object only.
 			const shortRead = (async (options: {
 				buffer: Uint8Array;
 				offset?: number;
