@@ -62,7 +62,7 @@ defaultPlugins({ beforeStatic: [loadAuth()] });
 defaultPlugins({ beforeStatic: [await loadAuth()] });
 ```
 
-Breaking change: a function with a `middleware` field of its own now stops startup, as each function does. So does an object with a `then` function, which the server takes as a promise. Before, the server ran the `middleware` of both. Give the plugin as an object with no `then` field.
+Breaking change: a function with a `middleware` field of its own now stops startup, as each function does. So does a plugin object that has a `then` function, because the server takes it as a promise. Before, the server ran the `middleware` of both. Give the plugin as an object with no `then` field.
 
 ```ts
 // Before
