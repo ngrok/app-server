@@ -89,8 +89,9 @@ export type FrameworkBuild = {
 	/** The Vite ID of the framework's server module, such as `virtual:react-router/server-build`. */
 	serverModule: string;
 	/**
-	 * The module whose `runtime` export makes the run side from the server
-	 * module. It has the type `FrameworkRuntimeFactory`.
+	 * The module whose `runtime` export makes the run side. The server entry
+	 * calls `runtime(serverModule, { ...runtimeOptions, mode })`. The call
+	 * returns a `FrameworkRuntime`.
 	 */
 	runtimeModule: string;
 	/**
