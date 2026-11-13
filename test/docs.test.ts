@@ -174,6 +174,10 @@ describe("the README examples", () => {
 		try {
 			// Why a link: an example then resolves `hono` and `zod` to the copies that the package uses.
 			symlinkSync(join(root, "node_modules"), join(directory, "node_modules"));
+			// Why: with no `type`, TypeScript reads `app-code.d.ts` as CommonJS, and an example as an ES
+			// module. A package with two builds, such as `@tanstack/react-router`, then gives each one
+			// its own types, and the stand-in for `routeTree` does not fit the example.
+			writeFileSync(join(directory, "package.json"), JSON.stringify({ type: "module" }));
 			writeFileSync(join(directory, "app-code.d.ts"), APP_CODE);
 			writeFileSync(
 				join(directory, "tsconfig.json"),
