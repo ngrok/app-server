@@ -7,6 +7,12 @@ import type { StaticFiles } from "./types.js";
  */
 export const BUILD_MANIFEST_FILE = ".app-server.json";
 
+/**
+ * The file name of the server entry in the server build. Each host gets this
+ * name, and `app-server serve` looks for it.
+ */
+export const SERVER_ENTRY_FILE = "app-server.js";
+
 /** The URL path of the hashed files of a build that records none: Vite's default `build.assetsDir`. */
 export const DEFAULT_ASSETS_PATH = "/assets/";
 

@@ -23,7 +23,12 @@ import {
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
 import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
-import { BUILD_MANIFEST_FILE, DEFAULT_ASSETS_PATH, manifestKey } from "../core/build-manifest.js";
+import {
+	BUILD_MANIFEST_FILE,
+	DEFAULT_ASSETS_PATH,
+	manifestKey,
+	SERVER_ENTRY_FILE,
+} from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
@@ -114,8 +119,6 @@ export type FrameworkBuild = {
 export type HostBuild = {
 	/** The module whose `host` export is the run side, a `HostRuntime`. */
 	runtimeModule: string;
-	/** The file name of the server entry in the server build, such as `app-server.js`. */
-	entryFileName: string;
 	/**
 	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
 	 * runs one time, after the build and the prerender pass. When `appServer`
@@ -213,11 +216,11 @@ function defaultApp(root: string): string | undefined {
 }
 
 /** The paths of the build that a host's `output` gets. */
-function hostOutput(config: ResolvedConfig, host: HostBuild): HostOutput {
+function hostOutput(config: ResolvedConfig): HostOutput {
 	return {
 		root: config.root,
 		clientDirectory: outDir(config, "client"),
-		entryFile: join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName),
+		entryFile: join(outDir(config, SERVER_ENVIRONMENT), SERVER_ENTRY_FILE),
 		assetsPath: urlPathOfAssetsDir(
 			config.environments.client?.build.assetsDir ?? config.build.assetsDir,
 		),
@@ -852,7 +855,7 @@ function filesInside(directory: string): string[] {
  * plugin.
  *
  * - It adds the server entry to the server build, such as
- *   `build/server/app-server.js` on the node host. The entry bundles the app
+ *   `build/server/app-server.js`. The entry bundles the app
  *   (the default export of `app`) with the framework's server module, so the
  *   server gets the app's path aliases and its one copy of the framework.
  *   The framework's own entry does not change. When a runtime runs the entry
@@ -901,7 +904,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
 				writeAllCopies(clientDirectory, { contentTypes: resolved?.framework.contentTypes });
-				host.output?.(hostOutput(builder.config, host));
+				host.output?.(hostOutput(builder.config));
 			},
 		},
 	};
@@ -926,7 +929,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 			// Why a chunk and not an input: the framework's own entry stays the same, and its prerender
 			// preview reads that entry.
 			if (isServerBuild(this.environment)) {
-				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
+				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: SERVER_ENTRY_FILE });
 			}
 		},
 		writeBundle(output, bundle) {
@@ -979,10 +982,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 				);
 			}
 			// Why a URL in a build: the build can move, and the client build stays next to it.
-			const fromEntry = relative(
-				dirname(join(serverDirectory, host.entryFileName)),
-				clientDirectory,
-			).replaceAll("\\", "/");
+			const fromEntry = relative(serverDirectory, clientDirectory).replaceAll("\\", "/");
 			return serverEntrySource({
 				framework,
 				host,
@@ -998,7 +998,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 				capture(server, {
 					contentTypes: resolved.framework.contentTypes,
 					// Why the preview's config: the framework starts the preview with a new instance of this plugin.
-					afterPass: () => host.output?.(hostOutput(server.config, host)),
+					afterPass: () => host.output?.(hostOutput(server.config)),
 				});
 			}
 		},

@@ -19,6 +19,7 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
 import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { DEFAULT_BUILD_PATHS } from "../cli/serve.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
@@ -155,7 +156,7 @@ describe("appServer with no options", () => {
 		const entry = await serverEntry(
 			{
 				framework: tanstackStartAdapter(),
-				host: { runtimeModule: "edge-host", entryFileName: "edge.js" },
+				host: { runtimeModule: "edge-host" },
 				app: "./src/app.ts",
 			},
 			{ plugins: [frameworkPlugin("react-router:virtual-modules")], projectRoot: project },
@@ -618,6 +619,50 @@ describe("appServer", () => {
 				"}",
 			].join("\n"),
 		);
+	});
+
+	it("writes the server entry as `app-server.js` on each host, where `app-server serve` looks for it", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-entry-file-"));
+		const emitted: unknown[] = [];
+		const entryFiles: string[] = [];
+		// Why a field that `HostBuild` does not have: a host in plain JavaScript can set one.
+		const host = {
+			runtimeModule: "edge-host",
+			entryFileName: "edge.js",
+			output: ({ entryFile }: { entryFile: string }) => {
+				entryFiles.push(entryFile);
+			},
+		};
+		const [main, postStep] = appServer({ framework: reactRouterAdapter(), host });
+
+		const buildStart = main?.buildStart;
+		await (typeof buildStart === "object" ? buildStart.handler : buildStart)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment and `emitFile`.
+			{
+				environment: { name: "ssr", mode: "build" },
+				emitFile: (file: unknown) => emitted.push(file),
+			} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads no option.
+			{} as never,
+		);
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: { ssr: { build: { outDir: "build/server" } } },
+				},
+			} as never,
+		);
+
+		expect(emitted).toMatchObject([{ type: "chunk", fileName: "app-server.js" }]);
+		expect(entryFiles).toStrictEqual([join(directory, "build/server/app-server.js")]);
+		expect(DEFAULT_BUILD_PATHS.map((path) => join(directory, path))).toContain(entryFiles[0]);
+		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it("passes the framework's runtime options to its runtime", () => {

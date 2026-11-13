@@ -22,12 +22,16 @@ import type { RequestContext } from "@ngrok/app-server";
 
 **`FrameworkBuild` and `HostBuild` have no `name`.** No log and no error read it. Delete `name` from the object of a custom adapter. TypeScript reports each one in a typed object literal.
 
+**`HostBuild` has no `entryFileName`.** The server entry is `app-server.js` in the server build on each host, which is where `app-server serve` looks for it. `node()` and `vercel()` gave that name already. A custom host that gave another name now gets `app-server.js`, also in plain JavaScript, where no type error shows it. Such a host must read `entryFile` in its `output`, or write its own file there, as `vercel()` writes `vercel-function.js`.
+
+A custom host before and after these two changes:
+
 ```ts
 // Before
 appServer({ host: { name: "edge", runtimeModule: "edge-host", entryFileName: "app-server.js" } });
 
 // After
-appServer({ host: { runtimeModule: "edge-host", entryFileName: "app-server.js" } });
+appServer({ host: { runtimeModule: "edge-host" } });
 ```
 
 **`FrameworkBuild` has no `validate`.** The `appServer` plugin now checks Vite's `base` itself, for each framework adapter. Before, each adapter of the package made the check, so a custom adapter with no `validate` built with a `base` other than `/`, and the server then served at `/` only. Such a build now fails with `@ngrok/app-server serves a build at "/" only`. The plugin no longer calls `validate`, also in plain JavaScript, where no type error shows it. To check the Vite config, add a Vite plugin with a `configResolved` hook.
