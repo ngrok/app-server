@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { hookSink, jsonSink, sinkLogger } from "./log.js";
+import type { ShutdownState } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	LogSink,
@@ -7,6 +8,7 @@ import type {
 	RequestLogger,
 	RequestScope,
 	RequestStore,
+	ServerEnv,
 } from "./types.js";
 
 /**
@@ -48,6 +50,8 @@ class SentValues implements RequestContext {
 	public readonly requestId: string | undefined;
 	public readonly cspNonce: string | undefined;
 	public readonly clientAddress: string | undefined;
+	/** The stop state of the app server of the request, for {@link currentShutdown}. */
+	public readonly shutdown: ShutdownState | undefined;
 	readonly #sink: LogSink;
 	readonly #method: string;
 	readonly #path: string;
@@ -55,10 +59,11 @@ class SentValues implements RequestContext {
 	#logger: RequestLogger | undefined;
 
 	/** `made` is the logger that the server made for the request, and `sink` is where it writes. */
-	public constructor(context: Context<AppServerEnv>, sink: LogSink, made: RequestLogger) {
+	public constructor(context: Context<ServerEnv>, sink: LogSink, made: RequestLogger) {
 		this.requestId = context.get("requestId");
 		this.cspNonce = context.get("cspNonce");
 		this.clientAddress = context.get("clientAddress");
+		this.shutdown = context.get("shutdown");
 		this.#sink = sink;
 		this.#method = context.req.method;
 		this.#path = context.req.path;
@@ -134,7 +139,7 @@ export function requestContext(): RequestContext | undefined {
 }
 
 /** The scope of the request that runs, else `undefined`. */
-export function currentScope(): RequestScope | undefined {
+function currentScope(): RequestScope | undefined {
 	for (const store of stores) {
 		const scope = store.get();
 		if (scope != null) {
@@ -142,6 +147,20 @@ export function currentScope(): RequestScope | undefined {
 		}
 	}
 	return undefined;
+}
+
+/**
+ * The stop state of the app server of the request that runs, also in work
+ * that the request left after its response. It gives `undefined` outside a
+ * server request and on a host with no request storage.
+ */
+export function currentShutdown(): ShutdownState | undefined {
+	const scope = currentScope();
+	const context: Context<ServerEnv> | undefined = scope?.context;
+	if (context != null) {
+		return context.get("shutdown");
+	}
+	return scope?.values instanceof SentValues ? scope.values.shutdown : undefined;
 }
 
 /** The sink of the process. `createServer` sets it to its own sink, with its hooks. */

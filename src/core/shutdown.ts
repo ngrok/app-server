@@ -1,6 +1,4 @@
-import type { Context } from "hono";
-import { currentScope } from "./request-context.js";
-import type { ServerEnv } from "./types.js";
+import { currentShutdown } from "./request-context.js";
 
 /** The stop state of one app server. */
 export type ShutdownState = {
@@ -35,17 +33,17 @@ export function createShutdownState(): ShutdownState {
  * holds a response open, such as an event stream, stops on it so that the
  * drain does not wait for the deadline.
  *
- * In a request, it is the signal of the app server that serves the request.
- * Outside a request, and on a host with no request storage, it is the signal
- * of the last `createServer` call, as the sink of `logger()` is.
+ * In a request, and in work that the request started, it is the signal of the
+ * app server that serves the request. Outside a request, and on a host with
+ * no request storage, it is the signal of the last `createServer` call, as
+ * the sink of `logger()` is.
  *
  * @example
  * const timer = setInterval(sendUpdate, 1_000);
  * shutdownSignal().addEventListener("abort", () => clearInterval(timer), { once: true });
  */
 export function shutdownSignal(): AbortSignal {
-	const context: Context<ServerEnv> | undefined = currentScope()?.context;
-	return (context?.get("shutdown") ?? latest).controller.signal;
+	return (currentShutdown() ?? latest).controller.signal;
 }
 
 /** Aborts the {@link shutdownSignal} that a call outside a request gives. */

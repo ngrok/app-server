@@ -1020,7 +1020,7 @@ A `Cache-Control` in `headers` takes the place of the default `no-cache`, so kee
 
 `send()` does not wait for the client. The events that the client has not read wait in memory, with no limit. So send a long history in another response, such as a JSON response that the page gets before it opens the stream.
 
-For other long work, stop on `shutdownSignal()`. In a request, it is the signal of the app server that serves the request. Outside a request, such as at module load or in the `setup` of a plugin, it is the signal of the last `createServer` call, so it also aborts when that server shuts down.
+For other long work, stop on `shutdownSignal()`. In a request, and in work that the request started, it is the signal of the app server that serves the request. Outside a request, such as at module load or in the `setup` of a plugin, it is the signal of the last `createServer` call, so it also aborts when that server shuts down.
 
 ## Testing
 
