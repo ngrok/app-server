@@ -1,3 +1,5 @@
+import { parseAccept } from "hono/utils/accept";
+
 /** One media range of an `Accept` header. */
 type MediaRange = {
 	/** The media type in lowercase, such as `text/html` or `*\/*`. */
@@ -16,62 +18,27 @@ const QVALUE = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/u;
 const CHARSET = "utf-8";
 
 /**
- * The parts of `value` between each `separator`. Why a scan, not `split`: a
- * quoted parameter value can hold a `,` or a `;`.
- */
-function splitOutsideQuotes(value: string, separator: string): string[] {
-	const parts: string[] = [];
-	let part = "";
-	let quoted = false;
-	let escaped = false;
-	for (const character of value) {
-		if (!quoted && character === separator) {
-			parts.push(part);
-			part = "";
-		} else {
-			if (escaped) {
-				escaped = false;
-			} else if (quoted && character === "\\") {
-				escaped = true;
-			} else if (character === '"') {
-				quoted = !quoted;
-			}
-			part += character;
-		}
-	}
-	parts.push(part);
-	return parts;
-}
-
-/** The parameters of a media range, by lowercase name, with quotes removed. */
-function parameterMap(parameters: readonly string[]): Map<string, string> {
-	return new Map(
-		parameters.map((parameter) => {
-			const index = parameter.indexOf("=");
-			const name = (index === -1 ? parameter : parameter.slice(0, index)).trim().toLowerCase();
-			const value = index === -1 ? "" : parameter.slice(index + 1).trim();
-			const unquoted = /^".*"$/su.test(value)
-				? value.slice(1, -1).replaceAll(/\\(?<character>.)/gsu, "$<character>")
-				: value;
-			return [name, unquoted];
-		}),
-	);
-}
-
-/**
  * The media ranges of an `Accept` header. A missing `q` counts as 1, the RFC
  * 9110 default. Why a malformed `q` also counts as 1: the client still named
- * the media type.
+ * the media type. Hono drops a parameter with no value or with text after its
+ * closing quote, so such a `charset` counts as no charset.
  */
 function mediaRanges(accept: string): MediaRange[] {
-	return splitOutsideQuotes(accept, ",").map((entry) => {
-		const [type = "", ...parameters] = splitOutsideQuotes(entry, ";");
-		const parameterValues = parameterMap(parameters);
-		const quality = parameterValues.get("q") ?? "1";
+	return parseAccept(accept).map(({ type, params }) => {
+		let quality = "1";
+		let charset: string | undefined;
+		// Why lowercase: Hono keeps the case of each parameter name. Why `for...in`: it makes no array.
+		for (const name in params) {
+			if (name.toLowerCase() === "q") {
+				quality = params[name] ?? quality;
+			} else if (name.toLowerCase() === "charset") {
+				charset = params[name]?.toLowerCase();
+			}
+		}
 		return {
-			type: type.trim().toLowerCase(),
+			type: type.toLowerCase(),
 			quality: QVALUE.test(quality) ? Number(quality) : 1,
-			charset: parameterValues.get("charset")?.toLowerCase(),
+			charset,
 		};
 	});
 }
@@ -109,7 +76,8 @@ function qualityOf(ranges: readonly MediaRange[], type: string): number | undefi
  *   the client named it.
  * - Both answers are UTF-8. A range with `charset=utf-8` is more specific
  *   than a range with no charset, and a range with another charset does not
- *   match. Other parameters, such as `variant`, do not change the match.
+ *   match. A `charset` with no value counts as no charset. Other parameters,
+ *   such as `variant`, do not change the match.
  * - Media types and parameter names are not case-sensitive. A quoted
  *   parameter value can hold a `,` or a `;`.
  *

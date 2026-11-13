@@ -105,6 +105,16 @@ describe("prefersMarkdown", () => {
 		expect(accepts.filter((accept) => selectsMarkdown(accept))).toStrictEqual([]);
 	});
 
+	it("reads a malformed charset as no charset, because the client still named markdown", () => {
+		const accepts = [
+			'text/markdown;charset=""',
+			"text/markdown;charset",
+			'text/markdown;charset="utf-8"x',
+		];
+
+		expect(accepts.filter((accept) => selectsHtml(accept))).toStrictEqual([]);
+	});
+
 	it("ignores a range with another charset, and other parameters", () => {
 		expect(selectsMarkdown("text/markdown;charset=iso-8859-1")).toBe(false);
 		expect(selectsMarkdown("text/markdown;charset=iso-8859-1, text/markdown;q=0.5")).toBe(true);
