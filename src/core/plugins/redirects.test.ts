@@ -152,6 +152,21 @@ describe("redirects", () => {
 		});
 	});
 
+	it("matches a rule for a path with an escape when a query comes after it", async () => {
+		const rules: RedirectRule[] = [{ from: "/a%2Db", to: "/dash" }];
+
+		// Why these requests: Hono decodes the `%2D`, so the path that it gives is not the path of
+		// the rule. A `?` or a second escape after the `%2D` must not change the match.
+		await expect(redirected(rules, "/a%2Db?page=2")).resolves.toStrictEqual({
+			status: 301,
+			location: "/dash?page=2",
+		});
+		await expect(redirected(rules, "/a%2Db?next=%2Fold")).resolves.toStrictEqual({
+			status: 301,
+			location: "/dash?next=%2Fold",
+		});
+	});
+
 	it("goes on for a path with no rule when the request URL does not parse", async () => {
 		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header, and a request
 		// that matches no rule must not fail on it.
