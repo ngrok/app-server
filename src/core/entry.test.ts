@@ -11,7 +11,14 @@ import { buildId } from "./plugins/build-id.js";
 import { prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
 import { requestContext } from "./request-context.js";
-import type { FetchHandler, HostRuntime, Listener, LogSink, StaticFiles } from "./types.js";
+import type {
+	FetchHandler,
+	HostRuntime,
+	Listener,
+	LogLine,
+	LogSink,
+	StaticFiles,
+} from "./types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
@@ -373,6 +380,36 @@ describe("createEntry", () => {
 		await expect(later.text()).resolves.toBe("rendered");
 		expect(setup).toHaveBeenCalledTimes(2);
 		expect(lines).toStrictEqual([expect.stringMatching(/^setup failed .*config server down/u)]);
+	});
+
+	it("gives the setup of a plugin a logger with one method for each level", async () => {
+		const lines: LogLine[] = [];
+		const entry = createEntry({
+			app: createServer({
+				plugins: [
+					{
+						name: "cache",
+						setup: (info) => {
+							info.logger.warn("cache is cold", { "cache.entries": 0 });
+						},
+					},
+				],
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+			}),
+			host: { name: "serverless", files: nodeHost.files },
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await entry.fetch(new Request("http://localhost/about"), {});
+
+		expect(lines).toStrictEqual([
+			{ level: "warn", message: "cache is cold", attributes: { "cache.entries": 0 } },
+		]);
 	});
 
 	it("refuses to start when neither the app nor the host has a listener", async () => {

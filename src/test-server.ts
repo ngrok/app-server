@@ -3,6 +3,7 @@ import { onTestFinished } from "vitest";
 import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./core/build-manifest.js";
 import { createServer, serverInternals } from "./core/create-server.js";
 import type { AppServer, CreateServerOptions, ServerInternals } from "./core/create-server.js";
+import { sinkLogger } from "./core/log.js";
 import type { FrameworkRuntime, LogLevel, LogSink, Plugin, SetupInfo } from "./core/types.js";
 import { nodeFiles } from "./node/files.js";
 import { brotliStream, gzipStream } from "./node/compress.js";
@@ -73,7 +74,7 @@ export async function productionSetup({
 		contentTypes: framework.contentTypes ?? {},
 		gzip: gzipStream,
 		brotli: brotliStream,
-		logger,
+		logger: sinkLogger(logger),
 	};
 }
 

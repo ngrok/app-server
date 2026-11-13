@@ -3,7 +3,7 @@ import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { ENTRY_PROTOCOL } from "./entry-protocol.js";
-import { asError } from "./log.js";
+import { asError, sinkLogger } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { staticPages } from "./static-pages.js";
 import type { StaticPage } from "./static-pages.js";
@@ -94,6 +94,7 @@ export function createEntry({
 		);
 	}
 	internals.setRequestStore(host.storage);
+	const logger = sinkLogger(internals.logger);
 	const setupInfo = async (runtime: FrameworkRuntime) => {
 		const directory = clientDirectory ?? runtime.clientDirectory;
 		if (directory == null) {
@@ -108,7 +109,7 @@ export function createEntry({
 			contentTypes: runtime.contentTypes ?? {},
 			gzip: host.gzip,
 			brotli: host.brotli,
-			logger: internals.logger,
+			logger,
 		};
 	};
 	let prerenderedPaths: readonly string[] = [];

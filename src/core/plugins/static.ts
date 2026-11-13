@@ -337,12 +337,8 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			}
 			if (missing.length > 0) {
 				// Why a warning: a path with no file falls through to the framework, which still answers.
-				info.logger.log({
-					level: "warn",
-					message: "prerendered paths with no file",
-					attributes: {
-						"app_server.missing_paths": missing,
-					},
+				info.logger.warn("prerendered paths with no file", {
+					"app_server.missing_paths": missing,
 				});
 			}
 			const defaultCacheControl = (file: string) => {
