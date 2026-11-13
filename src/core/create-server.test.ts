@@ -1562,6 +1562,26 @@ describe("the pipeline", () => {
 		expect(seen).toStrictEqual(["201"]);
 	});
 
+	it("keeps the answer of a later plugin when a plugin returns a response after next()", async () => {
+		const { request, seen } = await pipeline({
+			plugins: [
+				{
+					name: "returns-late",
+					middleware: async (_context, next) => {
+						await next();
+						return new Response("late", { status: 201 });
+					},
+				},
+				{ name: "short", middleware: async (context) => context.text("short", 202) },
+			],
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([202, "short"]);
+		expect(seen).toStrictEqual(["202"]);
+	});
+
 	it("runs the setup of a plugin with no middleware, and passes each request on", async () => {
 		const setup = vi.fn<NonNullable<Plugin["setup"]>>();
 		const { request, seen } = await pipeline({ plugins: [{ name: "bare", setup }] });
