@@ -978,6 +978,8 @@ The values whose names start with `PUBLIC_` go into each HTML document at serve 
 const publicEnv = JSON.parse(document.getElementById("app-server-public-env")?.textContent ?? "{}");
 ```
 
+The script goes before the first `</head>` of the document, in any letter case. The server changes no other byte, so a document that is not UTF-8 stays whole, and each chunk of a streamed document goes out when it comes. A document with no `</head>` in its first 1 MiB gets no script.
+
 When there are public values, the server sends each prerendered page from its file, not from its compressed copy, because the values change the bytes of the page. `streamingCompress()` then compresses the page for each request. The page keeps its ETag, which changes with the public values and with the file. So a repeat visit gets a 304 with no body, and a visit after a change gets the full page.
 
 ## Long-lived responses
