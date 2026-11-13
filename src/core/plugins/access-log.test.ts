@@ -49,6 +49,20 @@ async function firstChunk(response: IncomingMessage): Promise<Buffer> {
 	});
 }
 
+/**
+ * The `http.url` of the line for each request whose URL is one of `urls` as
+ * it is, with no URL parse. Why: Deno gives the request target as the client
+ * sent it, and `new Request` parses it.
+ */
+async function loggedAsSent(urls: readonly string[]): Promise<unknown[]> {
+	const { app, framework, lines } = await testServer({ plugins: [accessLog()] });
+	for (const url of urls) {
+		const request = Object.defineProperty(new Request("http://localhost/"), "url", { value: url });
+		await (await app.fetch(request, { framework })).text();
+	}
+	return lines.map((line) => line.attributes["http.url"]);
+}
+
 describe("accessLog", () => {
 	it("logs one line with the request ID and the query values redacted", async () => {
 		const { request, lines } = await testServer({ plugins: [requestId(), accessLog()] });
@@ -77,7 +91,12 @@ describe("accessLog", () => {
 			"/a?token": "/a?token=REDACTED",
 			"/a?=1": "/a?=REDACTED",
 			"/a?b=1&&c=2&": "/a?b=REDACTED&c=REDACTED",
-			"/a?x+y=1&%61=2&a[]=3&a/b=4": "/a?x%20y=REDACTED&a=REDACTED&a%5B%5D=REDACTED&a%2Fb=REDACTED",
+			// Why one query for each key: one key that needs the URL parse sends its whole query to the parse.
+			"/a?x+y=1": "/a?x%20y=REDACTED",
+			"/a?%61=2": "/a?a=REDACTED",
+			"/a?a[]=3": "/a?a%5B%5D=REDACTED",
+			"/a?a/b=4": "/a?a%2Fb=REDACTED",
+			"/a?b=1&x+y=2": "/a?b=REDACTED&x%20y=REDACTED",
 			"/caf%C3%A9?caf%C3%A9=1": "/caf%C3%A9?caf%C3%A9=REDACTED",
 		};
 		const { request, lines } = await testServer({ plugins: [accessLog()] });
@@ -87,6 +106,19 @@ describe("accessLog", () => {
 		}
 
 		expect(lines.map((line) => line.attributes["http.url"])).toStrictEqual(Object.values(logged));
+	});
+
+	it("logs each key as a URL parse gives it, for a key with each printable ASCII character in a URL as the client sent it", async () => {
+		const characters = Array.from({ length: 95 }, (_, index) => String.fromCodePoint(index + 32));
+		// Why two queries: the rule is for the first key and for each later key.
+		const urls = characters.flatMap((character) => [
+			`http://localhost/a?k${character}=1`,
+			`http://localhost/a?b=1&k${character}=2`,
+		]);
+
+		await expect(loggedAsSent(urls)).resolves.toStrictEqual(
+			urls.map((url) => loggedUrl(new URL(url), { redact: true })),
+		);
 	});
 
 	it("logs a streamed response when its body ends, with every byte counted", async () => {
