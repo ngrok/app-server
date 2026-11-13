@@ -11,11 +11,6 @@ import { tcp } from "./tcp.js";
 
 export {
 	//,
-	nodeFiles,
-} from "./files.js";
-export {
-	//,
-	parsePort,
 	tcp,
 } from "./tcp.js";
 
