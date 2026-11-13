@@ -81,7 +81,7 @@ Run checks when a coherent unit of work is done and again before the final respo
 1. Read `git diff` for your files. Check them against the files that [Route by task](#route-by-task) names, and fix the drift.
 2. Run `pnpm run fmt`, `pnpm run lint`, `pnpm run typecheck`, and `pnpm run test`, and make them pass.
 3. Stop each process you start: a dev server, a built server, or a test watcher.
-4. A published change has a changeset with the bump from [Rules](#rules).
+4. A published change has a changeset with the bump from [Rules](#rules). Read each changeset of the branch again against the final code: a later commit can make an earlier changeset false.
 5. Do the [north-star pass](#north-star), and put it in the PR description. Name the principles you applied and the decision each one changed. End with a `Conventions pass:` note that says what you checked. If you did not run a check, say why.
 
 ## Commands

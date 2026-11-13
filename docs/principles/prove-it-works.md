@@ -14,6 +14,8 @@ Before you report a change as done, run the checks that would catch it if it wer
 - A README example that nobody ran.
 - A sentence about a drain, a timeout, or a stream that you saw on Node.js only. Run it on Bun and Deno, or name the runtime in the sentence.
 - A defect that you fix before you see it fail. Run the report first: a dependency or an earlier change can have fixed it.
+- An example of output, such as a log line, that no run of the real command gave.
+- A test that passes on your machine because of a file outside the repo, such as a `package.json` in the temp directory. Give the test each file that it needs.
 
 **In this repo:**
 
