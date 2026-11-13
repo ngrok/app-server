@@ -1,9 +1,14 @@
 import { withHeaderHook } from "../header-hook.js";
+import { checkHeaderName } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
 /** Options for {@link requestId}. */
 export type RequestIdOptions = {
-	/** @default "X-Request-Id" */
+	/**
+	 * The request header that the ID comes from, and the response header that
+	 * carries it. A name that is not an HTTP header name stops startup.
+	 * @default "X-Request-Id"
+	 */
 	headerName?: string;
 	/**
 	 * Also log the trace IDs as `dd.trace_id` and `dd.span_id`, the lower 64
@@ -80,6 +85,7 @@ export function requestId({
 	headerName = "X-Request-Id",
 	datadogTraceIds = false,
 }: RequestIdOptions = {}): Plugin {
+	checkHeaderName({ plugin: "requestId", option: "headerName", name: headerName });
 	return {
 		name: "request-id",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.

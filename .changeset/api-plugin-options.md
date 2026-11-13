@@ -45,3 +45,31 @@ The error names the option, the value, and the fix:
 ```
 health needs a livePath and a readyPath that differ. Both are "/healthz", so the readiness check would never run. For one health URL, set only readyPath.
 ```
+
+Breaking change: a header name or a header value in an option that no header can hold now stops startup. Before, the server started, and each response that got the header was a 500, while `/livez` and `/readyz` answered 200. The log line did not name the option. The checks cover `headerName` of `requestId()` and `buildId()`, `value` of `buildId()`, `unlessHeader` of `noindex()`, and each value of `securityHeaders({ headers })`. A value can hold a tab and each character from U+0020 to U+00FF except U+007F, so a value such as `café` still works.
+
+```ts
+// Before: the server started, and each page answered 500.
+defaultPlugins({ buildId: { value: "v42\n" } });
+defaultPlugins({ securityHeaders: { headers: { "Content-Security-Policy": "frame-ancestors ‘none’" } } });
+
+// After: remove the line break, and use the ASCII quote.
+defaultPlugins({ buildId: { value: "v42" } });
+defaultPlugins({ securityHeaders: { headers: { "Content-Security-Policy": "frame-ancestors 'none'" } } });
+```
+
+An empty `unlessHeader` also stops startup now. Before, `noindex({ unlessHeader: "" })` started and set no `X-Robots-Tag` on any response, so a search engine could index a preview deploy. Give the header a name, or use `noindex: true`.
+
+```ts
+// Before
+defaultPlugins({ noindex: { unlessHeader: process.env.EDGE_HEADER ?? "" } });
+
+// After
+defaultPlugins({ noindex: process.env.EDGE_HEADER ? { unlessHeader: process.env.EDGE_HEADER } : true });
+```
+
+The error names the option, the value, and the fix:
+
+```
+The value of buildId must be a value that a header can hold, not "v42\n". Remove each control character, such as a line break, and each character above U+00FF.
+```

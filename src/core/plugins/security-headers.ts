@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin } from "../plugin-options.js";
+import { checkHeaderValue, optionPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
@@ -33,7 +33,10 @@ const DEFAULT_SECURITY_HEADERS: SecurityHeaderValues = {
 
 /** Options for {@link securityHeaders}. */
 export type SecurityHeadersOptions = {
-	/** Values that replace the defaults. `false` turns a header off. */
+	/**
+	 * Values that replace the defaults. `false` turns a header off. A value
+	 * that a header cannot hold, such as one with a curly quote, stops startup.
+	 */
 	headers?: SecurityHeaderValues;
 };
 
@@ -67,6 +70,9 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 	const values = Object.entries({ ...DEFAULT_SECURITY_HEADERS, ...headers })
 		.filter((entry): entry is [string, string] => typeof entry[1] === "string")
 		.map(([name, value]) => [name, oneLine(value)] as const);
+	for (const [name, value] of values) {
+		checkHeaderValue({ plugin: "securityHeaders", option: name, value });
+	}
 	return {
 		name: "security-headers",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.

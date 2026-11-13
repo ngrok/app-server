@@ -23,6 +23,15 @@ describe("requestId", () => {
 		expect(response.headers.get("X-Request-Id")).toBeNull();
 	});
 
+	it.each(["X Request Id", "", "X-Request-Id\n", "X-Requêst-Id"])(
+		"stops startup for the headerName %j, which is not an HTTP header name",
+		(headerName) => {
+			expect(() => requestId({ headerName })).toThrow(
+				`The headerName of requestId must be an HTTP header name, not ${JSON.stringify(headerName)}.`,
+			);
+		},
+	);
+
 	it("replaces an incoming ID that is not valid with a new UUID", async () => {
 		const { request } = await testServer({ plugins: [requestId()] });
 

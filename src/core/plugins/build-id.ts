@@ -1,5 +1,5 @@
 import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin } from "../plugin-options.js";
+import { checkHeaderName, checkHeaderValue, optionPlugin } from "../plugin-options.js";
 import type { Plugin, ResponseHeaders, SetupInfo } from "../types.js";
 
 /** The header that {@link buildId} sets by default. */
@@ -16,14 +16,16 @@ export const BUILD_ID_METRIC = "build";
 export type BuildIdOptions = {
 	/**
 	 * The response header that carries the build. Give the same name to
-	 * `staleBuildReactRouter()` or `staleBuildTanStack()`.
+	 * `staleBuildReactRouter()` or `staleBuildTanStack()`. A name that is not
+	 * an HTTP header name stops startup.
 	 * @default "X-Build-Id"
 	 */
 	headerName?: string;
 	/**
 	 * The deployed build, such as the image tag. With no value or `""`, the
 	 * plugin sends the ID that the `appServer` Vite plugin derives from the
-	 * client build. In development, it then sends no build.
+	 * client build. In development, it then sends no build. A value that a
+	 * header cannot hold, such as one with a line break, stops startup.
 	 * @default the `buildId` of `.app-server.json` in the client build
 	 */
 	value?: string | undefined;
@@ -120,6 +122,10 @@ export function buildId({
 }: BuildIdOptions = {}): Plugin {
 	// Why `""` too: a deploy can set the variable with no value, such as `IMAGE_TAG=`.
 	const explicit = given === "" ? undefined : given;
+	checkHeaderName({ plugin: "buildId", option: "headerName", name: headerName });
+	if (explicit != null) {
+		checkHeaderValue({ plugin: "buildId", option: "value", value: explicit });
+	}
 	let value = explicit;
 	let timing = buildMetric(value);
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;

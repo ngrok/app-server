@@ -274,7 +274,7 @@ The function differs from a long-lived process:
 `createServer` runs the plugins in list order, then the app's own Hono routes, then the framework. `defaultPlugins()` returns this order:
 
 1. `health()`: the liveness and readiness probes at `/livez` and `/readyz`. A probe skips the access log. `defaultPlugins({ health })` changes them, and `false` turns them off. See [Health checks](#health-checks).
-2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it. `defaultPlugins({ requestId: { headerName } })` uses another header.
+2. `requestId()`: reuses a valid incoming `X-Request-Id`, else makes a UUID, and echoes it. `defaultPlugins({ requestId: { headerName } })` uses another header. A name that is not an HTTP header name stops startup.
 3. `accessLog({ redactQuery })`: one line per request when the response ends, for the response that leaves the server, with Datadog standard attributes (`http.status_code`, `network.bytes_written`, `duration` in nanoseconds). Query values are `REDACTED` by default. A 5xx line has the level `error`, and each other line has the level `info`. With React Router, a line for a request that React Router answers has the route pattern that it matched as `http.route`, such as `/domains/:domainId`. A prerendered page that the server sends from its file has no `http.route`. In development, a request that Vite answers, such as a source module or `/@vite/client`, gets no line. A request of the `vercel` build's check of the CDN pages gets no line.
 4. `streamingCompress()`: brotli or gzip that flushes after each chunk. A client gets brotli, at quality 4, when its `Accept-Encoding` ranks `br` at least as high as `gzip`. For HTML, brotli at quality 4 is smaller than gzip, for the same CPU time. For example, a page of 149 KiB in 10 chunks takes 0.60 ms and 7.7 KiB as brotli, and 0.68 ms and 10.6 KiB as gzip, on an Apple M3 Max. The `compression` middleware of Express also uses quality 4. On the node host, brotli holds the start of a body to pick its window. A body that ends within 256 KiB gets a window of 256 KiB, in one zlib call. A longer body gets the default window of 4 MiB, so it can use a repeat that is more than 256 KiB back. Why not 4 MiB for each body: Node.js tells V8 the full window of each open encoder, and under load V8 then runs a full garbage collection for every few responses. When the body waits for its next chunk first, for one turn of the event loop, the stream sends what it holds with the 256 KiB window. So a page shell that waits for slow data, such as a React `<Suspense>` boundary, still goes out at once. Chunks that the body has queued together go out as one, up to 64 KiB, so a rendered page costs fewer flushes. For example, a rendered page of 19 KB that the body queues at once costs one zlib call, not three. When the body ends by the time the stream finishes its last chunk, that chunk and the end of the stream go out together. On the node host, a body that ends with its first chunk, up to 64 KiB for gzip and 256 KiB for brotli, uses a zlib stream from a pool, so a small page costs no new zlib stream. Each encoding keeps up to 16 streams between responses. The gzip streams hold about 4.3 MiB in all. A gzip stream takes only such a body, and only one at least as long as each earlier body of that stream, so the gzip bytes of a body depend on that body alone. A reset gives a brotli stream a new encoder, so its bytes also depend on the body alone. On Bun and Deno, each brotli body gets a new stream, because a reset there loses the quality or gives no bytes. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a compressible type, the same types that get a copy from the build. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses an encoding. The host gives the streams. On a host with neither, the plugin does nothing.
 5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
@@ -415,7 +415,7 @@ export default createServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) 
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Strict-Transport-Security: max-age=31536000`, on an HTTPS request only
 
-`Content-Security-Policy` and `Permissions-Policy` have no default. A response that has one of these headers keeps its own value. `false` turns a header off, and `defaultPlugins({ securityHeaders: false })` turns them all off.
+`Content-Security-Policy` and `Permissions-Policy` have no default. A response that has one of these headers keeps its own value. `false` turns a header off, and `defaultPlugins({ securityHeaders: false })` turns them all off. A value that a header cannot hold, such as one with a curly quote in place of `'`, stops startup.
 
 ```ts
 defaultPlugins({
@@ -557,7 +557,7 @@ export function getRouter() {
 The server needs no code: `defaultPlugins()` runs `buildId()` with the ID of the client build.
 
 - After the client build, the `appServer` Vite plugin hashes the name and the content of each file of the client bundle. After the server build, it adds each file that the server build wrote to the client's assets directory, such as the React Router route manifest. It writes the hash as `buildId` in `.app-server.json`. The ID changes when the code or the routes that an open tab runs change. A deploy that changes only the server, a `public/` file, or a prerendered page keeps the ID, so an open tab does not move for nothing.
-- To send another ID, such as the image tag, set `value`. With no value, such as an unset or empty variable, the server sends the build's ID:
+- To send another ID, such as the image tag, set `value`. With no value, such as an unset or empty variable, the server sends the build's ID. A value that a header cannot hold, such as one with a line break, stops startup:
 
   ```ts
   // server.ts
@@ -566,7 +566,7 @@ The server needs no code: `defaultPlugins()` runs `buildId()` with the ID of the
 
 - In development, the server sends no build ID unless `value` is set, because Vite's hot module replacement (HMR) updates an open tab after each edit.
 - A build with no `appServer` Vite plugin has no ID. Set `value` for it.
-- `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`. To use another header, set `headerName` in `buildId()`, and the same `headerName` in `staleBuildReactRouter()` or `staleBuildTanStack()`.
+- `buildId()` sends the build on each document and data response, as `X-Build-Id` and in `Server-Timing`. To use another header, set `headerName` in `buildId()`, and the same `headerName` in `staleBuildReactRouter()` or `staleBuildTanStack()`. A name that is not an HTTP header name stops startup.
 - The module reads the build from the responses that the router fetches, and from the responses of this origin that the browser fetches with no script, such as a `<Link prefetch="intent">` hover. A prefetch can show a new build before the click. A build from another origin does not count.
 - The router tells the module when a navigation starts, after its blockers. So a canceled link, `navigate()`, a form, a history step, and `blocker.proceed()` each act as the router acts.
 - If a data request of a navigation gets a response from a new build, the browser loads the target URL as a document. The old code never gets the new data.
@@ -685,7 +685,7 @@ defaultPlugins({
 defaultPlugins({ noindex: process.env.PREVIEW === "1" });
 ```
 
-To allow indexing only for a request with a header, give `unlessHeader`. Each response gets the header in `Vary`, so a CDN keeps one answer for each case. For example, to allow indexing only for a request through the ngrok edge, which adds `x-ngrok-edge`:
+To allow indexing only for a request with a header, give `unlessHeader`. Each response gets the header in `Vary`, so a CDN keeps one answer for each case. An `unlessHeader` that is not an HTTP header name, such as an empty string, stops startup. For example, to allow indexing only for a request through the ngrok edge, which adds `x-ngrok-edge`:
 
 ```ts
 defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } });

@@ -125,6 +125,17 @@ describe("securityHeaders", () => {
 		);
 	});
 
+	it("stops startup for a value that a header cannot hold, such as a curly quote", () => {
+		const value = "frame-ancestors \u2018none\u2019";
+
+		expect(() => securityHeaders({ headers: { "Content-Security-Policy": value } })).toThrow(
+			`The Content-Security-Policy of securityHeaders must be a value that a header can hold, not ${JSON.stringify(value)}.`,
+		);
+		expect(() => securityHeaders({ headers: { "Permissions-Policy": "camera=()\u0000" } })).toThrow(
+			"The Permissions-Policy of securityHeaders",
+		);
+	});
+
 	it("does not change a response object that the framework sends again", async () => {
 		const shared = new Response(null, {
 			headers: { "Content-Type": "text/html", "Content-Security-Policy": "img-src 'self'" },
