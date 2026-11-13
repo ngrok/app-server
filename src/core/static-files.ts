@@ -355,11 +355,7 @@ async function preferredCopy(
 	{ files, path, head }: { files: StaticFiles; path: string; head: Head },
 ): Promise<Copy | undefined> {
 	// Why not for an encoded file: the copy would encode it again, under one `Content-Encoding`.
-	if (
-		head.has("content-encoding") ||
-		(context.get("rewritesHtml") === true &&
-			(head.get("content-type")?.startsWith("text/html") ?? false))
-	) {
+	if (head.has("content-encoding")) {
 		return undefined;
 	}
 	const copies: Copy[] = [];
@@ -413,6 +409,22 @@ function respond(body: ReadableStream<Uint8Array> | null, status: number, head: 
 	return response;
 }
 
+/**
+ * The response for an HTML file of a request with `rewritesHtml`: the file as
+ * it is on disk, with no compressed copy, because a stage changes its bytes.
+ * Why no `Content-Length`: the stage changes the length. Why no ETag and no
+ * 304: the ETag does not hold the values that the stage adds, so a 304 could
+ * keep a page that the stage made with an old value.
+ */
+async function changedPage(
+	context: Context<AppServerEnv>,
+	{ files, file, head }: { files: StaticFiles; file: StaticFile; head: Head },
+): Promise<Response> {
+	// Why: `headers` can set an ETag.
+	head.delete("etag");
+	return respond(context.req.method === "HEAD" ? null : await wholeFile(files, file), 200, head);
+}
+
 /** What {@link staticResponse} needs besides the request. */
 export type StaticResponseOptions = {
 	files: StaticFiles;
@@ -441,8 +453,12 @@ export type StaticResponseOptions = {
  * the copy that its `Accept-Encoding` prefers, brotli before gzip, with its
  * `Content-Encoding`, an ETag for that encoding, and no range. A response
  * marked `no-transform`, also by the header hook of an earlier stage, and a
- * response that `headers` encode, never get a copy. An HTML file gets no
- * copy when an earlier stage sets `rewritesHtml`.
+ * response that `headers` encode, never get a copy.
+ *
+ * When an earlier stage sets `rewritesHtml`, an HTML file goes out as it is
+ * on disk, with no copy, no `Content-Length`, and no ETag, and an
+ * `If-None-Match` gets the full page. Why: the stage changes the bytes, and
+ * the server does not know which values the change depends on.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
@@ -459,6 +475,9 @@ export async function staticResponse(
 	const html = head.get("content-type")?.startsWith("text/html") ?? false;
 	if (html) {
 		context.set("staticDocument", file.path);
+		if (context.get("rewritesHtml") === true) {
+			return changedPage(context, { files, file, head });
+		}
 	}
 	// Why before the 304: a 304 sends the `Vary` and the ETag of its 200.
 	const copy = await preferredCopy(context, { files, path: file.path, head });

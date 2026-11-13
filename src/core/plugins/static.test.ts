@@ -1,13 +1,18 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import type { IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
-import { createServer, serverInternals } from "../create-server.js";
+import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
+import { createEntry } from "../entry.js";
 import { withHeaderHook } from "../header-hook.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
+import { handler, host as vercelHost } from "../../vercel/index.js";
 import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
@@ -824,6 +829,161 @@ describe("compressed copies from the build", () => {
 		expect(injected.headers.get("Content-Encoding")).toBeNull();
 		await expect(injected.text()).resolves.toContain('<script id="app-server-public-env"');
 		expect(copied.headers.get("Content-Encoding")).toBe("br");
+	});
+});
+
+describe("a page that a stage with rewritesHtml changes", () => {
+	const banner = "<!-- banner -->";
+	const pages: Record<string, string> = {
+		"/banner/small": "<!doctype html><html><body><h1>Small</h1></body></html>",
+		// Why this size: the page is too large for one chunk, so it streams.
+		"/banner/large": `<!doctype html><html><head></head><body>${"<p>The quick brown fox jumps over the lazy dog.</p>\n".repeat(6000)}</body></html>`,
+	};
+	for (const [path, page] of Object.entries(pages)) {
+		mkdirSync(join(clientDirectory, path), { recursive: true });
+		writeFileSync(join(clientDirectory, path, "index.html"), page);
+		writeFileSync(join(clientDirectory, path, ".index.html.gz"), gzipSync(page));
+		writeFileSync(join(clientDirectory, path, ".index.html.br"), brotliCompressSync(page));
+	}
+
+	/** `response` with the banner after the last byte of an HTML body. */
+	function addBanner(response: Response): Response {
+		const html = response.headers.get("Content-Type")?.startsWith("text/html") ?? false;
+		if (!html || response.body == null) {
+			return response;
+		}
+		const withBanner = new TransformStream<Uint8Array, Uint8Array>({
+			flush(controller) {
+				controller.enqueue(new TextEncoder().encode(banner));
+			},
+		});
+		return new Response(response.body.pipeThrough(withBanner), response);
+	}
+
+	/** The plugin of the README and of the changelog, as an app writes it. */
+	const addsBanner: Plugin = {
+		name: "adds-banner",
+		middleware: async (context, next) => {
+			context.set("rewritesHtml", true);
+			await next();
+			context.res = addBanner(context.res);
+		},
+	};
+
+	/** The URL of a server on the node host or on the vercel host, with the plugin before the static stages. */
+	async function serving(hostName: "node" | "vercel"): Promise<string> {
+		const plugins = defaultPlugins({ beforeStatic: [addsBanner] });
+		if (hostName === "node") {
+			const { internals, framework } = await testServer({
+				plugins,
+				clientDirectory,
+				options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })] },
+			});
+			const server = await internals.listen(framework, []);
+			onTestFinished(async () => server.shutdown());
+			return server.urls[0] ?? "";
+		}
+		const listener = handler(
+			createEntry({
+				app: createServer({ plugins, logger: { log: () => {} } }),
+				host: vercelHost,
+				clientDirectory,
+				framework: () => stubFramework(),
+			}),
+		);
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing);
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(
+			async () =>
+				new Promise<void>((resolve) => {
+					server.close(() => {
+						resolve();
+					});
+				}),
+		);
+		return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	}
+
+	/** What a GET that accepts `encoding` gets on the wire: the status, the text, and whether the length is right. */
+	async function wire(url: URL, encoding: string) {
+		const response = await new Promise<IncomingMessage>((resolve, reject) => {
+			httpRequest(url, { headers: { "Accept-Encoding": encoding } }, resolve)
+				.once("error", reject)
+				.end();
+		});
+		const chunks: Buffer[] = [];
+		for await (const chunk of response) {
+			chunks.push(chunk as Buffer);
+		}
+		const body = Buffer.concat(chunks);
+		const decoders: Record<string, (bytes: Buffer) => Buffer> = {
+			gzip: gunzipSync,
+			br: brotliDecompressSync,
+		};
+		const decode = decoders[response.headers["content-encoding"] ?? ""];
+		const length = response.headers["content-length"];
+		return {
+			status: response.statusCode,
+			text: (decode == null ? body : decode(body)).toString(),
+			rightLength: length == null || length === String(body.byteLength),
+		};
+	}
+
+	it.each(["node", "vercel"] as const)(
+		"goes out whole on the %s host: small or large, to a client with or without gzip or brotli",
+		async (hostName) => {
+			const base = await serving(hostName);
+
+			for (const [path, page] of Object.entries(pages)) {
+				for (const encoding of ["identity", "gzip", "br"]) {
+					const sent = await wire(new URL(path, base), encoding);
+
+					expect({ path, encoding, ...sent }).toStrictEqual({
+						path,
+						encoding,
+						status: 200,
+						text: `${page}${banner}`,
+						rightLength: true,
+					});
+				}
+			}
+		},
+	);
+
+	it("has no ETag, also not from the headers option, so the ETag of its file gets the full page", async () => {
+		const plain = await staticServer();
+		const fileTag = (await plain.request("/banner/small")).headers.get("ETag") ?? "";
+		const { request } = await testServer({
+			plugins: [
+				addsBanner,
+				prerendered({ headers: ({ path }) => (path === "/plain" ? { ETag: '"v1"' } : undefined) }),
+			],
+			clientDirectory,
+		});
+
+		const revalidated = await request("/banner/small", { headers: { "If-None-Match": fileTag } });
+		const tagged = await request("/plain", { headers: { "If-None-Match": '"v1"' } });
+
+		expect(fileTag).not.toBe("");
+		expect([revalidated.status, revalidated.headers.get("ETag")]).toStrictEqual([200, null]);
+		expect([tagged.status, tagged.headers.get("ETag")]).toStrictEqual([200, null]);
+		await expect(revalidated.text()).resolves.toBe(`${pages["/banner/small"]}${banner}`);
+	});
+
+	it("answers HEAD with no length, and leaves a file that is not HTML as it is", async () => {
+		const { request } = await testServer({ plugins: [addsBanner, prerendered()], clientDirectory });
+
+		const head = await request("/banner/small", { method: "HEAD" });
+		const text = await request("/copy.txt", { headers: { "Accept-Encoding": "br" } });
+
+		expect([head.status, head.headers.get("Content-Length")]).toStrictEqual([200, null]);
+		expect(text.headers.get("Content-Encoding")).toBe("br");
+		expect(text.headers.get("ETag")).toMatch(/^W\/"/u);
+		expect(text.headers.get("Content-Length")).not.toBeNull();
 	});
 });
 
