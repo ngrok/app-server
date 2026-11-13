@@ -227,6 +227,22 @@ describe("eventStream", () => {
 		expect(signal.reason).toBe(failure);
 	});
 
+	it("stops a quiet stream at its next heartbeat when more than 1 MiB of events waits", async () => {
+		vi.useFakeTimers();
+		const { send, signal, reader } = await openStream();
+		send({ data: "" });
+		// The client takes the first event, and then it reads no more.
+		await reader.read();
+		send({ data: "x".repeat(2 * 1024 * 1024) });
+		await vi.advanceTimersByTimeAsync(14_999);
+		const abortedBeforeTheHeartbeat = signal.aborted;
+
+		await vi.advanceTimersByTimeAsync(1);
+
+		expect(abortedBeforeTheHeartbeat).toBe(false);
+		expect(signal.reason).toStrictEqual(new Error(LIMIT_MESSAGE));
+	});
+
 	it("sends each event of a burst of more than 1 MiB to a client that reads", async () => {
 		const clientRead = Promise.withResolvers<undefined>();
 		const response = eventStream({}, async ({ send }) => {
