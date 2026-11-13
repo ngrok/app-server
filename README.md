@@ -913,6 +913,7 @@ The server also writes these lines. A line of a request also has `http.request_i
 | `access log attributes failed`                 | `error` | `error.*`, and the attributes of the `request` line | The `attributes` callback of `accessLog()` threw. This line goes out in place of the `request` line.                                                               |
 | `readiness check failed`                       | `warn`  | `error.*`, when the check threw                     | The `ready` check of `health()` starts to fail, and `/readyz` answers 503.                                                                                         |
 | `readiness check passed`                       | `info`  |                                                     | The `ready` check passes again.                                                                                                                                    |
+| `client build not found`                       | `warn`  | `app_server.client_directory`                       | At startup, the directory of the client build is not there, so the framework answers each request for a file. Copy the client build to that path.                  |
 | `prerendered paths with no file`               | `warn`  | `app_server.missing_paths`                          | At startup, the client build has no file for a prerendered path. The framework answers that path.                                                                  |
 
 ## Health checks

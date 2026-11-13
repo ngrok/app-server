@@ -411,6 +411,58 @@ describe("createEntry", () => {
 		]);
 	});
 
+	it("warns one time when the client build is not there, and names the directory", async () => {
+		const lines: LogLine[] = [];
+		const missing = join(clientDirectory, "no-such-build/client");
+		const entry = createEntry({
+			app: createServer({
+				plugins: [],
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+			}),
+			host: { files: nodeHost.files },
+			clientDirectory: missing,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await entry.fetch(new Request("http://localhost/assets/app.js"), {});
+		await entry.fetch(new Request("http://localhost/assets/app.js"), {});
+
+		expect(lines).toStrictEqual([
+			{
+				level: "warn",
+				message: "client build not found",
+				attributes: { "app_server.client_directory": missing },
+			},
+		]);
+	});
+
+	it("writes no warning for a client build with no files", async () => {
+		const lines: LogLine[] = [];
+		const empty = join(clientDirectory, "empty");
+		mkdirSync(empty);
+		const entry = createEntry({
+			app: createServer({
+				plugins: [],
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+			}),
+			host: { files: nodeHost.files },
+			clientDirectory: empty,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await entry.fetch(new Request("http://localhost/"), {});
+
+		expect(lines).toStrictEqual([]);
+	});
+
 	it("refuses to start when neither the app nor the host has a listener", async () => {
 		const entry = createEntry({
 			app: createServer({ plugins: [], logger: recordingLogger([]) }),

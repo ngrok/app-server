@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliCompressSync } from "node:zlib";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
 import { withHeaderHook } from "../core/header-hook.js";
@@ -18,6 +18,9 @@ import { brotliOnlyFiles } from "./brotli-only.js";
 import { handler, host } from "./index.js";
 
 let close: (() => Promise<void>) | undefined;
+
+/** A client build with no files. Why not a path to nothing: the server then warns on stdout, and a function always holds its client build. */
+const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
 
 /** The access log line in the stdout `output`, or `undefined` when there is none. */
 function requestLine(output: string): unknown {
@@ -36,6 +39,10 @@ afterEach(async () => {
 	close = undefined;
 });
 
+afterAll(() => {
+	rmSync(clientDirectory, { recursive: true, force: true });
+});
+
 /** Serves `handler` for an app on `node:http`, as a Vercel Function does, and gives its URL. */
 async function serve(plugins: Plugin[] = []): Promise<string> {
 	const app = createServer({ plugins });
@@ -45,7 +52,7 @@ async function serve(plugins: Plugin[] = []): Promise<string> {
 	const entry = createEntry({
 		app,
 		host,
-		clientDirectory: "/nonexistent",
+		clientDirectory,
 		framework: () => stubFramework(),
 	});
 	const listener = handler(entry);
@@ -114,7 +121,7 @@ describe("handler", () => {
 			return context.text("hi");
 		});
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		const written = Promise.withResolvers<string>();
 		const server = createHttpServer((incoming, outgoing) => {
@@ -145,7 +152,7 @@ describe("handler", () => {
 		});
 		const app = createServer({ plugins: [accessLog()] });
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		const written = Promise.withResolvers<string>();
 		const server = createHttpServer((incoming, outgoing) => {
@@ -180,7 +187,7 @@ describe("handler", () => {
 			createEntry({
 				app,
 				host,
-				clientDirectory: "/nonexistent",
+				clientDirectory,
 				framework: () => stubFramework(async () => heldStream("shell").response),
 			}),
 		);
@@ -231,7 +238,7 @@ describe("handler", () => {
 			return context.text("hi");
 		});
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		let returned = false;
 		const finished = Promise.withResolvers<undefined>();

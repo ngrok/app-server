@@ -124,6 +124,12 @@ export function createEntry({
 		const manifest = await readBuildManifest(snapshot ?? shared.files);
 		// Why only with a snapshot: it promises that the client build does not change while the server runs.
 		const files = snapshot == null ? shared.files : keptFiles(snapshot);
+		if ((await files.stat("/")) == null) {
+			// Why a warning: an app can keep its client build on a CDN, and the framework still answers.
+			logger.warn("client build not found", {
+				"app_server.client_directory": clientDirectory ?? runtime.clientDirectory,
+			});
+		}
 		const info: SetupInfo = {
 			...shared,
 			files,
