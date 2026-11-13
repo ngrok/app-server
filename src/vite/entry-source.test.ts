@@ -67,20 +67,20 @@ describe("environmentOptions", () => {
 		}
 	});
 
-	it.each(["true", "yes", " 1", "01"])(
+	it.each(["true", "yes", " 1", "01", "1\r"])(
 		"refuses TRUST_FORWARDED_PROTO=%j, and names the variable, the value, and the fix",
 		(value) => {
 			expect(() => environmentOptions({ TRUST_FORWARDED_PROTO: value })).toThrow(
-				`TRUST_FORWARDED_PROTO must be "1" or "0", not "${value}". Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.`,
+				`TRUST_FORWARDED_PROTO must be "1" or "0", not ${JSON.stringify(value)}. Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.`,
 			);
 		},
 	);
 
-	it.each(["abc", "1e2", "0x10", "-1", "1.5", " ", "99999999999999999999"])(
+	it.each(["abc", "1e2", "0x10", "-1", "1.5", " ", "1\r", "99999999999999999999"])(
 		"refuses TRUSTED_PROXY_HOPS=%j, and names the variable, the value, and the fix",
 		(value) => {
 			expect(() => environmentOptions({ TRUSTED_PROXY_HOPS: value })).toThrow(
-				`TRUSTED_PROXY_HOPS must be an integer of 0 or more, not "${value}". Set it to the number of proxies in front of the server, such as TRUSTED_PROXY_HOPS=1, or remove the variable.`,
+				`TRUSTED_PROXY_HOPS must be an integer of 0 or more, not ${JSON.stringify(value)}. Set it to the number of proxies in front of the server, such as TRUSTED_PROXY_HOPS=1, or remove the variable.`,
 			);
 		},
 	);
@@ -110,5 +110,12 @@ describe("the server entry of a build with no server.ts", () => {
 		expect(hops.output).toContain(
 			'TRUSTED_PROXY_HOPS must be an integer of 0 or more, not "abc". Set it to the number of proxies in front of the server, such as TRUSTED_PROXY_HOPS=1, or remove the variable.',
 		);
+	});
+
+	it("shows a character that a terminal hides in a bad value, such as the carriage return of a CRLF env file", () => {
+		const { status, output } = importEntry({ TRUST_FORWARDED_PROTO: "1\r" });
+
+		expect(status).toBe(1);
+		expect(output).toContain(String.raw`TRUST_FORWARDED_PROTO must be "1" or "0", not "1\r".`);
 	});
 });

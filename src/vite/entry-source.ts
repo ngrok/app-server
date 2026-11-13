@@ -3,6 +3,7 @@ import type { FrameworkBuild, HostBuild } from "./index.js";
 
 /** The module ID of the server entry that `appServer` generates. */
 export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";
+/** What the plugin resolves {@link SERVER_ENTRY_ID} to. Why `\0`: no other plugin then loads or transforms the ID as a file. */
 export const RESOLVED_SERVER_ENTRY_ID = `\0${SERVER_ENTRY_ID}`;
 
 /**
@@ -23,16 +24,18 @@ export function environmentOptions(
 	env: Readonly<Record<string, string | undefined>>,
 ): Pick<CreateServerOptions, "trustForwardedProto" | "trustedProxyHops"> {
 	const proto = env.TRUST_FORWARDED_PROTO ?? "";
+	// Why `JSON.stringify` in each message: it shows a character that a terminal hides, such as the
+	// `\r` of a CRLF env file.
 	if (proto !== "" && proto !== "0" && proto !== "1") {
 		throw new Error(
-			`TRUST_FORWARDED_PROTO must be "1" or "0", not "${proto}". Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.`,
+			`TRUST_FORWARDED_PROTO must be "1" or "0", not ${JSON.stringify(proto)}. Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.`,
 		);
 	}
 	const hops = env.TRUSTED_PROXY_HOPS ?? "";
 	// Why the pattern: `Number` also reads "1e2", "0x10", and a space as a number.
 	if (!/^\d*$/u.test(hops) || !Number.isSafeInteger(Number(hops))) {
 		throw new Error(
-			`TRUSTED_PROXY_HOPS must be an integer of 0 or more, not "${hops}". Set it to the number of proxies in front of the server, such as TRUSTED_PROXY_HOPS=1, or remove the variable.`,
+			`TRUSTED_PROXY_HOPS must be an integer of 0 or more, not ${JSON.stringify(hops)}. Set it to the number of proxies in front of the server, such as TRUSTED_PROXY_HOPS=1, or remove the variable.`,
 		);
 	}
 	return { trustForwardedProto: proto === "1", trustedProxyHops: Number(hops) };

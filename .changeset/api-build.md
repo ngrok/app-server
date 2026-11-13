@@ -9,14 +9,15 @@ Breaking changes to the build side of the package: the `/vite` and `/react-route
 - `TRUST_FORWARDED_PROTO` takes `1` or `0`.
 - `TRUSTED_PROXY_HOPS` takes an integer of 0 or more.
 - For each of them, no value and an empty value keep the default.
-- Each other value stops startup with a message that names the variable, the value, and the fix.
+- Each other value stops startup with a message that names the variable, the value, and the fix. This includes a value with a space or a carriage return, such as `" 1"`, which `TRUSTED_PROXY_HOPS` took before. The message shows the value as JSON, so a hidden character shows as `"1\r"`.
 
 ```sh
 # Before: the server starts, and does not trust X-Forwarded-Proto.
-TRUST_FORWARDED_PROTO=true app-server serve
-
 # After: the server stops with this message.
 # TRUST_FORWARDED_PROTO must be "1" or "0", not "true". Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.
+TRUST_FORWARDED_PROTO=true app-server serve
+
+# The fix: the server starts, and trusts X-Forwarded-Proto.
 TRUST_FORWARDED_PROTO=1 app-server serve
 ```
 
