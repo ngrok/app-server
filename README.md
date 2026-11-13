@@ -305,7 +305,7 @@ createServer({
 
 Keep `assets` in the array, because it runs Vite in development.
 
-Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, a Hono `middleware`, and optional hooks:
+Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, an optional Hono `middleware`, and optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";
