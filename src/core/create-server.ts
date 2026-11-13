@@ -550,7 +550,7 @@ export function createServer({
 				);
 			}
 			// Why not for each request: with no edge, a report makes the server put a stream around the
-			// body, and a request with no report had none.
+			// body, and a request with no report has none.
 			if (requestStore != null && (edge != null || reports.length > 0)) {
 				reports.push(() => {
 					releaseContext(scope, logger, requestLog);

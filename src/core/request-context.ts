@@ -41,10 +41,10 @@ export function withRequestContext<Result>(
 }
 
 /**
- * The values of a request whose response is sent. It keeps the fields of the
- * request's log lines, and not the Hono context. Why one object, with a logger
- * that the first read makes: a timer that a request leaves keeps these values
- * until it fires, and few of those requests log again.
+ * The values of a request whose response is sent, with the fields of its log
+ * lines and without its Hono context. Why a logger that the first read makes:
+ * a timer that a request leaves keeps these values until it fires, and few of
+ * those requests log again.
  */
 class SentValues implements RequestContext {
 	public readonly requestId: string | undefined;
