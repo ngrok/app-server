@@ -69,7 +69,7 @@ describe("listenFromPort", () => {
 		const taken = await occupiedPort();
 
 		await expect(listenFromPort(server(), { port: taken, strictPort: true })).rejects.toThrow(
-			/EADDRINUSE/u,
+			`Port ${taken} is already in use`,
 		);
 	});
 
@@ -90,7 +90,7 @@ describe("listenFromPort", () => {
 
 		const result =
 			outcome instanceof Error
-				? { refused: outcome.message.includes("EADDRINUSE") }
+				? { refused: outcome.message === `Port ${taken} is already in use` }
 				: { port: outcome, shared };
 		expect([{ refused: true }, { port: taken, shared: [taken] }]).toContainEqual(result);
 	});

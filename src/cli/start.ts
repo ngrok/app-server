@@ -1,5 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
 import type { Server } from "node:http";
+import { styleText } from "node:util";
 import type { Plugin } from "vite";
 import { asError, hookSink, textSink } from "../core/log.js";
 import { devServerStage } from "../node/dev-server.js";
@@ -82,32 +83,28 @@ export async function start(): Promise<void> {
 	const port =
 		process.env.PORT == null ? viteServer.config.server.port : parsePort(process.env.PORT);
 	const hostname = process.env.HOST || viteHostname(viteServer.config.server.host);
+	// Why Vite's logger and Vite's words: the lines then follow the app's `logLevel` and
+	// `customLogger`, as in `vite dev`.
+	const { logger } = viteServer.config;
 	const boundPort = await listenFromPort(httpServer, {
 		port,
 		hostname,
 		strictPort: viteServer.config.server.strictPort,
 		onPortInUse: (inUse) => {
-			sink.log({
-				level: "info",
-				message: "port in use, trying the next port",
-				attributes: { "server.port": inUse },
-			});
+			logger.info(`Port ${inUse} is in use, trying another one...`);
 		},
 		onWildcardInUse: (inUse) => {
-			sink.log({
-				level: "warn",
-				message: "port in use on a wildcard address",
-				attributes: {
-					"server.port": inUse,
-					"server.address": hostname,
-				},
-			});
+			logger.warn(
+				styleText(
+					"yellow",
+					`Port ${inUse} is in use on a wildcard address, but ${hostname ?? "localhost"}:${inUse} is available. There may be another server running on a wildcard IP on port ${inUse}.`,
+				),
+			);
 		},
 	});
-	// Why Vite's logger: the lines then follow the app's `logLevel` and `customLogger`, as in `vite dev`.
-	viteServer.config.logger.info("");
+	logger.info("");
 	for (const line of devUrlLines({ hostname, port: boundPort, base: viteServer.config.base })) {
-		viteServer.config.logger.info(line);
+		logger.info(line);
 	}
 
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {

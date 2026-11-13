@@ -408,16 +408,29 @@ async function checkOwnRejectionListener(runtime: string): Promise<void> {
 }
 
 /**
- * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
- * server at once, though the app left a timer.
+ * `app-server start` on Node: it moves on from a port in use as `vite dev` does, a Vite plugin
+ * gets the HTTP server's events, and Ctrl+C stops the server at once, though the app left a timer.
  */
 async function checkStart(): Promise<void> {
-	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
-		cwd: devDirectory,
-		env: { HOST: "127.0.0.1" },
-	});
+	const held = await holdPort();
+	const { child, url, lines } = startServer(
+		"node",
+		[cliPath, "start", "--port", String(held.port)],
+		{ cwd: devDirectory, env: { HOST: "127.0.0.1" } },
+	);
 	try {
-		const page = await fetch(new URL("/", await url));
+		const base = await url;
+		assert.notEqual(new URL(base).port, String(held.port), "`start` moves on from a port in use");
+		assert.ok(
+			lines.some(
+				(line) =>
+					line.message === "vite logger" &&
+					line.level === "info" &&
+					line.text === `Port ${held.port} is in use, trying another one...`,
+			),
+			"`start` reports a port in use through Vite's logger, in the words of `vite dev`",
+		);
+		const page = await fetch(new URL("/", base));
 		assert.equal(await page.text(), "rendered");
 		// Why: the `exit` event can come before the last stdout line.
 		const stdoutEnded = new Promise<void>((resolve) => {
@@ -440,6 +453,7 @@ async function checkStart(): Promise<void> {
 		process.stdout.write("ok node start\n");
 	} finally {
 		child.kill("SIGKILL");
+		await close(held.server);
 	}
 }
 
