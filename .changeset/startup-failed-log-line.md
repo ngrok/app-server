@@ -6,4 +6,4 @@ A failed start now writes one `startup failed` line to the log, with the level `
 
 The crash output and the exit code 1 do not change. If your own entry catches the error of `start()` and logs it, the log now has two lines for one failure. If you alert on `error` lines, a crash loop now raises that alert.
 
-The copy of the package in the server build writes the line, so build the app again to get it.
+For a build from the `appServer` plugin, the copy of the package in the server build writes the line, so build the app again to get it.

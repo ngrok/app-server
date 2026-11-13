@@ -10,12 +10,12 @@ Breaking change: the option that names the build header is now `headerName` in `
 // Before
 defaultPlugins({ buildId: { header: "X-App-Build" } });
 staleBuildReactRouter({ header: "X-App-Build" });
-staleBuildTanStack({ header: "X-App-Build" });
+staleBuildTanStack(router, { header: "X-App-Build" });
 
 // After
 defaultPlugins({ buildId: { headerName: "X-App-Build" } });
 staleBuildReactRouter({ headerName: "X-App-Build" });
-staleBuildTanStack({ headerName: "X-App-Build" });
+staleBuildTanStack(router, { headerName: "X-App-Build" });
 ```
 
 Breaking change, for a listener that writes each response itself: `ResponseEdge.close` now takes one object, so the call says what each value is. Before, it took three positional values. JavaScript gives no error for the old call: the access log line then has no status.

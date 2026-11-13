@@ -11,4 +11,3 @@ Correct the JSDoc that an editor shows. No behavior changes.
 - `defaultPlugins` and `Plugin`: an app finds a plugin in the array by its `name`, such as `"streaming-compress"`.
 - `TcpOptions`: a `port` or a `host` wins over `PORT`, `HOST`, and the `--port` of `app-server serve`. The examples of `tcp` and `Listener` no longer set a port.
 - `redirects`: the default `trailingSlash` mode is `"preserve"`.
-- `nodeFiles`: the measured cost of the file list of `snapshot()`.

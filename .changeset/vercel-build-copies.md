@@ -4,7 +4,7 @@
 
 On the vercel host, the build now writes only the compressed copies that the deploy holds: the brotli copy of each file that the function serves, and no copy of a file that the CDN serves (a file under `cdnPaths` or Vite's `build.assetsDir`). Before, the build also made a gzip copy of each text file and both copies of each CDN file, and `vercel()` then left them out of `.vercel/output`.
 
-`.vercel/output` holds the same files with the same bytes, except in one rare case. `build/client` no longer holds a `.gz` copy or a copy of a CDN file.
+For each file of the client build, `.vercel/output` holds the same file or the same copy with the same bytes, except in one rare case. `build/client` no longer holds a `.gz` copy or a copy of a CDN file.
 
 The rare case is a file whose brotli copy is smaller than the file and not smaller than its gzip copy. The build now keeps a brotli copy when it is smaller than the file. Before, it kept the copy only when it was also smaller than the gzip copy. So for such a file, the function now holds the brotli copy in place of the file and its gzip copy.
 
