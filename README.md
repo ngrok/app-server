@@ -580,6 +580,7 @@ A proxy route on this server forwards a request from the browser to the app's AP
 
 ```ts
 // server.ts
+import { createServer, defaultPlugins } from "@ngrok/app-server";
 import { proxy } from "hono/proxy";
 
 const app = createServer({
