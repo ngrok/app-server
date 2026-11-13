@@ -25,7 +25,11 @@ export type EventStreamOptions = {
 	 * @default 15000
 	 */
 	heartbeatMs?: number;
-	/** Extra response headers. */
+	/**
+	 * Extra response headers. A `Cache-Control` here takes the place of the default `no-cache`, so
+	 * keep `no-cache` in it. `no-cache, no-transform` sends the stream with no compression: then
+	 * `streamingCompress()` holds no encoder for the life of the stream, and the events take more bytes.
+	 */
 	headers?: HeadersInit;
 };
 
@@ -150,6 +154,9 @@ export function eventStream(
 
 	const responseHeaders = new Headers(headers);
 	responseHeaders.set("Content-Type", "text/event-stream; charset=utf-8");
-	responseHeaders.set("Cache-Control", "no-cache");
+	// Why not `set`: an app can send `no-cache, no-transform` for a stream that must hold no encoder.
+	if (!responseHeaders.has("Cache-Control")) {
+		responseHeaders.set("Cache-Control", "no-cache");
+	}
 	return new Response(body, { headers: responseHeaders });
 }

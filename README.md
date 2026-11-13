@@ -1001,6 +1001,23 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 `heartbeatMs` sets the milliseconds between two heartbeats. It must be from 1 to 2,147,483,647, or `eventStream()` throws a `RangeError`. No value turns the heartbeat off.
 
+`streamingCompress()` compresses an event stream, and the stream holds its encoder until it ends. On the node host, each open stream then holds about 0.4 MiB of memory with gzip and about 0.7 MiB with brotli, against about 0.07 MiB with no compression. We measured the resident set size of 300 open streams of 3 events each, on Node.js 26.13. For a feed with many quiet streams, send `no-transform` in `headers`. The server and each proxy then send the stream with no compression, so each event takes more bytes:
+
+```ts
+export async function loader({ request }: Route.LoaderArgs) {
+	return eventStream(
+		{ signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } },
+		async ({ send, signal }) => {
+			for await (const update of watch({ signal })) {
+				send({ event: "update", data: JSON.stringify(update) });
+			}
+		},
+	);
+}
+```
+
+A `Cache-Control` in `headers` takes the place of the default `no-cache`, so keep `no-cache` in it.
+
 `send()` does not wait for the client. The events that the client has not read wait in memory, with no limit. So send a long history in another response, such as a JSON response that the page gets before it opens the stream.
 
 For other long work, stop on `shutdownSignal()`.

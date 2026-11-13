@@ -50,6 +50,50 @@ describe("eventStream", () => {
 		);
 	});
 
+	it("sends Cache-Control: no-cache, and a Cache-Control of the headers option in its place", async () => {
+		const byDefault = eventStream({ headers: { "X-Feed": "orders" } }, () => {});
+		const withOption = eventStream(
+			{ headers: { "cache-control": "no-cache, no-transform" } },
+			() => {},
+		);
+
+		expect(Object.fromEntries(byDefault.headers)).toStrictEqual({
+			"cache-control": "no-cache",
+			"content-type": "text/event-stream; charset=utf-8",
+			"x-feed": "orders",
+		});
+		expect(withOption.headers.get("Cache-Control")).toBe("no-cache, no-transform");
+	});
+
+	// Why: a compressed stream holds an encoder for its whole life, and a quiet feed saves few bytes.
+	it("goes out with no compression when the headers option has no-transform", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			render: async (given) =>
+				eventStream(
+					given.url.endsWith("/plain")
+						? { headers: { "Cache-Control": "no-cache, no-transform" } }
+						: {},
+					// Why it stays open: the server sends a short body that ends at once with no compression.
+					async ({ send }) => {
+						send({ data: "hello" });
+						return new Promise(() => {});
+					},
+				),
+		});
+		const headers = { "Accept-Encoding": "br" };
+
+		const compressed = await request("/feed", { headers });
+		const plain = await request("/plain", { headers });
+		const reader = plain.body?.getReader();
+		const first = await reader?.read();
+		await reader?.cancel();
+
+		expect(compressed.headers.get("Content-Encoding")).toBe("br");
+		expect(plain.headers.get("Content-Encoding")).toBeNull();
+		expect(new TextDecoder().decode(first?.value)).toBe("data: hello\n\n");
+	});
+
 	it("splits the data on a lone carriage return, so the client cannot read it as a field", async () => {
 		const response = eventStream({}, ({ send }) => {
 			send({ data: "first\revent: injected" });
