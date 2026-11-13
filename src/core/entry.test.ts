@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { host as nodeHost } from "../node/index.js";
 import { renderedFramework, stubFramework } from "../test-server.js";
 import type { AppServer } from "./create-server.js";
@@ -609,6 +609,24 @@ describe("createEntry", () => {
 
 		await expect(entry.start()).rejects.toThrow("address in use");
 		expect(lines).toStrictEqual([expect.stringMatching(/^startup failed .*address in use/u)]);
+	});
+
+	it("names the build manifest when the file is not whole JSON", async () => {
+		const cut = mkdtempSync(join(tmpdir(), "app-server-entry-cut-"));
+		onTestFinished(() => {
+			rmSync(cut, { recursive: true, force: true });
+		});
+		writeFileSync(join(cut, ".app-server.json"), '{"buildId":"b42","prerendered":["/cp');
+		const entry = createEntry({
+			app: createServer({ plugins: [], logger: recordingLogger([]) }),
+			host: testHost().host,
+			clientDirectory: cut,
+			framework: () => stubFramework(),
+		});
+
+		await expect(entry.start()).rejects.toThrow(
+			"The server cannot read .app-server.json as JSON. Build the app again.",
+		);
 	});
 
 	it("names the adapter when no client directory is known", async () => {

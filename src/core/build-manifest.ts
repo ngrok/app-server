@@ -98,14 +98,24 @@ function assetsPathOf(manifest: object): Pick<BuildManifest, "assetsPath"> {
 
 /**
  * Reads the build manifest of a client build. A build with no file has an
- * empty one. A file in any other shape throws, so a bad build stops startup.
+ * empty one. A file that is not JSON, or one in any other shape, throws, so a
+ * bad build stops startup.
  */
 export async function readBuildManifest(files: StaticFiles): Promise<BuildManifest> {
 	const path = `/${BUILD_MANIFEST_FILE}`;
 	if ((await files.stat(path))?.kind !== "file") {
 		return { prerendered: [], headers: {}, scriptHashes: {} };
 	}
-	const parsed: unknown = await new Response(await files.open(path)).json();
+	const parsed: unknown = await new Response(await files.open(path))
+		.json()
+		.catch((error: unknown) => {
+			throw new Error(
+				`The server cannot read ${BUILD_MANIFEST_FILE} as JSON. Build the app again.`,
+				{
+					cause: error,
+				},
+			);
+		});
 	if (
 		typeof parsed !== "object" ||
 		parsed == null ||

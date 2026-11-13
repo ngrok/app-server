@@ -1,7 +1,7 @@
 import { Agent, get } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { buffer, text } from "node:stream/consumers";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { heldStream } from "../test-server.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
 import { parsePort, tcp } from "./tcp.js";
@@ -58,6 +58,47 @@ describe("tcp", () => {
 			);
 		},
 	);
+
+	it("names HOST when it cannot listen on the host from the environment", async () => {
+		// Why this address: it is in a range for documentation (TEST-NET-1), so no interface has it,
+		// and the bind fails with no name lookup.
+		vi.stubEnv("HOST", "192.0.2.1");
+
+		const failure: unknown = await tcp({ port: 0 })
+			.start(async () => new Response("ok"))
+			.then(async (started) => started.stop({ deadlineMs: 0 }))
+			.catch((error: unknown) => error);
+
+		expect(failure).toMatchObject({
+			message:
+				'The server cannot listen on host "192.0.2.1", port 0. The host is from the HOST environment variable.',
+			cause: { code: "EADDRNOTAVAIL" },
+		});
+	});
+
+	it("keeps the error of the runtime for a port in use, with HOST set", async () => {
+		vi.stubEnv("HOST", "127.0.0.1");
+		const first = await tcp({ port: 0 }).start(async () => new Response("ok"));
+		onTestFinished(async () => first.stop({ deadlineMs: 0 }));
+
+		const failure: unknown = await tcp({ port: Number(new URL(first.url).port) })
+			.start(async () => new Response("ok"))
+			.then(async (started) => started.stop({ deadlineMs: 0 }))
+			.catch((error: unknown) => error);
+
+		expect(failure).toMatchObject({ code: "EADDRINUSE" });
+	});
+
+	it("keeps the error of the runtime for a host from the options", async () => {
+		vi.stubEnv("HOST", "192.0.2.1");
+
+		const failure: unknown = await tcp({ port: 0, host: "192.0.2.2" })
+			.start(async () => new Response("ok"))
+			.then(async (started) => started.stop({ deadlineMs: 0 }))
+			.catch((error: unknown) => error);
+
+		expect(failure).toMatchObject({ code: "EADDRNOTAVAIL" });
+	});
 
 	it("keeps an idle connection for longer than the request timeout of Node.js", async () => {
 		const started = await tcp({ port: 0, host: "127.0.0.1", idleTimeoutMs: 620_000 }).start(

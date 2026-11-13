@@ -56,6 +56,9 @@ export function parsePort(value: string): number {
  * The default listener: a TCP port, served by the runtime's own HTTP server
  * (`node:http` on Node, `Bun.serve` on Bun, `Deno.serve` on Deno). It reads
  * `PORT` and `HOST` when it starts, unless the options give a port or a host.
+ * When it cannot listen on the host from `HOST`, the error names `HOST` and
+ * has the error of the runtime as its `cause`. A port in use keeps the error of
+ * the runtime.
  * An `idleTimeoutMs` that is not an integer from 0 to 2147482647 throws, so a
  * bad value stops startup.
  *
@@ -78,19 +81,37 @@ export function tcp({
 	}
 	return {
 		start: async (fetch, { trustForwardedProto = false } = {}) => {
+			const envHost = host == null ? process.env.HOST || undefined : undefined;
 			const options = {
 				port: port ?? (process.env.PORT == null ? 3000 : parsePort(process.env.PORT)),
-				hostname: host ?? (process.env.HOST || undefined),
+				hostname: host ?? envHost,
 				idleTimeoutMs,
 				trustForwardedProto,
 			};
-			if ("Bun" in globalThis) {
-				return (await import("./runtimes/bun.js")).listen(fetch, options);
+			try {
+				if ("Bun" in globalThis) {
+					return await (await import("./runtimes/bun.js")).listen(fetch, options);
+				}
+				if ("Deno" in globalThis) {
+					return await (await import("./runtimes/deno.js")).listen(fetch, options);
+				}
+				return await (await import("./runtimes/node.js")).listen(fetch, options);
+			} catch (error) {
+				// Why not for a port in use: the host is not the fault then. Why also for it on Bun: Bun
+				// gives that error for a host that it cannot use too.
+				const portInUse =
+					!("Bun" in globalThis) &&
+					error instanceof Error &&
+					"code" in error &&
+					error.code === "EADDRINUSE";
+				if (envHost == null || portInUse) {
+					throw error;
+				}
+				throw new Error(
+					`The server cannot listen on host "${envHost}", port ${options.port}. The host is from the HOST environment variable.`,
+					{ cause: error },
+				);
 			}
-			if ("Deno" in globalThis) {
-				return (await import("./runtimes/deno.js")).listen(fetch, options);
-			}
-			return (await import("./runtimes/node.js")).listen(fetch, options);
 		},
 	};
 }
