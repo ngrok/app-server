@@ -57,8 +57,13 @@ function fieldLine(name: string, value: string | undefined): string {
 }
 
 function formatEvent({ data, event, id }: ServerSentEvent): string {
+	// Why: a value can have another type than its type says, such as the result of
+	// `JSON.stringify(undefined)`. An array has `includes` too, and its line breaks would go out as
+	// they are.
+	if (typeof data !== "string") {
+		throw new TypeError(`An event's \`data\` must be a string, not ${typeof data}.`);
+	}
 	// Why `includes`: most events have one line, and a replace that finds no line break costs more.
-	// It also throws for `data` that is not a string, such as the result of `JSON.stringify(undefined)`.
 	const hasLineBreak = data.includes("\n") || data.includes("\r");
 	// Why `\r` too: a client reads a lone carriage return as a line end.
 	const lines = hasLineBreak ? data.replaceAll(/\r\n|\r|\n/gu, "\ndata: ") : data;

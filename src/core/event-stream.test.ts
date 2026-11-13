@@ -69,13 +69,24 @@ describe("eventStream", () => {
 		);
 	});
 
-	// Why: `JSON.stringify` gives `undefined` for a value that it cannot write, and its type says `string`.
-	it("refuses data that is not a string", async () => {
+	// Why: a value can have another type than its type says, such as the result of
+	// `JSON.stringify(undefined)` or a field of a parsed request body. An array would send its line
+	// breaks as they are, so a client would read them as fields.
+	it.each([
+		{ value: "undefined", data: undefined, type: "undefined" },
+		{ value: "null", data: null, type: "object" },
+		{ value: "a number", data: 42, type: "number" },
+		{ value: "an array with a line break", data: ["x\nevent: injected"], type: "object" },
+		{ value: "a typed array", data: new Uint8Array([97, 10, 98]), type: "object" },
+	])("refuses data that is $value", async ({ data, type }) => {
 		const response = eventStream({}, ({ send }) => {
-			send({ data: JSON.stringify(undefined) });
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the test sends a value that its type does not allow.
+			send({ data: data as unknown as string });
 		});
 
-		await expect(readAll(response)).rejects.toThrow(TypeError);
+		await expect(readAll(response)).rejects.toThrow(
+			new TypeError(`An event's \`data\` must be a string, not ${type}.`),
+		);
 	});
 
 	it("sends a heartbeat comment while the stream is quiet", async () => {
