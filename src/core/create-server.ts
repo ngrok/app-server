@@ -59,6 +59,28 @@ function answerError(error: Error | HTTPResponseError, context: Context<AppServe
 }
 
 /**
+ * The app's `onError` handler, with a 500 for an error that `handler` returns
+ * no `Response` for. Why: Hono turns a falsy response into an empty 200, so
+ * such a handler would answer each of those errors with a 200.
+ */
+function checkedOnError(handler: ErrorHandler<AppServerEnv>): ErrorHandler<AppServerEnv> {
+	return async (error, context) => {
+		// Why the cast: the type says `Response`, but a handler in JavaScript can return each value.
+		const answer = (await handler(error, context)) as Response | undefined;
+		if (answer) {
+			return answer;
+		}
+		return answerError(
+			new TypeError(
+				"The app's onError returned no Response. It must return a Response for each error.",
+				{ cause: error },
+			),
+			context,
+		);
+	};
+}
+
+/**
  * Throws for an entry of `plugins` that is not an object, so a wrong plugin
  * list stops startup. Why: a function has no `middleware`, so the server
  * would start and never run it. Why `unknown`: the `Plugin` type rejects
@@ -395,11 +417,11 @@ export function createServer({
 	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
 	let onError: ErrorHandler<AppServerEnv> = answerError;
 	const setOnError = app.onError.bind(app);
+	setOnError(answerError);
 	app.onError = (handler) => {
-		onError = handler;
-		return setOnError(handler);
+		onError = checkedOnError(handler);
+		return setOnError(onError);
 	};
-	app.onError(answerError);
 	const answerThrown = async (thrown: unknown, context: Context<AppServerEnv>) =>
 		onError(asError(thrown), context);
 	let requestStore: RequestStore | undefined;

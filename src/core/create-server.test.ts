@@ -1267,6 +1267,92 @@ describe("the pipeline", () => {
 		expect(summary(lines)).toStrictEqual([["request", 503]]);
 	});
 
+	const noResponse =
+		"The app's onError returned no Response. It must return a Response for each error.";
+	const down = () => {
+		throw new Error("down");
+	};
+	/** A pipeline with a fault at each place, and the message of the error that `onError` gets for it. */
+	const faultsAt: Record<string, [stages: Stages | undefined, message: string]> = {
+		"a plugin that throws": [throwsAt["a plugin before next()"]?.(down), "down"],
+		"a route that throws": [throwsAt["a route"]?.(down), "down"],
+		"a header hook that throws": [
+			{
+				plugins: [
+					{
+						name: "throws-in-hook",
+						middleware: async (context, next) => withHeaderHook(context, next, down),
+					},
+				],
+			},
+			"down",
+		],
+		"a plugin that gives no response": [forgetsAt["a plugin"], noAnswer],
+	};
+	const unanswered = Object.keys(faultsAt).flatMap((place) =>
+		[undefined, false].map((answer) => ({ place, answer })),
+	);
+	/**
+	 * The pipeline of `place` in `faultsAt`, with an app `onError` that returns
+	 * `answer`. Why the cast: the type takes a `Response` only, but an error
+	 * handler in JavaScript can return each value, such as `undefined` from a
+	 * handler with no last `return`.
+	 */
+	async function withSilentOnError(place: string, answer: unknown) {
+		const [stages = {}] = faultsAt[place] ?? [];
+		return pipeline({
+			...stages,
+			routes: (app) => {
+				stages.routes?.(app);
+				app.onError((() => answer) as Parameters<AppServer["onError"]>[0]);
+			},
+		});
+	}
+
+	it.each(unanswered)(
+		"answers 500 for $place when the app's onError returns $answer, and logs both errors",
+		async ({ place, answer }) => {
+			const { request, lines } = await withSilentOnError(place, answer);
+
+			const response = await request("/", { headers: { "X-Request-Id": "abc-123" } });
+
+			expect([response.status, await response.text()]).toStrictEqual([
+				500,
+				"Internal Server Error",
+			]);
+			expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+			expect(summary(lines)).toStrictEqual([
+				["unhandled error", noResponse],
+				["request", 500],
+			]);
+			expect(lines[0]?.attributes["error.cause.message"]).toBe(faultsAt[place]?.[1]);
+		},
+	);
+
+	it.each(unanswered)(
+		"gives a listener with an edge the same 500 for $place when the app's onError returns $answer",
+		async ({ place, answer }) => {
+			const { app, framework, lines } = await withSilentOnError(place, answer);
+			const edge = new ResponseEdge();
+
+			const response = await app.fetch(
+				new Request("http://localhost/", { headers: { "X-Request-Id": "abc-123" } }),
+				{ framework, edge },
+			);
+			const head = edge.headersFor(response) ?? [];
+			const text = await response.text();
+			edge.close(response.status, false, head);
+
+			expect([response.status, text]).toStrictEqual([500, "Internal Server Error"]);
+			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
+			expect(summary(lines)).toStrictEqual([
+				["unhandled error", noResponse],
+				["request", 500],
+			]);
+			expect(lines[0]?.attributes["error.cause.message"]).toBe(faultsAt[place]?.[1]);
+		},
+	);
+
 	it("stops at a plugin that answers, and runs no later stage", async () => {
 		const render = vi.fn<FrameworkRuntime["fetch"]>(renderedFramework);
 		const { request, lines, seen } = await pipeline({
