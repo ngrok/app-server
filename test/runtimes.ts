@@ -489,6 +489,31 @@ async function checkStart(): Promise<void> {
 }
 
 /**
+ * `app-server start` with `server.https: false`: no warning, as in `vite dev`, and Vite's host
+ * check stays on.
+ */
+async function checkStartHttpsOff(): Promise<void> {
+	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
+		cwd: devDirectory,
+		env: { HOST: "127.0.0.1", DEV_HTTPS: "false" },
+	});
+	try {
+		const base = await url;
+		const foreign = await request(new URL("/@vite/client", base).href, { Host: "evil.example" });
+		foreign.resume();
+		assert.equal(foreign.statusCode, 403, "Vite checks the `Host` header");
+		assert.deepEqual(
+			lines.filter((line) => line.message === "vite logger" && line.level === "warn"),
+			[],
+			"`start` writes no warning for a `server.https` that has HTTPS off",
+		);
+		process.stdout.write("ok node start with HTTPS off\n");
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/**
  * The source of a script that imports the module at the URL `module`. It then writes each module
  * specifier that the process resolved, with `import` or `require`, as one log line.
  */
@@ -950,6 +975,7 @@ for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await checkOwnRejectionListener(runtime);
 	if (runtime === "node") {
 		await checkStart();
+		await checkStartHttpsOff();
 		await checkLoadedModules();
 	}
 	await checkReactRouter(runtime);

@@ -151,8 +151,8 @@ export async function start(): Promise<void> {
  * - It sets `server.httpServer` and `server.resolvedUrls` before the `configureServer` hooks of
  *   the app's plugins run. Vite sets both to `null`. Then a plugin that waits for `listening` or
  *   `close`, or that reads the URLs, does nothing, with no error.
- * - It removes `server.https`, with a warning. The CLI makes the HTTP server before Vite reads the
- *   config, so the server speaks HTTP only.
+ * - It removes a `server.https` that has HTTPS on, with a warning. The CLI makes the HTTP server
+ *   before Vite reads the config, so the server speaks HTTP only.
  *
  * `resolvedUrls` gives the URLs for a base path, or `null` before the HTTP server listens.
  *
@@ -180,7 +180,8 @@ function shareHttpServer({
 				plugins.unshift(plugin);
 				// Why remove it: with `server.https` set, Vite turns off its check of the `Host` header. A
 				// plain HTTP server needs that check against a DNS rebinding attack.
-				if (config.server.https != null) {
+				// Why by truth: Vite reads the option so, and `false` in a config has HTTPS off.
+				if (config.server.https) {
 					delete config.server.https;
 					config.logger.warn(
 						styleText(

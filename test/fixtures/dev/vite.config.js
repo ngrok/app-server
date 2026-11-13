@@ -29,7 +29,8 @@ export default {
 		// Why: a WebSocket proxy route, so the check sees whether Vite adds an `upgrade` listener.
 		proxy: { "/proxied": { target: "ws://127.0.0.1:9", ws: true } },
 		// Why: `start` serves HTTP only, and the check sees that it says so and keeps Vite's host check.
-		https: {},
+		// With `DEV_HTTPS=false`, the check sees no warning for the value that has HTTPS off in `vite dev`.
+		https: process.env.DEV_HTTPS === "false" ? false : {},
 		// Why only with `BROWSER`: the check gives a script. A run by hand opens no browser.
 		open: process.env.BROWSER != null,
 	},
