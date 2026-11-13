@@ -156,9 +156,9 @@ type Unread = readonly [path: string, parents: ReadonlySet<string>];
  * The client build on the file system. A relative `clientDirectory` is
  * relative to the working directory.
  *
- * Its `snapshot` reads each file and directory once, with at most
- * {@link SNAPSHOT_CALLS} file system calls in flight. It throws for an error
- * that does not mean a missing file, so the server does not start.
+ * Its `snapshot` reads each file and directory once, with at most 64 file
+ * system calls in flight. It throws for an error that does not mean a
+ * missing file, so the server does not start.
  *
  * @example
  * nodeFiles("build/client").stat("/llms.txt");
