@@ -41,8 +41,15 @@ const MAX_TIMER_MS = 2_147_483_647;
  */
 const MAX_QUEUED_BYTES = 1024 * 1024;
 
-/** Why one object: a stream reads its strategy and does not keep it. */
-const QUEUE_STRATEGY = new ByteLengthQueuingStrategy({ highWaterMark: MAX_QUEUED_BYTES });
+/**
+ * Why a plain object: Bun 1.3 stops with a segmentation fault when `Bun.serve` reads a body that
+ * has a `ByteLengthQueuingStrategy` of this size and 0.5 MiB to 1 MiB of events that wait. Why one
+ * object: a stream reads its strategy and does not keep it.
+ */
+const QUEUE_STRATEGY: QueuingStrategy<Uint8Array> = {
+	highWaterMark: MAX_QUEUED_BYTES,
+	size: (chunk) => chunk.byteLength,
+};
 
 /** The line of the field `name` of an event, or no text when the event does not have the field. */
 function fieldLine(name: string, value: string | undefined): string {
