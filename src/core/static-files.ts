@@ -409,19 +409,56 @@ function respond(body: ReadableStream<Uint8Array> | null, status: number, head: 
 	return response;
 }
 
+/** The requests of {@link rewritesHtmlWithEtagPart}. */
+const changedWithEtagPart = new WeakSet<Context<AppServerEnv>>();
+
 /**
- * The response for an HTML file of a request with `rewritesHtml`: the file as
- * it is on disk, with no compressed copy, because a stage changes its bytes.
- * Why no `Content-Length`: the stage changes the length. Why no ETag and no
- * 304: the ETag does not hold the values that the stage adds, so a 304 could
- * keep a page that the stage made with an old value.
+ * Tells the static stages that a stage of the request changes the bytes of
+ * each HTML page, as `rewritesHtml` does, and that the `etagPart` of its
+ * plugin has each value that the change depends on. So the page keeps an
+ * ETag, which has that value, and a matching `If-None-Match` gets a 304.
+ * Call it before `next()`, in place of `rewritesHtml`.
+ *
+ * @example
+ * rewritesHtmlWithEtagPart(context);
+ * await next();
+ */
+export function rewritesHtmlWithEtagPart(context: Context<AppServerEnv>): void {
+	changedWithEtagPart.add(context);
+}
+
+/** Whether a stage of the request changes the bytes of each HTML page. */
+function changesPages(context: Context<AppServerEnv>): boolean {
+	return context.get("rewritesHtml") === true || changedWithEtagPart.has(context);
+}
+
+/**
+ * The response for an HTML file that a stage of the request changes: the
+ * file as it is on disk, with no compressed copy and no `Content-Length`,
+ * because the stage changes the bytes and their length.
+ *
+ * With `rewritesHtml`, the page gets no ETag and no 304. Why: the server
+ * does not know which values the change depends on, so a 304 could keep a
+ * page that the stage made with an old value. Without it, the request's
+ * `etagParts` have these values (see {@link rewritesHtmlWithEtagPart}).
  */
 async function changedPage(
 	context: Context<AppServerEnv>,
 	{ files, file, head }: { files: StaticFiles; file: StaticFile; head: Head },
 ): Promise<Response> {
-	// Why: `headers` can set an ETag.
+	// Why not the ETag of `headers`: it does not have the values that the stage adds.
 	head.delete("etag");
+	if (context.get("rewritesHtml") !== true) {
+		const parts = context.get("etagParts") ?? [];
+		const hash =
+			parts.length === 0 ? undefined : (keptPartsHash(parts) ?? (await partsHash(parts)));
+		const etag = fileEtag(file, hash, undefined);
+		head.set("etag", etag);
+		if (matchesEtag(context.req.header("If-None-Match"), etag)) {
+			head.delete("content-type");
+			return respond(null, 304, head);
+		}
+	}
 	return respond(context.req.method === "HEAD" ? null : await wholeFile(files, file), 200, head);
 }
 
@@ -455,10 +492,10 @@ export type StaticResponseOptions = {
  * marked `no-transform`, also by the header hook of an earlier stage, and a
  * response that `headers` encode, never get a copy.
  *
- * When an earlier stage sets `rewritesHtml`, an HTML file goes out as it is
- * on disk, with no copy, no `Content-Length`, and no ETag, and an
- * `If-None-Match` gets the full page. Why: the stage changes the bytes, and
- * the server does not know which values the change depends on.
+ * When an earlier stage changes the bytes of each HTML page, an HTML file
+ * goes out as it is on disk, with no copy and no `Content-Length`. With
+ * `rewritesHtml`, it also has no ETag, and an `If-None-Match` gets the full
+ * page. With {@link rewritesHtmlWithEtagPart}, it keeps an ETag and its 304.
  *
  * @example
  * const file = await findStaticFile(files, "/llms.txt");
@@ -475,7 +512,7 @@ export async function staticResponse(
 	const html = head.get("content-type")?.startsWith("text/html") ?? false;
 	if (html) {
 		context.set("staticDocument", file.path);
-		if (context.get("rewritesHtml") === true) {
+		if (changesPages(context)) {
 			return changedPage(context, { files, file, head });
 		}
 	}

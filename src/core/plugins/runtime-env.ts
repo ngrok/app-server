@@ -1,5 +1,6 @@
 import { replaceResponse, writableHeaders } from "../header-hook.js";
 import { optionPlugin } from "../plugin-options.js";
+import { rewritesHtmlWithEtagPart } from "../static-files.js";
 import type { Plugin } from "../types.js";
 
 // The Standard Schema interface (https://standardschema.dev), copied as its spec asks, so that
@@ -201,10 +202,11 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 		etagPart: () => parse().script,
 		middleware: async (context, next) => {
 			const { script } = parse();
-			// Why a request value, not an option: the static stages send the HTML file, not its compressed
+			// Why for each request, not an option: the static stages send the HTML file, not its compressed
 			// copy, only to a request that gets the script. An app with no public values keeps the copies.
+			// Why not `rewritesHtml`: the script is this plugin's `etagPart`, so a page can keep its ETag.
 			if (script != null) {
-				context.set("rewritesHtml", true);
+				rewritesHtmlWithEtagPart(context);
 			}
 			await next();
 			const response = context.res;
@@ -223,11 +225,14 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 					new Response(injectBeforeHeadEnd(response.body, script), response),
 				);
 			}
-			// Why for HEAD too: it gets the headers that GET gets. The script changes the length, and a
-			// rendered document's ETag does not cover the values, so a 304 could keep old ones.
+			// Why for HEAD too: it gets the headers that GET gets. The script changes the length.
 			const headers = writableHeaders(context);
 			headers.delete("Content-Length");
-			headers.delete("ETag");
+			// Why not for a file of the static stages: its ETag has the values, from `etagPart`. The ETag
+			// of a rendered document does not have them, so a 304 could keep old ones.
+			if (context.get("staticDocument") == null) {
+				headers.delete("ETag");
+			}
 		},
 	});
 }

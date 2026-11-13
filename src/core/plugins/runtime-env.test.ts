@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { testServer } from "../../test-server.js";
+import type { Plugin } from "../types.js";
 import { runtimeEnv } from "./runtime-env.js";
 import { prerendered } from "./static.js";
 
@@ -150,6 +151,106 @@ describe("runtimeEnv", () => {
 		expect(etag).not.toBe("");
 		expect(response.status).toBe(200);
 		await expect(response.text()).resolves.toContain("app-server-public-env");
+	});
+
+	it("keeps the ETag of a prerendered page, and answers 304 to a client that holds it", async () => {
+		const { request } = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource }), prerendered()],
+			clientDirectory,
+		});
+
+		const page = await request("/");
+		const etag = page.headers.get("ETag") ?? "";
+		const head = await request("/", { method: "HEAD" });
+		const again = await request("/", { headers: { "If-None-Match": etag } });
+
+		await expect(page.text()).resolves.toContain("app-server-public-env");
+		expect(etag).toMatch(/^W\/"/u);
+		expect(head.headers.get("ETag")).toBe(etag);
+		expect([again.status, again.headers.get("ETag")]).toStrictEqual([304, etag]);
+		await expect(again.text()).resolves.toBe("");
+	});
+
+	it("answers 200 with the new values to a client that holds the ETag of other values", async () => {
+		const serverWith = async (url: string) =>
+			testServer({
+				plugins: [
+					runtimeEnv(schema, { source: { ...validSource, PUBLIC_API_URL: url } }),
+					prerendered(),
+				],
+				clientDirectory,
+			});
+		const old = await serverWith("https://old.example.com");
+		const etag = (await old.request("/")).headers.get("ETag") ?? "";
+		const current = await serverWith("https://new.example.com");
+
+		const response = await current.request("/", { headers: { "If-None-Match": etag } });
+
+		expect(etag).not.toBe("");
+		expect(response.status).toBe(200);
+		expect(response.headers.get("ETag")).not.toBe(etag);
+		await expect(response.text()).resolves.toContain("https://new.example.com");
+	});
+
+	it("answers 200 to the ETag of a page whose file changes after it", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-runtime-env-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		writeFileSync(join(directory, "index.html"), "<html><head></head><body>one</body></html>");
+		const { request } = await testServer({
+			plugins: [runtimeEnv(schema, { source: validSource }), prerendered()],
+			clientDirectory: directory,
+		});
+		const etag = (await request("/")).headers.get("ETag") ?? "";
+
+		writeFileSync(join(directory, "index.html"), "<html><head></head><body>three</body></html>");
+		const response = await request("/", { headers: { "If-None-Match": etag } });
+
+		expect(etag).not.toBe("");
+		expect(response.status).toBe(200);
+		await expect(response.text()).resolves.toContain("three");
+	});
+
+	it("gives a page the ETag of the server, not one from the headers option, which lacks the values", async () => {
+		const { request } = await testServer({
+			plugins: [
+				runtimeEnv(schema, { source: validSource }),
+				prerendered({ headers: () => ({ ETag: '"v1"' }) }),
+			],
+			clientDirectory,
+		});
+
+		const response = await request("/", { headers: { "If-None-Match": '"v1"' } });
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("ETag")).toMatch(/^W\/"/u);
+		await expect(response.text()).resolves.toContain("app-server-public-env");
+	});
+
+	it("sends no ETag for a page that a stage with rewritesHtml also changes, before or after it", async () => {
+		const rewrites: Plugin = {
+			name: "rewrites",
+			middleware: async (context, next) => {
+				context.set("rewritesHtml", true);
+				await next();
+			},
+		};
+		const env = () => runtimeEnv(schema, { source: validSource });
+		const alone = await testServer({ plugins: [env(), prerendered()], clientDirectory });
+		const etag = (await alone.request("/")).headers.get("ETag") ?? "";
+
+		for (const plugins of [
+			[env(), rewrites, prerendered()],
+			[rewrites, env(), prerendered()],
+		]) {
+			const { request } = await testServer({ plugins, clientDirectory });
+			const response = await request("/", { headers: { "If-None-Match": etag } });
+
+			expect([response.status, response.headers.get("ETag")]).toStrictEqual([200, null]);
+			await expect(response.text()).resolves.toContain("app-server-public-env");
+		}
+		expect(etag).not.toBe("");
 	});
 
 	it("drops the file length from HEAD, since GET adds the values", async () => {
