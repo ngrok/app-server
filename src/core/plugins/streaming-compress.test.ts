@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { brotliDecompressSync, constants, gunzipSync } from "node:zlib";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
 import { withHeaderHook } from "../header-hook.js";
 import type { AppServerEnv, Plugin } from "../types.js";
+import { buildId } from "./build-id.js";
 import { MAX_JOINED_BYTES, streamingCompress } from "./streaming-compress.js";
 
 /** A plugin whose header hook sets `name` to `value`. */
@@ -469,6 +470,21 @@ describe("streamingCompress", () => {
 
 		await expect(bodyOf("Content-Encoding", "br")).resolves.toStrictEqual(["br", page]);
 		await expect(bodyOf("Content-Range", "bytes 0-1502/2000")).resolves.toStrictEqual([null, page]);
+	});
+
+	it("calls the paths of buildId one time for a response that it compresses", async () => {
+		const paths = vi.fn<(path: string) => boolean>(() => false);
+		const { request } = await testServer({
+			plugins: [buildId({ value: "b1", paths }), streamingCompress()],
+			// Why not HTML: `buildId` asks `paths` only for a response that is not a document.
+			render: async () =>
+				new Response("hi ".repeat(500), { headers: { "Content-Type": "text/plain" } }),
+		});
+
+		const response = await request("/api/words", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(paths).toHaveBeenCalledTimes(1);
 	});
 
 	it("adds Accept-Encoding to Vary in a plain Hono app", async () => {
