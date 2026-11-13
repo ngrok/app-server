@@ -7,7 +7,7 @@ import {
 } from "../compression.js";
 import type { Encoding, ReadResult } from "../compression.js";
 import { hookedHeaders, replaceResponse, withHeaderHook } from "../header-hook.js";
-import type { Plugin, ResponseHeaders } from "../types.js";
+import type { CompressStream, Plugin, ResponseHeaders } from "../types.js";
 import { withVary } from "../vary.js";
 
 /** The chunks that a body has queued, and the read that is still open, if any. */
@@ -126,9 +126,6 @@ function replay(
 	);
 }
 
-/** A host stream that compresses a byte stream. */
-type Compress = (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
-
 /**
  * `response` with the compressed `body` and its headers. Why not in a header
  * hook: the body and its headers go together, also to the code that an outer
@@ -179,7 +176,7 @@ function keepsBody(headers: Pick<ResponseHeaders, "get" | "has">): boolean {
  */
 export function streamingCompress(): Plugin {
 	/** The host's streams, in the order that the plugin prefers them. */
-	let streams = new Map<Encoding, Compress>();
+	let streams = new Map<Encoding, CompressStream>();
 	let offered: readonly Encoding[] = [];
 	/** The encoding that an `Accept-Encoding` header prefers, with its stream. */
 	const choose = (header: string | undefined) => {
