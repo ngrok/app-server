@@ -121,6 +121,34 @@ describe("accessLog", () => {
 		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
 	});
 
+	it("logs a 5xx with no body as 499 at info when the client went away before it", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			render: async () => new Response(null, { status: 500 }),
+		});
+
+		await request("/", { method: "HEAD", signal: AbortSignal.abort() });
+
+		expect(lines[0]).toMatchObject({ level: "info", attributes: { "http.status_code": 499 } });
+	});
+
+	it("logs a 5xx as 499 when the client went away while an earlier stage finished", async () => {
+		const client = new AbortController();
+		const outer: Plugin = {
+			name: "outer",
+			middleware: async (context, next) => {
+				await next();
+				client.abort();
+				context.res = new Response(null, { status: 500 });
+			},
+		};
+		const { request, lines } = await testServer({ plugins: [outer, accessLog()] });
+
+		await request("/", { signal: client.signal });
+
+		expect(lines[0]).toMatchObject({ level: "info", attributes: { "http.status_code": 499 } });
+	});
+
 	it("logs a HEAD request to an app route", async () => {
 		const { request, lines } = await testServer({
 			plugins: [accessLog()],

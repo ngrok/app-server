@@ -85,30 +85,26 @@ export function accessLog({
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
-			// Why a hook: it runs when the head is ready, which is the time that the header gives.
-			await (serverTiming
-				? withHeaderHook(context, next, (headers) => {
-						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
-							headers.append(
-								"Server-Timing",
-								`app;dur=${(performance.now() - started).toFixed(1)}`,
-							);
-						}
-					})
-				: next());
+			let clientLeft = false;
+			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
+			// There it reads the time for the header, and whether the client left before the answer. Why
+			// not later: the Node.js listener also aborts the signal when a body fails after the head.
+			await withHeaderHook(context, next, (headers) => {
+				clientLeft = context.req.raw.signal.aborted;
+				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
+					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
+				}
+			});
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;
 			}
-			// Why read it now: the Node.js listener also aborts the signal when it closes the socket of a
-			// body that failed after the head.
-			const clientLeft = context.req.raw.signal.aborted;
 			// Why a catch: a log line must never change the response or stop its stream. The listener can
 			// call the report from an event of its socket, where a throw stops the process.
 			onResponseSent(context, (sent) => {
 				// Why 499, nginx's "Client Closed Request": React Router answers a request whose client went
 				// away with a 500, and the app did not fail.
-				const status = clientLeft && sent.aborted && sent.status >= 500 ? 499 : sent.status;
+				const status = clientLeft && sent.status >= 500 ? 499 : sent.status;
 				const line = lineAttributes(context, { ...sent, status }, started);
 				try {
 					// Why `error` for a 5xx only: Datadog takes the status of a line from its level, and crawlers
