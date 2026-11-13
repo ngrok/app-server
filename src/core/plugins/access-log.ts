@@ -32,6 +32,17 @@ export type AccessLogOptions = {
 };
 
 /**
+ * A query in which each part is a key, an `=`, and a value, and each key has
+ * only characters that a URL parse and `encodeURIComponent` keep. Why:
+ * {@link loggedUrl} gives such a key as it is, so the redacted query needs no
+ * parse.
+ */
+const PLAIN_QUERY = /^[\w!'()*\-.~]+=[^&]*(?:&[\w!'()*\-.~]+=[^&]*)*$/u;
+
+/** The `=` and the value of each part of a {@link PLAIN_QUERY}. */
+const QUERY_VALUE = /[=][^&]*/gu;
+
+/**
  * A URL's path and query, with each query value replaced when `redact` is set.
  *
  * @example
@@ -131,10 +142,18 @@ export function accessLog({
 	/** `href` as {@link loggedUrl} logs it. */
 	function requestUrl(href: string): string {
 		const start = href.indexOf("/", href.indexOf("//") + 2);
-		// Why no parse for a path alone: a request URL is the `href` of a parsed URL, or one that the
-		// Node.js listener checked holds no character that a parse changes. So its path is the `pathname`.
-		if (start !== -1 && !href.includes("?", start) && !href.includes("#", start)) {
-			return href.slice(start);
+		if (start !== -1 && !href.includes("#", start)) {
+			const query = href.indexOf("?", start);
+			// Why no parse for a path alone: on Node.js and Bun, a request URL is the `href` of a parsed
+			// URL, or one that the listener checked holds no character that a parse changes. So its path
+			// is the `pathname`. Deno gives the URL as the client sent it, and the line shows that path.
+			if (query === -1) {
+				return href.slice(start);
+			}
+			const search = href.slice(query + 1);
+			if (redactQuery && PLAIN_QUERY.test(search)) {
+				return `${href.slice(start, query)}?${search.replaceAll(QUERY_VALUE, "=REDACTED")}`;
+			}
 		}
 		return loggedUrl(new URL(href), { redact: redactQuery });
 	}

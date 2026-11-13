@@ -69,6 +69,26 @@ describe("accessLog", () => {
 		});
 	});
 
+	it("redacts each value of a query, for a key in each form", async () => {
+		const logged = {
+			"/a?b=1&c=2": "/a?b=REDACTED&c=REDACTED",
+			"/a.data?_routes=routes%2Fdocs.%24": "/a.data?_routes=REDACTED",
+			"/a?b=1=2&c=&d.e-f_g~h=3": "/a?b=REDACTED&c=REDACTED&d.e-f_g~h=REDACTED",
+			"/a?token": "/a?token=REDACTED",
+			"/a?=1": "/a?=REDACTED",
+			"/a?b=1&&c=2&": "/a?b=REDACTED&c=REDACTED",
+			"/a?x+y=1&%61=2&a[]=3&a/b=4": "/a?x%20y=REDACTED&a=REDACTED&a%5B%5D=REDACTED&a%2Fb=REDACTED",
+			"/caf%C3%A9?caf%C3%A9=1": "/caf%C3%A9?caf%C3%A9=REDACTED",
+		};
+		const { request, lines } = await testServer({ plugins: [accessLog()] });
+
+		for (const path of Object.keys(logged)) {
+			await (await request(path)).text();
+		}
+
+		expect(lines.map((line) => line.attributes["http.url"])).toStrictEqual(Object.values(logged));
+	});
+
 	it("logs a streamed response when its body ends, with every byte counted", async () => {
 		const held = heldStream("shell");
 		const { request, lines } = await testServer({
@@ -709,11 +729,43 @@ describe("accessLog on the Node.js listener", () => {
 			"/a#frag": "/a",
 			"/a?": "/a",
 			"/a?x='y'#f": "/a?x=%27y%27",
+			"/a?x='y'&z=1": "/a?x=%27y%27&z=1",
 		};
 		const { url, requestLines } = await listening(
 			[accessLog({ redactQuery: false })],
 			async () => new Response("ok"),
 		);
+		const { port } = new URL(url);
+
+		for (const path of Object.keys(logged)) {
+			const response = await new Promise<IncomingMessage>((resolve, reject) => {
+				httpGet({ host: "127.0.0.1", port, path }, resolve).once("error", reject);
+			});
+			response.resume();
+			await new Promise((resolve) => {
+				response.once("end", resolve);
+			});
+		}
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(Object.keys(logged).length);
+		});
+
+		expect(requestLines().map((line) => line.attributes["http.url"])).toStrictEqual(
+			Object.values(logged),
+		);
+	});
+
+	it("logs the path that a URL parse gives before a redacted query, for targets that a parse changes", async () => {
+		// Why these targets: the line takes the path before a query of plain keys as it is, so the
+		// listener must give each of these as a parsed URL.
+		const logged = {
+			"/a/../b?x=1": "/b?x=REDACTED",
+			"/a{b}?x=1&y=2": "/a%7Bb%7D?x=REDACTED&y=REDACTED",
+			"/%2e%2e/x?x=1": "/x?x=REDACTED",
+			"/a?x='y'": "/a?x=REDACTED",
+			"/a?x=1#f": "/a?x=REDACTED",
+		};
+		const { url, requestLines } = await listening([accessLog()], async () => new Response("ok"));
 		const { port } = new URL(url);
 
 		for (const path of Object.keys(logged)) {
