@@ -146,8 +146,8 @@ export type PrerenderedOptions = {
 	skip?: (path: string) => boolean;
 	/**
 	 * The `Cache-Control` of a served file, by the file's URL path, such as
-	 * `/about/index.html`. `undefined` sends none. A header that the build
-	 * captured, and the `headers` option, win over it.
+	 * `/about/index.html`. `undefined` gives the default for the file. A
+	 * header that the build captured, and the `headers` option, win over it.
 	 *
 	 * The default gives an HTML page, a markdown file, and a data file of the
 	 * framework `public, max-age=0, must-revalidate`, so a visitor always sees
@@ -345,24 +345,23 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					},
 				});
 			}
-			const cacheControl =
-				options.cacheControl ??
-				((path: string) => {
-					const type = contentType(path, contentTypes);
-					return type.startsWith("text/html") ||
-						type.startsWith("text/markdown") ||
-						info.isDataRequest(path)
-						? REVALIDATE
-						: ONE_HOUR;
-				});
+			const defaultCacheControl = (file: string) => {
+				const type = contentType(file, contentTypes);
+				return type.startsWith("text/html") ||
+					type.startsWith("text/markdown") ||
+					info.isDataRequest(file)
+					? REVALIDATE
+					: ONE_HOUR;
+			};
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				context.env.onServedFile?.(file.path);
-				const value = cacheControl(file.path);
 				return staticResponse(context, {
 					files,
 					file,
 					headers: [
-						value == null ? undefined : { "Cache-Control": value },
+						{
+							"Cache-Control": options.cacheControl?.(file.path) ?? defaultCacheControl(file.path),
+						},
 						capturedHeaders.get(manifestKey(path)),
 						options.headers?.({ path, file: file.path, context }),
 					],

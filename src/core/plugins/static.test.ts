@@ -409,15 +409,33 @@ describe("prerendered cacheControl", () => {
 		await expect(cacheControl("/components/button.md")).resolves.toBe("max-age=60");
 	});
 
-	it("uses the cacheControl option, and sends none for undefined", async () => {
+	it("uses the cacheControl option, and keeps the default of a file for undefined", async () => {
 		const { request } = await staticServer({
-			cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined),
+			cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined),
+		});
+		const cacheControl = async (path: string) => (await request(path)).headers.get("Cache-Control");
+
+		await expect(cacheControl("/images/logo.svg")).resolves.toBe("public, max-age=86400");
+		await expect(cacheControl("/install.sh")).resolves.toBe(
+			"public, max-age=3600, stale-while-revalidate=86400",
+		);
+		await expect(cacheControl("/legacy.htm")).resolves.toBe("public, max-age=0, must-revalidate");
+	});
+
+	it("sends no Cache-Control when a header hook of an earlier plugin deletes it", async () => {
+		const noCacheControl: Plugin = {
+			name: "no-cache-control",
+			middleware: async (context, next) =>
+				withHeaderHook(context, next, (response) => {
+					response.delete("Cache-Control");
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [noCacheControl, assets(), prerendered()],
+			clientDirectory,
 		});
 
-		expect((await request("/images/logo.svg")).headers.get("Cache-Control")).toBe(
-			"public, max-age=86400",
-		);
-		expect((await request("/llms.txt")).headers.get("Cache-Control")).toBeNull();
+		expect((await request("/install.sh")).headers.get("Cache-Control")).toBeNull();
 	});
 });
 

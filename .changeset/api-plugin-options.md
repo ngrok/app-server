@@ -109,3 +109,35 @@ The error names the plugin, the option, and the other way out:
 ```
 The noindex plugin comes after prerendered(), so the prerendered pages do not get it. Set the "noindex" option of defaultPlugins(), or put the plugin before prerendered().
 ```
+
+Breaking change: when `prerendered({ cacheControl })` gives `undefined` for a file, the file now gets the default `Cache-Control`. Before, it got none, so a function that set a value for some files took the default off each other file, and each CDN then used its own rules for them. The example of the option did that:
+
+```ts
+prerendered({
+	cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined),
+});
+// Before: `/about`, `/about.data`, and `/llms.txt` had no `Cache-Control`.
+// After: `/about` and `/about.data` have `public, max-age=0, must-revalidate`, and `/llms.txt` has
+// `public, max-age=3600, stale-while-revalidate=86400`.
+```
+
+`cacheControl: () => undefined` no longer removes the header. To send no `Cache-Control`, delete it in a header hook of a plugin before the static stages. A prerendered file behind an auth check still needs `Cache-Control: private` from the auth plugin.
+
+```ts
+// Before
+defaultPlugins({ prerendered: { cacheControl: () => undefined } });
+
+// After
+const noCacheControl: Plugin = {
+	name: "no-cache-control",
+	middleware: async (c, next) =>
+		withHeaderHook(c, next, (response) => {
+			if (isClientBuildFile(c.req.path)) {
+				response.delete("Cache-Control");
+			}
+		}),
+};
+defaultPlugins({ beforeStatic: [noCacheControl] });
+```
+
+`isClientBuildFile` stands for the app's own test of the path. Without it, the hook also removes the header of each rendered page.
