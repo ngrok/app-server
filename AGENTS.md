@@ -25,7 +25,7 @@ Read the files for your task before the first edit. Work is incomplete until you
 - **`src/core`:** it runs on each host and with each framework. Apply [pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md), [stream, don't buffer](./docs/principles/stream-dont-buffer.md), and [keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md).
 - **A host or framework adapter:** `HostRuntime` and `FrameworkRuntime` in `src/core/types.ts`, and `HostBuild` and `FrameworkBuild` in `src/vite/index.ts`, are the contract.
 - **A listener, shutdown, a stream, the CLI, or the build:** also run `pnpm run build` and `pnpm run test:runtimes`.
-- **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md).
+- **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md). `test/docs.test.ts` checks the README against the code: each `ts` example, the log table, the plugin names, and the install line.
 - **A custom lint rule:** `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
 - **A performance change or claim:** apply [explain the number](./docs/principles/explain-the-number.md) and [redesign before you cache](./docs/principles/redesign-before-you-cache.md).
 - **Comments, JSDoc, changesets, commits, PR descriptions, and repo markdown:** load the [`simplified-technical-english`](./.claude/skills/simplified-technical-english/SKILL.md) skill.
@@ -61,7 +61,7 @@ Short, named rules for how to work. They are the methods that meet the [north st
 
 ## Rules
 
-- Every published change needs a changeset (`pnpm changeset`). The package is `0.x`: a breaking change is a `minor`, any other change a `patch`.
+- Every published change needs a changeset (`pnpm changeset`). The package is `0.x`: a breaking change is a `minor`, any other change a `patch`. A new startup error, a renamed log attribute, and a removed export are breaking ([Least surprising](./docs/north-star.md#least-surprising)).
 - A comment says why, not what. Start it with `Why:` when it explains a choice.
 - Lint turns on every oxlint category. A rule goes off only in `.oxlintrc.json`, with a reason. A suppression comment also gives a reason: `// oxlint-disable-next-line <rule> -- <reason>`.
 - Check for no value with `== null` and `!= null`. `eqeqeq` and `app-server/prefer-null-check` reject `=== null`, `=== undefined`, and `== undefined`.

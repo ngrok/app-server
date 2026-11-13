@@ -16,6 +16,7 @@ Solve the task with the smallest change that meets it. Every line you add is a l
 **In this repo:**
 
 - `src/core` has one dependency, Hono. Keep it that way.
+- The server entry exports the whole run-side module of the host. So each export of `@ngrok/app-server/node` goes into each node-host server build.
 - Before you add complexity for an unlikely race or security edge case, give the person who asked for the change the concrete failure, its likelihood, and the cost. Add it only when they agree.
 
-**Enforced by:** review.
+**Enforced by:** review. A test pins the export names of the root, `node`, `react-router`, and `vite` entries, so a new export fails until its author adds it to the list.

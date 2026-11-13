@@ -13,6 +13,6 @@ Model a contract in the types so that the compiler rejects a wrong use. What the
 - A field that exists in one mode but has an optional type in every mode.
 - A `value as Type` assertion that silences an error instead of fixing the model.
 
-**In this repo:** `SetupInfo` is a union on `mode`, so only development code can read `devServer`.
+**In this repo:** `SetupInfo` is a union on `mode`, so only development code can read `devServer`. `Plugin` has `call?: never`, so the compiler rejects a function in the plugin list, such as a plugin factory that the app did not call.
 
 **Enforced by:** `pnpm run typecheck` with the strict options in `tsconfig.json`; oxlint `typescript/no-unsafe-type-assertion` and `typescript/switch-exhaustiveness-check`.

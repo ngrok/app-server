@@ -12,11 +12,13 @@ Parse untrusted input once, where it enters: a request header, the URL path, an 
 - A cast on data from `JSON.parse`, `process.env`, or a request header.
 - A config error that shows only on the first request.
 - A header value that goes into a `Location`, a log line, or a file path with no check.
+- An option that a plugin reads first in its middleware or in a header hook. A bad value is then a 500 for each request, while the health probes answer 200.
 
 **In this repo:**
 
 - `runtimeEnv` validates the environment at startup with a Standard Schema.
 - `parsePort` rejects a bad `PORT`, and a throw in a plugin's `setup` stops startup.
+- A plugin factory checks each option where the app calls it: `health()` its paths, `redirects()` each `from`, and `requestId()`, `buildId()`, `noindex()`, and `securityHeaders()` each header name and value. `createServer` checks the plugin list.
 - `requestId()` reuses an incoming `X-Request-Id` only when it is valid.
 - `trustForwardedProto` reads `X-Forwarded-Proto` only when the app sets it, and only for `http` or `https`.
 
