@@ -45,12 +45,37 @@ describe("eventStream", () => {
 		await expect(readAll(response)).resolves.toBe("data: first\ndata: event: injected\n\n");
 	});
 
-	it("refuses a line break in the event name", async () => {
+	it("writes each line of the data as one line, for each kind of line break", async () => {
 		const response = eventStream({}, ({ send }) => {
-			send({ event: "update\ndata: injected", data: "x" });
+			send({ data: "one\r\ntwo\rthree\nfour\n" });
+			send({ id: "8", data: "" });
 		});
 
-		await expect(readAll(response)).rejects.toThrow("cannot contain a line break");
+		await expect(readAll(response)).resolves.toBe(
+			"data: one\ndata: two\ndata: three\ndata: four\ndata: \n\nid: 8\ndata: \n\n",
+		);
+	});
+
+	it.each([
+		{ field: "event", event: { event: "update\ndata: injected", data: "x" } },
+		{ field: "id", event: { id: "7\rdata: injected", data: "x" } },
+	])("refuses a line break in the $field of an event", async ({ event }) => {
+		const response = eventStream({}, ({ send }) => {
+			send(event);
+		});
+
+		await expect(readAll(response)).rejects.toThrow(
+			new TypeError("An event's `event` and `id` cannot contain a line break."),
+		);
+	});
+
+	// Why: `JSON.stringify` gives `undefined` for a value that it cannot write, and its type says `string`.
+	it("refuses data that is not a string", async () => {
+		const response = eventStream({}, ({ send }) => {
+			send({ data: JSON.stringify(undefined) });
+		});
+
+		await expect(readAll(response)).rejects.toThrow(TypeError);
 	});
 
 	it("sends a heartbeat comment while the stream is quiet", async () => {

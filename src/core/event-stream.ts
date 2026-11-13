@@ -44,18 +44,25 @@ const MAX_QUEUED_BYTES = 1024 * 1024;
 /** Why one object: a stream reads its strategy and does not keep it. */
 const QUEUE_STRATEGY = new ByteLengthQueuingStrategy({ highWaterMark: MAX_QUEUED_BYTES });
 
-function formatEvent({ data, event, id }: ServerSentEvent): string {
+/** The line of the field `name` of an event, or no text when the event does not have the field. */
+function fieldLine(name: string, value: string | undefined): string {
+	if (value == null) {
+		return "";
+	}
 	// Why: a line break in `event` or `id` would start another field or event.
-	if (/[\r\n]/u.test(`${event ?? ""}${id ?? ""}`)) {
+	if (/[\r\n]/u.test(value)) {
 		throw new TypeError("An event's `event` and `id` cannot contain a line break.");
 	}
-	const lines = [
-		...(event == null ? [] : [`event: ${event}`]),
-		...(id == null ? [] : [`id: ${id}`]),
-		// Why `\r` too: a client reads a lone carriage return as a line end.
-		...data.split(/\r\n|\r|\n/u).map((line) => `data: ${line}`),
-	];
-	return `${lines.join("\n")}\n\n`;
+	return `${name}: ${value}\n`;
+}
+
+function formatEvent({ data, event, id }: ServerSentEvent): string {
+	// Why `includes`: most events have one line, and a replace that finds no line break costs more.
+	// It also throws for `data` that is not a string, such as the result of `JSON.stringify(undefined)`.
+	const hasLineBreak = data.includes("\n") || data.includes("\r");
+	// Why `\r` too: a client reads a lone carriage return as a line end.
+	const lines = hasLineBreak ? data.replaceAll(/\r\n|\r|\n/gu, "\ndata: ") : data;
+	return `${fieldLine("event", event)}${fieldLine("id", id)}data: ${lines}\n\n`;
 }
 
 /**
