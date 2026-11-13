@@ -430,7 +430,9 @@ export type Plugin = {
 	/**
 	 * Runs once before the server takes requests. A thrown error stops startup.
 	 * On a serverless host, a thrown error fails the request, and the next
-	 * request runs each `setup` again.
+	 * request runs each `setup` again. Take the values that you need from
+	 * `info`: a function that keeps `info` keeps each field of it in memory,
+	 * such as the script hashes of each page.
 	 */
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */

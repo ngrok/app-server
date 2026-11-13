@@ -29,7 +29,7 @@ export type InferOutput<Schema extends StandardSchemaV1> = NonNullable<
 >["output"];
 
 /** The `id` of the JSON `<script>` that carries the public values into each HTML document. */
-export const PUBLIC_ENV_SCRIPT_ID = "app-server-public-env";
+const PUBLIC_ENV_SCRIPT_ID = "app-server-public-env";
 
 /** The search for `</head>` stops after this many bytes, so the rest of a long body costs no search. */
 const HEAD_SEARCH_LIMIT = 1_048_576;
