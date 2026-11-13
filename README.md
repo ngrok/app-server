@@ -1007,7 +1007,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 - The server closes the connection. An `EventSource` then connects again and sends the `id` of its last event as `Last-Event-ID`.
 - `signal` aborts, with the error as its `reason`.
 
-So a client that does not read loses its stream, and so does a client that reads slower than `produce` sends. A burst in one turn of the event loop does not stop the stream, but it waits in memory until the client reads it. Send a long history in another response.
+So a client that does not read loses its stream, and so does a client that reads slower than `produce` sends. A burst in one turn of the event loop does not stop the stream, but it waits in memory until the client reads it. Send a long history in another response. The limit counts the bytes of the events, and on Node.js each event that waits takes about 220 bytes more.
 
 On Bun, `Bun.serve` reads the stream ahead of the client and holds the events itself, so the limit does not stop a client that does not read.
 

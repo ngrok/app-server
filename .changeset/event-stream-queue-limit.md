@@ -10,7 +10,7 @@
 
 A client that reads still gets each event at once. A burst of more than 1 MiB in one turn of the event loop does not stop the stream, because no client can read during the turn. The burst waits in memory until the client reads it.
 
-Before, the events waited with no limit. In a test on Node.js 26.13, one client stopped reading while the producer sent 17 MiB each second. In 3 runs, the memory of the events (`process.memoryUsage().arrayBuffers`) grew by 67.5 MiB to 68.7 MiB in 4 s. Now it grows by 1.2 MiB at most, and the server closes the connection after 1.8 MiB: 1 MiB in the stream, and the rest in the socket.
+Before, the events waited with no limit. In a test on Node.js 26.13, one client stopped reading while the producer sent 17 MiB each second. In 3 runs, the memory of the events (`process.memoryUsage().arrayBuffers`) grew by 67.5 MiB to 68.7 MiB in 4 s. Now it grows by 1.0 MiB to 1.2 MiB, and the server closes the connection after 1.8 MiB: 1 MiB in the stream, and the rest in the socket.
 
 The limit counts the bytes of the events. On Node.js, each event that waits also takes about 220 bytes of heap, so 1 MiB of events of 100 bytes takes 3.3 MiB. The limit works on Node.js and Deno. On Bun, `Bun.serve` reads the stream ahead of the client and holds the events itself, so the limit does not stop a client that does not read there.
 
