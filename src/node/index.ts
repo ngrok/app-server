@@ -14,10 +14,6 @@ export {
 } from "./files.js";
 export {
 	//,
-	requestListener,
-} from "./response-writer.js";
-export {
-	//,
 	parsePort,
 	tcp,
 } from "./tcp.js";
