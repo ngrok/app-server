@@ -922,7 +922,7 @@ export default createServer({
 });
 ```
 
-`livePath` and `readyPath` move the probes. `defaultPlugins({ health: false })` turns them off, such as for an app with its own `/livez` route.
+`livePath` and `readyPath` move the probes. Each must start with `/`, and the two must differ, else startup stops. For a platform with one health URL, set only `readyPath`. `defaultPlugins({ health: false })` turns the probes off, such as for an app with its own `/livez` route.
 
 On Node.js, an HTTP/1.0 request with no `Host` header, such as a probe from HAProxy, gets the host `localhost`, so the probe gets its answer. The same is true for a request with an empty `Host` header. An HTTP/1.1 request with no `Host` header gets a 400 from Node.js itself. Deno answers each of these requests. On Bun, an HTTP/1.0 request with no `Host` and a request with an empty `Host` get a 500, so give the probe a `Host` header.
 

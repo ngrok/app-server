@@ -18,6 +18,36 @@ describe("health", () => {
 		expect(lines).toStrictEqual([]);
 	});
 
+	it("answers the probes at livePath and readyPath, and not at the default paths", async () => {
+		const { request } = await testServer({
+			plugins: [health({ livePath: "/up", readyPath: "/ready", ready: () => false })],
+		});
+
+		expect((await request("/up")).status).toBe(200);
+		expect((await request("/ready")).status).toBe(503);
+		await expect((await request("/livez")).text()).resolves.toBe("rendered");
+		await expect((await request("/readyz")).text()).resolves.toBe("rendered");
+	});
+
+	it("stops startup for a path that does not start with a slash", () => {
+		expect(() => health({ livePath: "livez" })).toThrow(
+			'health needs a livePath that starts with "/", not "livez".',
+		);
+		expect(() => health({ readyPath: "" })).toThrow(
+			'health needs a readyPath that starts with "/", not "".',
+		);
+	});
+
+	it("stops startup for one path for both probes, which would never run the readiness check", () => {
+		expect(() => health({ livePath: "/healthz", readyPath: "/healthz" })).toThrow(
+			'health needs a livePath and a readyPath that differ. Both are "/healthz"',
+		);
+		expect(() => health({ readyPath: "/livez" })).toThrow(
+			"For one health URL, set only readyPath.",
+		);
+		expect(() => defaultPlugins({ health: { livePath: "/readyz" } })).toThrow("differ");
+	});
+
 	it("is not ready when the app check fails or throws", async () => {
 		const failing = await testServer({ plugins: [health({ ready: () => false })] });
 		const throwing = await testServer({

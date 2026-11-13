@@ -5,9 +5,16 @@ import type { Plugin, RequestLogger } from "../types.js";
 
 /** Options for {@link health}. */
 export type HealthOptions = {
-	/** @default "/livez" */
+	/**
+	 * The path of the liveness probe. It must start with `/`.
+	 * @default "/livez"
+	 */
 	livePath?: string;
-	/** @default "/readyz" */
+	/**
+	 * The path of the readiness probe. It must start with `/`, and it must not
+	 * be `livePath`.
+	 * @default "/readyz"
+	 */
 	readyPath?: string;
 	/**
 	 * An app check for readiness, such as a database ping. A `false` or a
@@ -35,6 +42,9 @@ function probe(text: string, status: 200 | 503): Response {
  * `defaultPlugins()` runs it first, so a probe skips the access log. Its
  * `health` option takes these options, and `false` turns it off.
  *
+ * A path that does not start with `/`, or one path for both probes, stops
+ * startup. For a platform with one health URL, set only `readyPath`.
+ *
  * @example
  * createServer({
  * 	plugins: defaultPlugins({ health: { ready: async () => db.ping() } }),
@@ -46,6 +56,19 @@ export function health({
 	readyPath = "/readyz",
 	ready,
 }: HealthOptions = {}): Plugin {
+	for (const [option, path] of Object.entries({ livePath, readyPath })) {
+		if (!path.startsWith("/")) {
+			throw new Error(
+				`health needs a ${option} that starts with "/", not ${JSON.stringify(path)}.`,
+			);
+		}
+	}
+	// Why: the liveness answer comes first, so one path for both probes always answers 200.
+	if (livePath === readyPath) {
+		throw new Error(
+			`health needs a livePath and a readyPath that differ. Both are ${JSON.stringify(livePath)}, so the readiness check would never run. For one health URL, set only readyPath.`,
+		);
+	}
 	// Why log on a change only: a probe comes every few seconds.
 	let appFailing = false;
 	const appCheck = async (logger: RequestLogger): Promise<boolean> => {
