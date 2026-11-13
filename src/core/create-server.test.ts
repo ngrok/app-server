@@ -1497,20 +1497,17 @@ describe("the pipeline", () => {
 		expect(summary(lines)).toStrictEqual([["request", 202]]);
 	});
 
-	it("answers 500 for a second next() in a plugin, and runs the later stages one time", async () => {
+	const twice: Plugin = {
+		name: "twice",
+		middleware: async (_context, next) => {
+			await next();
+			await next();
+		},
+	};
+
+	it("answers 500 for a second next() in the last plugin, and runs the framework one time", async () => {
 		const render = vi.fn<FrameworkRuntime["fetch"]>(renderedFramework);
-		const { request, lines, seen } = await pipeline({
-			plugins: [
-				{
-					name: "twice",
-					middleware: async (_context, next) => {
-						await next();
-						await next();
-					},
-				},
-			],
-			render,
-		});
+		const { request, lines, seen } = await pipeline({ plugins: [twice], render });
 
 		const response = await request("/");
 		await response.text();
@@ -1523,6 +1520,27 @@ describe("the pipeline", () => {
 			["request", 500],
 		]);
 	});
+
+	/** A plugin after `twice`, by what it does with the request. */
+	const afterTwice: [what: string, middleware: NonNullable<Plugin["middleware"]>][] = [
+		["passes the request on", async (_context, next) => next()],
+		["answers", async (context) => context.text("short", 202)],
+	];
+
+	it.each(afterTwice)(
+		"answers 500 for a second next() in a plugin, and runs a later plugin that %s one time",
+		async (_, middleware) => {
+			const later = vi.fn<NonNullable<Plugin["middleware"]>>(middleware);
+			const { request } = await pipeline({
+				plugins: [twice, { name: "later", middleware: later }],
+			});
+
+			const response = await request("/");
+
+			expect(response.status).toBe(500);
+			expect(later).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("sends the response that a plugin sets after next(), in place of the answer of a later plugin", async () => {
 		const { request, seen } = await pipeline({
