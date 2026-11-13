@@ -223,7 +223,7 @@ describe("createEntry", () => {
 	});
 
 	it("gives the app the bindings of each development request, before and after the setup ends", async () => {
-		const app = createServer({ plugins: [] });
+		const app = createServer({ plugins: [assets()] });
 		app.get("/address", (context) => context.text(context.get("clientAddress") ?? "none"));
 		const entry = createEntry({ app, host: nodeHost, framework: () => stubFramework() });
 		const address = async (remoteAddress: string) => {
@@ -474,7 +474,7 @@ describe("createEntry", () => {
 		app.get("/address", (context) => context.text(context.get("clientAddress") ?? "none"));
 		const entry = createEntry({
 			app,
-			host: { name: "serverless", files: nodeHost.files },
+			host: { files: nodeHost.files },
 			clientDirectory,
 			framework: () => ({ name: "stub", fetch: renderedFramework }),
 		});
