@@ -258,8 +258,9 @@ export function redirects(
 				? withoutTrailingSlash(found.target)
 				: found.target;
 		const location = withQuery(target, url.search);
-		// Why: a rule such as `/tags/:tag` to `/tags/:tag/` also matches its own target.
-		if (new URL(location, url).href === url.href) {
+		// Why: a rule such as `/tags/:tag` to `/tags/:tag/` also matches its own target. Why
+		// `URL.parse`: the values of the request can make a target that is not a URL, such as `//%2F`.
+		if (URL.parse(location, url)?.href === url.href) {
 			return next();
 		}
 		const safe =

@@ -195,6 +195,20 @@ describe("redirects", () => {
 		await expect(redirected(rules, "/go//evil.com")).resolves.toMatchObject({ status: 200 });
 	});
 
+	it("goes on when the target with the values of the request is not a URL", async () => {
+		const rules: RedirectRule[] = [{ from: "/go/*", to: "/*" }];
+
+		// Why these paths: the target is `//%2F` and `//<`, which name a host that no URL can have.
+		await expect(redirected(rules, "/go//%2F")).resolves.toStrictEqual({
+			status: 200,
+			location: null,
+		});
+		await expect(redirected(rules, "/go//%3C")).resolves.toStrictEqual({
+			status: 200,
+			location: null,
+		});
+	});
+
 	it("stops startup for a rule that is not valid", () => {
 		expect(() => redirects([{ from: "/a", to: "//evil.com" }])).toThrow("not a safe local path");
 		expect(() => redirects([{ from: "/a", to: "/b/:slug" }])).toThrow("does not have");
