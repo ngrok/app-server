@@ -1428,7 +1428,7 @@ describe("the pipeline", () => {
 		},
 	);
 
-	it("answers each kind of request through the Node listener, with one access line for each", async () => {
+	it("answers each kind of request through the Node listener, and writes the access lines", async () => {
 		const lines: LoggedLine[] = [];
 		const html = `<!doctype html><html><body>${"<p>hello</p>".repeat(400)}</body></html>`;
 		const server = await listening(
@@ -1450,6 +1450,10 @@ describe("the pipeline", () => {
 						// oxlint-disable-next-line no-throw-literal, typescript/only-throw-error -- the test throws a string on purpose.
 						throw "boom";
 					});
+					app.get("/throws-error", () => {
+						throw new Error("bang");
+					});
+					app.get("/api/status", (context) => context.json({ ok: true }));
 				},
 			},
 		);
@@ -1477,13 +1481,20 @@ describe("the pipeline", () => {
 			await answer("/page", { method: "POST", body: "hello" }),
 			await answer("/about", encoded("identity")),
 			await answer("/about/", encoded("identity")),
+			await answer("/about/?x=1", encoded("identity")),
+			await answer("/docs//", encoded("identity")),
+			await answer("/", encoded("identity")),
 			await answer("/assets/app-abc.js", encoded("br, gzip")),
 			await answer("/assets/missing.js"),
 			await answer("/livez"),
 			await answer("/readyz"),
 			await answer("/throws"),
+			await answer("/throws-error"),
+			await answer("/api/status"),
+			await answer("/api/status/"),
 			await answer("/page?x=1", { headers: { "X-Forwarded-Proto": "https" } }),
 			await answer("/.env", encoded("identity")),
+			await answer("/.well-known/x", encoded("identity")),
 		];
 
 		expect(answers).toStrictEqual([
@@ -1494,12 +1505,19 @@ describe("the pipeline", () => {
 			[200, "hello", null, privately, null, null],
 			[200, about, null, "public, max-age=0, must-revalidate", null, null],
 			[308, "", null, null, "/about", null],
+			[308, "", null, null, "/about?x=1", null],
+			[308, "", null, null, "/docs", null],
+			[200, html, null, privately, null, null],
 			[200, script, "br", "public, max-age=31536000, immutable", null, null],
 			[404, "Not Found", null, "no-store", null, null],
 			[200, "ok", null, "no-store", null, null],
 			[200, "ok", null, "no-store", null, null],
 			[500, "Internal Server Error", null, null, null, null],
+			[500, "Internal Server Error", null, null, null, null],
+			[200, '{"ok":true}', null, null, null, null],
+			[308, "", null, null, "/api/status", null],
 			[200, html, "gzip", privately, null, "max-age=31536000"],
+			[200, html, null, privately, null, null],
 			[200, html, null, privately, null, null],
 		]);
 		// Why a count: a line goes out when its response closes, which can be after the next request.
@@ -1513,11 +1531,12 @@ describe("the pipeline", () => {
 		};
 		await expect.poll(counts).toStrictEqual({
 			"listening undefined": 1,
-			"request 200": 9,
-			"request 308": 1,
+			"request 200": 12,
+			"request 308": 4,
 			"request 404": 1,
-			"request 500": 1,
+			"request 500": 2,
 			"unhandled error A non-Error value was thrown: boom": 1,
+			"unhandled error bang": 1,
 		});
 		await server.shutdown();
 	});
