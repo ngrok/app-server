@@ -125,6 +125,8 @@ declare const routeTree: import("@tanstack/react-router").AnyRoute;
 declare const serverModule: unknown;
 declare const url: string;
 declare const userId: string;
+declare const username: string;
+declare const password: string;
 declare const mySlogger: Record<
 	"debug" | "info" | "warn" | "error",
 	(message: string, attributes: Readonly<Record<string, unknown>>) => void
