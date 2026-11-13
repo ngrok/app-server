@@ -169,6 +169,32 @@ describe("staticPages", () => {
 		]);
 	});
 
+	it("keeps a page on the server when its body changes with the request, also in one byte", async () => {
+		/** A plugin that gives a request with a cookie the body that `change` makes. */
+		const forSession = (change: (body: string) => string): Plugin => ({
+			name: "for-session",
+			middleware: async (context, next) => {
+				await next();
+				if (context.req.header("Cookie") != null) {
+					const response = context.res;
+					context.res = new Response(change(await response.text()), response);
+				}
+			},
+		});
+		const lastByte = forSession((body) => `${body.slice(0, -1)}!`);
+		const longer = forSession((body) => `${body}!`);
+		const same = forSession((body) => body);
+
+		for (const plugin of [lastByte, longer]) {
+			await expect(pagesOf({ beforeStatic: [plugin] }, ["/about"])).resolves.toStrictEqual([
+				{ path: "/about", reason: "the body changes with the request" },
+			]);
+		}
+		await expect(pagesOf({ beforeStatic: [same] }, ["/about"])).resolves.toMatchObject([
+			{ path: "/about", cdn: { file: "/about/index.html" } },
+		]);
+	});
+
 	it("keeps a page on the server when a plugin answers a signed-in visitor or a country another way", async () => {
 		const signedIn: Plugin = {
 			name: "signed-in",

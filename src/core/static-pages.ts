@@ -148,8 +148,17 @@ async function answer(
 	};
 }
 
+/** Why a loop: `every` calls a function for each byte of each page. */
 function sameBytes(first: Uint8Array, second: Uint8Array): boolean {
-	return first.length === second.length && first.every((byte, index) => byte === second[index]);
+	if (first.length !== second.length) {
+		return false;
+	}
+	for (let index = 0; index < first.length; index += 1) {
+		if (first[index] !== second[index]) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /** The headers of `headers` that a CDN answer keeps, sorted by name. */
