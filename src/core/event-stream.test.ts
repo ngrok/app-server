@@ -102,18 +102,17 @@ describe("eventStream", () => {
 	});
 
 	// Why: a timer turns a delay that it cannot hold into 1 ms, so the stream would send a ping each millisecond.
-	it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+	it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
 		"refuses a heartbeatMs of %s with a message that names it",
 		(heartbeatMs) => {
 			expect(() => eventStream({ heartbeatMs }, () => {})).toThrow(
-				new RangeError(
-					`eventStream needs a heartbeatMs that is an integer from 1 to 2147483647, not ${heartbeatMs}.`,
-				),
+				new RangeError(`eventStream needs a heartbeatMs from 1 to 2147483647, not ${heartbeatMs}.`),
 			);
 		},
 	);
 
-	it.each([1, 2_147_483_647])("takes a heartbeatMs of %s", async (heartbeatMs) => {
+	// Why 1.5: a timer holds a delay with a fraction, such as the result of `seconds * 1000`.
+	it.each([1, 1.5, 2_147_483_647])("takes a heartbeatMs of %s", async (heartbeatMs) => {
 		const response = eventStream({ heartbeatMs }, ({ send }) => {
 			send({ data: "x" });
 		});

@@ -999,7 +999,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 ```
 
-`heartbeatMs` sets the milliseconds between two heartbeats. It must be an integer from 1 to 2,147,483,647, or `eventStream()` throws a `RangeError`.
+`heartbeatMs` sets the milliseconds between two heartbeats. It must be from 1 to 2,147,483,647, or `eventStream()` throws a `RangeError`. No value turns the heartbeat off.
 
 `send()` does not wait for the client. The events that the client has not read wait in memory, up to 1 mebibyte (MiB). When more than 1 MiB waits:
 

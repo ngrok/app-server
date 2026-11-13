@@ -24,7 +24,7 @@ export type EventStreamOptions = {
 	signal?: AbortSignal;
 	/**
 	 * How often a `: ping` comment goes out, in milliseconds, so that a proxy keeps a quiet stream
-	 * open. It must be an integer from 1 to 2,147,483,647, or `eventStream` throws a `RangeError`.
+	 * open. It must be from 1 to 2,147,483,647, or `eventStream` throws a `RangeError`.
 	 * @default 15000
 	 */
 	heartbeatMs?: number;
@@ -94,9 +94,10 @@ export function eventStream(
 	{ signal, heartbeatMs = 15_000, headers }: EventStreamOptions,
 	produce: (sink: EventStreamSink) => void | Promise<void>,
 ): Response {
-	if (!Number.isInteger(heartbeatMs) || heartbeatMs < 1 || heartbeatMs > MAX_TIMER_MS) {
+	// Why negated: `NaN` fails each comparison, so it throws too.
+	if (!(heartbeatMs >= 1 && heartbeatMs <= MAX_TIMER_MS)) {
 		throw new RangeError(
-			`eventStream needs a heartbeatMs that is an integer from 1 to ${MAX_TIMER_MS}, not ${heartbeatMs}.`,
+			`eventStream needs a heartbeatMs from 1 to ${MAX_TIMER_MS}, not ${heartbeatMs}.`,
 		);
 	}
 	const encoder = new TextEncoder();
