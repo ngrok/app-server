@@ -141,3 +141,29 @@ defaultPlugins({ beforeStatic: [noCacheControl] });
 ```
 
 `isClientBuildFile` stands for the app's own test of the path. Without it, the hook also removes the header of each rendered page.
+
+Breaking change: `redirects` now stops startup for a `from` that no request path can equal: one with a query, a fragment, a dot segment, or a character that is not percent-encoded, such as a space or `é`. It also stops startup for a segment of `from` that starts with `:` or has `*` and is not `:name` or `*`, such as `:id?`, `:slug*`, `(.*)`, and `*.html`. Before, each of these rules started, and its old URL got the framework's 404. A rule matches the path only, so a rule cannot select one query.
+
+```ts
+// Before: each rule started and never matched.
+redirects([
+	{ from: "/café", to: "/cafe" },
+	{ from: "/old?page=1", to: "/new" },
+	{ from: "/blog/:slug*", to: "/articles/:slug" },
+]);
+
+// After
+redirects([
+	{ from: "/caf%C3%A9", to: "/cafe" },
+	{ from: "/old", to: "/new" },
+	{ from: "/blog/*", to: "/articles/*" },
+]);
+```
+
+A literal segment that starts with `:` or has `*`, such as `/files/:1` or `/a*b`, did redirect before. It also stops startup now, and it has no form in a rule. Answer such a path with a route of the app.
+
+The error names the rule and the fix:
+
+```
+The redirect from /café can never match. A rule matches the path only. Write it percent-encoded, with no query and no fragment: /caf%C3%A9.
+```

@@ -10,7 +10,10 @@ export type RedirectRule = {
 	 * The old URL path. A `:name` segment matches one path segment, and a `*`
 	 * last segment matches the rest of the path, or nothing: `/docs/*` also
 	 * matches `/docs`. A trailing slash does not change the match. Write the
-	 * path as it is in the URL, percent-encoded.
+	 * path as it is in the URL, percent-encoded. A rule matches the path only,
+	 * so a query, a fragment, or a character that is not percent-encoded stops
+	 * startup. So does a segment that starts with `:` or has `*` and is not
+	 * `:name` or `*`, such as `:slug*` or `*.html`.
 	 */
 	from: string;
 	/**
@@ -96,6 +99,11 @@ function compilePattern(from: string): Pick<CompiledRule, "pattern" | "first"> &
 			// also moves `/docs`.
 			return "(?:/(?<$splat>.*))?";
 		}
+		if (segment.startsWith(":") || segment.includes("*")) {
+			throw new Error(
+				`The redirect from ${from} has the segment ${segment}, which is not valid. Use :name for one whole segment, or * as the whole last segment. A literal segment cannot start with ":" or have "*".`,
+			);
+		}
 		if (index === 0) {
 			first = segment;
 		}
@@ -114,6 +122,13 @@ function compileRule({ from, to, status = 301 }: RedirectRule, index: number): C
 		throw new Error(`A redirect must be from a path that starts with "/", not ${from}.`);
 	}
 	const { pattern, first, names } = compilePattern(from);
+	// Why: the request path comes from the URL parser, so a `from` that the parser changes can never match.
+	const pathname = URL.parse(`http://localhost${from}`)?.pathname;
+	if (pathname !== from) {
+		throw new Error(
+			`The redirect from ${from} can never match. A rule matches the path only. Write it percent-encoded, with no query and no fragment: ${pathname}.`,
+		);
+	}
 	for (const token of to.matchAll(TARGET_TOKEN)) {
 		const name = token.groups?.name ?? "*";
 		if (!names.has(name)) {

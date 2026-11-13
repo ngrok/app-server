@@ -218,6 +218,48 @@ describe("redirects", () => {
 		);
 	});
 
+	it.each([
+		{ from: "/old?page=1", path: "/old" },
+		{ from: "/old#top", path: "/old" },
+		{ from: "/a b", path: "/a%20b" },
+		{ from: "/café", path: "/caf%C3%A9" },
+		{ from: "/a/./b", path: "/a/b" },
+	])("stops startup for the from $from, which no request path can equal", ({ from, path }) => {
+		expect(() => redirects([{ from, to: "/new" }])).toThrow(
+			`The redirect from ${from} can never match. A rule matches the path only. Write it percent-encoded, with no query and no fragment: ${path}.`,
+		);
+	});
+
+	it.each([
+		{ from: "/old/:id?", segment: ":id?" },
+		{ from: "/blog/:slug*", segment: ":slug*" },
+		{ from: "/blog/(.*)", segment: "(.*)" },
+		{ from: "/docs/*.html", segment: "*.html" },
+	])(
+		"stops startup for the from $from, whose segment $segment is a pattern of another server",
+		({ from, segment }) => {
+			expect(() => redirects([{ from, to: "/new" }])).toThrow(
+				`The redirect from ${from} has the segment ${segment}, which is not valid. Use :name for one whole segment, or * as the whole last segment.`,
+			);
+		},
+	);
+
+	it("takes a literal segment with a colon after its start, and a percent-encoded path", async () => {
+		const rules: RedirectRule[] = [
+			{ from: "/wiki/Category:Foo", to: "/categories/foo" },
+			{ from: "/caf%C3%A9", to: "/cafe" },
+		];
+
+		await expect(redirected(rules, "/wiki/Category:Foo")).resolves.toStrictEqual({
+			status: 301,
+			location: "/categories/foo",
+		});
+		await expect(redirected(rules, "/caf%C3%A9")).resolves.toStrictEqual({
+			status: 301,
+			location: "/cafe",
+		});
+	});
+
 	it("matches the bare prefix of a * rule, and the root with /*", async () => {
 		const rules: RedirectRule[] = [
 			{ from: "/docs/*", to: "https://docs.example.com/*" },
