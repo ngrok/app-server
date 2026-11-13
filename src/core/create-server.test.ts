@@ -1100,6 +1100,74 @@ describe("the pipeline", () => {
 		expect(seen).toStrictEqual(["200"]);
 	});
 
+	const noAnswer =
+		"No stage answered the request. A middleware must return a Response or call `await next()`.";
+	/** A pipeline with a stage at each place that returns no response and does not call `next()`. */
+	const forgetsAt: Record<string, Stages> = {
+		"a plugin": { plugins: [{ name: "forgetful", middleware: async () => {} }] },
+		"a middleware of the app": {
+			routes: (app) => {
+				app.use("/", async () => {});
+			},
+		},
+	};
+
+	it.each(Object.keys(forgetsAt))(
+		"answers 500 when %s gives no response and does not call next(), and logs it",
+		async (place) => {
+			const { request, lines } = await pipeline(forgetsAt[place]);
+
+			const response = await request("/", { headers: { "X-Request-Id": "abc-123" } });
+
+			expect([response.status, await response.text()]).toStrictEqual([
+				500,
+				"Internal Server Error",
+			]);
+			expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+			expect(summary(lines)).toStrictEqual([
+				["unhandled error", noAnswer],
+				["request", 500],
+			]);
+		},
+	);
+
+	it.each(Object.keys(forgetsAt))(
+		"gives a listener with an edge the same 500 when %s gives no response",
+		async (place) => {
+			const { app, framework, lines } = await pipeline(forgetsAt[place]);
+			const edge = new ResponseEdge();
+
+			const response = await app.fetch(
+				new Request("http://localhost/", { headers: { "X-Request-Id": "abc-123" } }),
+				{ framework, edge },
+			);
+			const head = edge.headersFor(response) ?? [];
+			const text = await response.text();
+			edge.close(response.status, false, head);
+
+			expect([response.status, text]).toStrictEqual([500, "Internal Server Error"]);
+			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
+			expect(summary(lines)).toStrictEqual([
+				["unhandled error", noAnswer],
+				["request", 500],
+			]);
+		},
+	);
+
+	it("answers a request that no stage answers with the app's onError", async () => {
+		const { request, lines } = await pipeline({
+			...forgetsAt["a plugin"],
+			routes: (app) => {
+				app.onError(async (error, context) => context.json({ handled: error.message }, 503));
+			},
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.json()]).toStrictEqual([503, { handled: noAnswer }]);
+		expect(summary(lines)).toStrictEqual([["request", 503]]);
+	});
+
 	it("stops at a plugin that answers, and runs no later stage", async () => {
 		const render = vi.fn<FrameworkRuntime["fetch"]>(renderedFramework);
 		const { request, lines, seen } = await pipeline({

@@ -410,6 +410,16 @@ export function createServer({
 		// Why finish in the request context: a header hook can read `requestContext()`.
 		await withRequestContext(requestStore, context, async () => {
 			await next();
+			// Why here: Hono makes this check after this stage returns. By then, with no edge, the
+			// header hooks have made an empty 200 the response of the request.
+			if (!context.finalized) {
+				context.res = await answerThrown(
+					new Error(
+						"No stage answered the request. A middleware must return a Response or call `await next()`.",
+					),
+					context,
+				);
+			}
 			const finishing = finishResponse(context, { hooks, reports, edge, fail: answerThrown });
 			if (finishing != null) {
 				await finishing;
