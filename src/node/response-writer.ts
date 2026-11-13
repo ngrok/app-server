@@ -179,7 +179,9 @@ async function writeBody(
 		} else if (index !== -1 && Number(head[index + 1]) !== ahead.size) {
 			throw new Error("The body does not match its Content-Length.");
 		}
-		// Why only a small body: Node counts a response as done from `end()`, and a server that
+		// Why `end(body)` for a small body: it usually goes to the kernel in one write, and a write
+		// under the high-water mark gives no `drain` event to wait for.
+		// Why not for a large body: Node counts a response as done from `end()`, and a server that
 		// stops closes the connection of a done response, with the bytes that its socket still holds.
 		if (ahead.size < outgoing.writableHighWaterMark) {
 			outgoing.writeHead(status, head);
