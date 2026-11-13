@@ -3,7 +3,7 @@ import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { ENTRY_PROTOCOL } from "./entry-protocol.js";
-import { asError, flushLogs, sinkLogger } from "./log.js";
+import { asError, flushLogs, setLogWriter, sinkLogger } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { staticPages } from "./static-pages.js";
 import type { StaticPage } from "./static-pages.js";
@@ -94,6 +94,7 @@ export function createEntry({
 		);
 	}
 	internals.setRequestStore(host.storage);
+	setLogWriter(host.logWriter);
 	const logger = sinkLogger(internals.logger);
 	const setupInfo = async (runtime: FrameworkRuntime) => {
 		const directory = clientDirectory ?? runtime.clientDirectory;
@@ -188,7 +189,7 @@ export function createEntry({
 						attributes: { error: asError(error) },
 					});
 					// Why flush: the caller's top-level `await` rejects next. On Deno, the process then
-					// ends with no `exit` event, so a line that waits for the next turn is lost.
+					// ends with no `exit` event, so a line that the host's log writer keeps is lost.
 					flushLogs();
 					throw error;
 				});

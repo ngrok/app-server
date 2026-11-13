@@ -116,6 +116,57 @@ describe("createEntry", () => {
 		]);
 	});
 
+	it("gives the lines of the default sink to the log writer of the host, and flushes it after a development line and before a failed start rejects", async () => {
+		const kept: string[] = [];
+		const written: string[] = [];
+		const logWriter = {
+			write: (line: string) => {
+				kept.push(line);
+			},
+			flush: () => {
+				written.push(...kept.splice(0));
+			},
+		};
+		const fails: Plugin = {
+			name: "fails",
+			setup: () => {
+				throw new Error("config server down");
+			},
+		};
+		const entry = (plugins: Plugin[]) =>
+			createEntry({
+				app: createServer({ plugins }),
+				host: { ...testHost().host, logWriter },
+				clientDirectory,
+				framework: () => stubFramework(),
+			});
+
+		const built = await entry([accessLog()]).fetch(new Request("http://localhost/about"), {});
+		await built.text();
+		const production = { kept: [...kept], written: [...written] };
+		const page = await entry([accessLog(), assets()]).fetchDev(
+			new Request("http://localhost/"),
+			{},
+			async (_, next) => next(),
+		);
+		await page.text();
+		const development = { kept: [...kept], written: written.slice(1) };
+		await expect(entry([fails]).start()).rejects.toThrow("config server down");
+
+		expect(production).toStrictEqual({
+			kept: [expect.stringMatching(/^\{.*"message":"request".*\}\n$/u)],
+			written: [],
+		});
+		expect(development).toStrictEqual({
+			kept: [],
+			written: [expect.stringMatching(/^time=\S+ level=INFO msg=request .*\n$/u)],
+		});
+		expect({ kept, written: written.slice(2) }).toStrictEqual({
+			kept: [],
+			written: [expect.stringMatching(/^\{.*"message":"startup failed".*config server down/u)],
+		});
+	});
+
 	it("gives each development line to the app's own sink", async () => {
 		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		const lines: string[] = [];

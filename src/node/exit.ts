@@ -1,5 +1,5 @@
 import { setTimeout } from "node:timers";
-import { flushLogs } from "../core/log.js";
+import { flushLogs } from "./stdout.js";
 
 /** How long the exit waits for stdout and stderr. */
 const FLUSH_TIMEOUT_MS = 1_000;

@@ -196,6 +196,24 @@ export type HostRuntime = {
 	 */
 	brotli?: CompressStream;
 	/**
+	 * Where `jsonSink()` and the text sink of development write a line when
+	 * they get no `write`, such as the standard output of the process. Without
+	 * it, `console.log` writes each line.
+	 */
+	logWriter?: {
+		/**
+		 * Takes one line, with the `\n` at its end. It can keep the line, such
+		 * as until the end of the turn of the event loop.
+		 */
+		write: (line: string) => void;
+		/**
+		 * Writes each line that `write` keeps, at once. The server calls it
+		 * after each text line of development, and before a failed `start`
+		 * rejects.
+		 */
+		flush: () => void;
+	};
+	/**
 	 * How the host stops the server that the entry's `start` starts. A host
 	 * with `listeners` must give it. Without it, no code can shut the server
 	 * down: a stop signal ends the process with no drain and no `onShutdown`.

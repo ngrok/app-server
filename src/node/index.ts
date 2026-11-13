@@ -6,6 +6,7 @@ import type { AppServerEnv, HostRuntime } from "../core/types.js";
 import { exitAfterFlush } from "./exit.js";
 import { nodeFiles } from "./files.js";
 import { brotliStream, gzipStream } from "./compress.js";
+import { logWriter } from "./stdout.js";
 import { tcp } from "./tcp.js";
 
 export {
@@ -48,6 +49,7 @@ export const host: HostRuntime = {
 	},
 	gzip: gzipStream,
 	brotli: brotliStream,
+	logWriter,
 	lifecycle: {
 		onStop: (stop) => {
 			const exit = () => {

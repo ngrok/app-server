@@ -3,67 +3,58 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Context } from "hono";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { flushLogs, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
+import { hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import { testServer } from "../test-server.js";
 import type { AppServerEnv, LogSink } from "./types.js";
 
-/** A spy on stdout that keeps each write out of the test output. */
-function spyStdout() {
-	const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-	onTestFinished(() => {
-		write.mockRestore();
-	});
-	return write;
-}
-
-describe("jsonSink", () => {
-	it("writes the lines of one event-loop turn to stdout in one write", async () => {
-		const write = spyStdout();
-		const sink = jsonSink();
-
-		sink.log({ level: "info", message: "first", attributes: {} });
-		sink.log({ level: "warn", message: "second", attributes: { "http.status_code": 500 } });
-		expect(write).not.toHaveBeenCalled();
-		await new Promise<void>((resolve) => {
-			setImmediate(resolve);
-		});
-
-		expect(write).toHaveBeenCalledTimes(1);
-		const lines = String(write.mock.calls[0]?.[0]).split("\n");
-		expect(lines.map((line): unknown => (line === "" ? line : JSON.parse(line)))).toStrictEqual([
-			{ time: expect.any(String), level: "info", message: "first" },
-			{ time: expect.any(String), level: "warn", message: "second", "http.status_code": 500 },
-			"",
-		]);
-	});
-
-	it("writes each line to a pipe when the process exits before the next turn", () => {
-		// Why 1,000 lines: they hold more bytes than the 64 KiB of a pipe, so one write to it waits in a queue.
+describe("the core", () => {
+	it("loads and logs on a runtime with no `process` global, such as a host that is not Node.js", () => {
+		// Why the hook: Node.js runs a `.ts` file, but it does not find one for a `.js` import.
 		const script = `
-			import { jsonSink } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "log.ts")).href)};
-			const sink = jsonSink();
-			for (let line = 0; line < 1000; line += 1) sink.log({ level: "info", message: "line", attributes: { line } });
-			process.on("exit", () => sink.log({ level: "info", message: "exiting", attributes: {} }));
-			process.exit();
+			import { registerHooks } from "node:module";
+			registerHooks({
+				resolve(specifier, context, nextResolve) {
+					try {
+						return nextResolve(specifier, context);
+					} catch (error) {
+						if (!specifier.endsWith(".js")) throw error;
+						return nextResolve(specifier.slice(0, -3) + ".ts", context);
+					}
+				},
+			});
+			const write = process.stdout.write.bind(process.stdout);
+			const lines = [];
+			console.log = (line) => lines.push(JSON.parse(line).message);
+			delete globalThis.process;
+			const core = await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "index.ts")).href)});
+			core.logger().info("hello");
+			write(JSON.stringify({ process: typeof globalThis.process, lines }));
 		`;
 
 		const stdout = execFileSync(process.execPath, ["--input-type=module", "--eval", script], {
 			encoding: "utf8",
 		});
 
-		const lines = stdout.trimEnd().split("\n");
-		expect(lines).toHaveLength(1001);
-		expect(JSON.parse(lines.at(-1) ?? "")).toMatchObject({ message: "exiting" });
+		expect(JSON.parse(stdout)).toStrictEqual({ process: "undefined", lines: ["hello"] });
 	});
+});
 
-	it("writes the waiting lines at once on flushLogs", () => {
-		const write = spyStdout();
+describe("jsonSink", () => {
+	it("gives each line to console.log, with no newline, when no host gave a log writer", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		onTestFinished(() => {
+			log.mockRestore();
+		});
 
-		jsonSink().log({ level: "info", message: "stopped", attributes: {} });
-		flushLogs();
+		jsonSink().log({ level: "info", message: "first", attributes: {} });
+		jsonSink().log({ level: "warn", message: "second", attributes: { "http.status_code": 500 } });
 
-		expect(write).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"message":"stopped"'));
+		expect(log.mock.calls.map(([line]): unknown => JSON.parse(String(line)))).toStrictEqual([
+			{ time: expect.any(String), level: "info", message: "first" },
+			{ time: expect.any(String), level: "warn", message: "second", "http.status_code": 500 },
+		]);
+		expect(log.mock.calls.every(([line]) => !String(line).includes("\n"))).toBe(true);
 	});
 
 	it("writes the time, the level, the message, and then each attribute in its order", () => {

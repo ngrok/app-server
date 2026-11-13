@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withForwardedProto } from "../core/create-server.js";
 import type { AppServerEntry } from "../core/entry.js";
-import { flushLogs } from "../core/log.js";
 import type { FileInfo, HostRuntime, StaticFiles } from "../core/types.js";
 import { listedFiles, nodeFiles } from "../node/files.js";
 import { host as nodeHost } from "../node/index.js";
 import { requestListener } from "../node/response-writer.js";
+import { flushLogs, logWriter } from "../node/stdout.js";
 import { brotliOnlyOpen, FILE_LIST } from "./brotli-only.js";
 import type { FunctionFiles } from "./brotli-only.js";
 
@@ -74,6 +74,7 @@ export const host: HostRuntime = {
 		};
 	},
 	...(nodeHost.storage == null ? {} : { storage: nodeHost.storage }),
+	logWriter,
 };
 
 /**

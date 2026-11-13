@@ -1,55 +1,41 @@
 import type { Context } from "hono";
-import type { AppServerEnv, LogOptions, LogSink, RequestLogger } from "./types.js";
+import type { AppServerEnv, HostRuntime, LogOptions, LogSink, RequestLogger } from "./types.js";
 
-/** The standard output (stdout) lines that wait for {@link flushLogs}. */
-let pending = "";
-/** Whether the process emits `exit`. Then no turn of the event loop follows, so each line goes to stdout at once. */
-let exiting = false;
-
-/** The libuv handle of stdout on Node.js. Bun and Deno have none. */
-type StdoutHandle = { _handle?: { setBlocking?: (blocking: boolean) => number } };
-
-// Why: a process that crashes or calls `process.exit()` before the next turn keeps its last lines.
-process.on("exit", () => {
-	exiting = true;
-	// Why block: the exit drops a write that waits for a full pipe. On POSIX, a write to a file or
-	// a terminal already blocks.
-	// oxlint-disable-next-line no-underscore-dangle -- Node.js has no public way to block stdout.
-	(process.stdout as NodeJS.WriteStream & StdoutHandle)._handle?.setBlocking?.(true);
-	// Why one write for each line: Bun cannot block. Between small writes, the reader can empty the pipe.
-	for (const line of pending.match(/[^\n]*\n/gu) ?? []) {
-		process.stdout.write(line);
-	}
-	pending = "";
-});
+/** The log writer of the host, when it has one. */
+let hostWriter: HostRuntime["logWriter"];
 
 /**
- * Writes the stdout lines of {@link jsonSink} that wait, in one write. Call it
- * before the process exits.
+ * Sets the writer of each {@link jsonSink} and {@link textSink} that gets no
+ * `write`. `createEntry` gives it the host's. The last call wins.
  */
-export function flushLogs(): void {
-	if (pending === "") {
-		return;
-	}
-	const lines = pending;
-	pending = "";
-	process.stdout.write(lines);
+export function setLogWriter(writer: HostRuntime["logWriter"]): void {
+	hostWriter = writer;
 }
 
 /**
- * Adds `line` to the next stdout write. Why one write for each turn of the
- * event loop: a write to a pipe, such as stdout in Docker, is a system call,
- * and under load many requests end in one turn.
+ * Writes each line that the host's log writer keeps. Call it before an error
+ * leaves the server, because the runtime can end with no next turn of the
+ * event loop.
  */
-function writeStdout(line: string): void {
-	if (exiting) {
-		process.stdout.write(line);
+export function flushLogs(): void {
+	hostWriter?.flush();
+}
+
+/** Gives `line` to the host's log writer. Without one, `console.log` writes it, because each runtime has it. */
+function writeLine(line: string): void {
+	if (hostWriter == null) {
+		// Why the slice: `console.log` adds the `\n` of the line.
+		// oxlint-disable-next-line no-console -- no host gave a log writer, and each runtime has `console.log`.
+		console.log(line.slice(0, -1));
 		return;
 	}
-	if (pending === "") {
-		setImmediate(flushLogs);
-	}
-	pending += line;
+	hostWriter.write(line);
+}
+
+/** Gives `line` to the host's log writer, and makes the writer write it at once. */
+function writeLineNow(line: string): void {
+	writeLine(line);
+	hostWriter?.flush();
 }
 
 /** The end of a {@link jsonSink} line whose attributes have no JSON. */
@@ -58,16 +44,18 @@ const NO_JSON = '"log.error":"attributes not written as JSON"}';
 /**
  * A log sink that writes one JSON object per line. Each line has `time`,
  * `level`, `message`, and the flat attributes, which Datadog reads as its
- * standard attributes. The default writes the lines of one event-loop turn
- * to stdout at the end of the turn.
+ * standard attributes.
  *
- * @param write - Where each line goes. Defaults to stdout.
+ * @param write - Where each line goes. Defaults to the log writer of the
+ * host. The node host and the vercel host write the lines of one event-loop
+ * turn to standard output (stdout) at the end of the turn. On a host with no
+ * log writer, and before `createEntry` runs, `console.log` writes each line.
  *
  * @example
  * createServer({ logger: jsonSink() });
  * // {"time":"2026-10-28T12:00:00.000Z","level":"info","message":"request","http.status_code":200}
  */
-export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
+export function jsonSink(write: (line: string) => void = writeLine): LogSink {
 	return {
 		log: ({ level, message, attributes }) => {
 			const time = isoNow();
@@ -92,18 +80,15 @@ export function jsonSink(write: (line: string) => void = writeStdout): LogSink {
  * `app-server start` uses it, and so does the default sink of `createServer`
  * in development, because a person reads those lines.
  *
- * @param write - Where each line goes. Defaults to stdout, at once. Why not
- * one write for each turn: the lines then keep their order with Vite's lines.
+ * @param write - Where each line goes. Defaults to the log writer of the
+ * host, with a flush after each line, else to `console.log`. Why not one
+ * write for each turn: the lines then keep their order with Vite's lines.
  *
  * @example
  * textSink().log({ level: "error", message: "dev request failed", attributes: { "error.kind": "TypeError" } });
  * // time=2026-11-11T12:00:00.000Z level=ERROR msg="dev request failed" error.kind=TypeError
  */
-export function textSink(
-	write: (line: string) => void = (line) => {
-		process.stdout.write(line);
-	},
-): LogSink {
+export function textSink(write: (line: string) => void = writeLineNow): LogSink {
 	return {
 		log: ({ level, message, attributes }) => {
 			let line = `time=${isoNow()} level=${level.toUpperCase()} msg=${textValue(message)}`;
