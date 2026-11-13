@@ -222,6 +222,23 @@ describe("createEntry", () => {
 		expect(files).toHaveBeenCalledTimes(1);
 	});
 
+	it("gives the app the bindings of each development request, before and after the setup ends", async () => {
+		const app = createServer({ plugins: [] });
+		app.get("/address", (context) => context.text(context.get("clientAddress") ?? "none"));
+		const entry = createEntry({ app, host: nodeHost, framework: () => stubFramework() });
+		const address = async (remoteAddress: string) => {
+			const response = await entry.fetchDev(
+				new Request("http://localhost/address"),
+				{ remoteAddress },
+				async (_, next) => next(),
+			);
+			return response.text();
+		};
+
+		await expect(address("203.0.113.1")).resolves.toBe("203.0.113.1");
+		await expect(address("203.0.113.2")).resolves.toBe("203.0.113.2");
+	});
+
 	it("runs each setup again on the next development request after a setup fails", async () => {
 		const setup = vi.fn<() => void>().mockImplementationOnce(() => {
 			throw new Error("config server down");
