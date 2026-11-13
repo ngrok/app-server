@@ -949,7 +949,7 @@ spec:
         httpGet: { path: /livez, port: 3000 }
 ```
 
-A request that is still open at the deadline loses its connection. The server then logs one warn line, `the drain deadline passed with open requests`, with `app_server.deadline_ms`. The access line of a response that the deadline cut has `http.client_aborted: true`, and it comes before the `stopped` line. On Bun, such a response gets no access line. When you see the warn line, raise `shutdownDeadlineMs`, or stop the long responses on `shutdownSignal()`. See [Long-lived responses](#long-lived-responses).
+A request that is still open at the deadline loses its connection. The server then logs one warn line, `the drain deadline passed with open requests`, with `app_server.deadline_ms`. The access line of a response that the deadline cut has `http.client_aborted: true`, and it comes before the `stopped` line. On Bun, such a response gets no access line. A request that has no response at the deadline gets no access line. On Deno, the client of such a request gets a 503. When you see the warn line, raise `shutdownDeadlineMs`, or stop the long responses on `shutdownSignal()`. See [Long-lived responses](#long-lived-responses).
 
 An uncaught error stops the server as a stop signal does: `/readyz` answers 503, the server waits for `shutdownDelayMs`, and then it drains. So one failed request does not cut the other open requests. The process then exits with code 1, and your process manager starts a new one. The server drains for the first uncaught error only: a later one can stop the process at once. An app's own `uncaughtException` listener does not keep the process up. An app's own `unhandledRejection` listener handles a rejected promise, and the server then does not stop.
 
