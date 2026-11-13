@@ -7,7 +7,7 @@ The node host now drains after an uncaught error, then exits with code 1. An unc
 - The server logs one error line, `uncaught exception`, with the fields of the error. `app_server.origin` is `uncaughtException` or `unhandledRejection`. On Node.js, the line also has the fields of the request that the error came from, such as `http.request_id`.
 - The server then stops as it does on `SIGTERM`: `/readyz` answers 503, the server waits for `shutdownDelayMs`, and it drains until `shutdownDeadlineMs`. So the exit comes later than before, by up to the sum of the two times.
 - The exit code is still 1. The server drains for the first uncaught error only: a later one can stop the process at once, as before.
-- An app with its own `uncaughtException` listener that kept the process alive now stops after the drain. On Bun, the same is true for an `unhandledRejection` listener. On Node.js and Deno, an app's own `unhandledRejection` listener still handles a rejected promise, and the server does not stop.
+- An app with its own `uncaughtException` listener that kept the process alive now stops after the drain. An app's own `unhandledRejection` listener still handles a rejected promise on each runtime. The server then logs no line and does not stop.
 
 This applies to `app-server serve` and `node build/server/app-server.js` on Node.js, Bun, and Deno. `app-server start` and the vercel host do not change.
 

@@ -7,6 +7,7 @@ import {
 	defaultPlugins,
 	eventStream,
 	jsonSink,
+	logger,
 } from "../../dist/index.js";
 import { host, tcp } from "../../dist/node.js";
 
@@ -114,6 +115,13 @@ const routes = {
 			return new Promise(() => {});
 		}),
 };
+
+// An app's own listener for a rejected promise, as an error tracker adds.
+if (process.env.OWN_REJECTION_LISTENER === "1") {
+	process.on("unhandledRejection", () => {
+		logger().warn("the app got the rejection");
+	});
+}
 
 // Why `createEntry`: the CLI calls this export, so this copy of the package runs the server.
 export const appServer = createEntry({

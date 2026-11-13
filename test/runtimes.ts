@@ -339,6 +339,37 @@ async function checkCrash(runtime: string): Promise<void> {
 	}
 }
 
+/** An app with its own `unhandledRejection` listener handles a rejected promise, and the server stays up. */
+async function checkOwnRejectionListener(runtime: string): Promise<void> {
+	const { child, lines, url } = startServer(runtime, serveArgs, {
+		env: { OWN_REJECTION_LISTENER: "1" },
+	});
+	try {
+		const base = await url;
+		await (await fetch(new URL("/reject", base))).text();
+		await waitFor(
+			async () => lines.some((line) => line.message === "the app got the rejection"),
+			"the app's own listener gets the rejection",
+		);
+		assert.equal(
+			(await fetch(new URL("/readyz", base))).status,
+			200,
+			"the server does not drain when the app handles the rejection",
+		);
+		const exitCode = exited(child, 10_000);
+		child.kill("SIGTERM");
+		assert.equal(await exitCode, 0, "the exit code is that of a stop signal");
+		assert.deepEqual(
+			lines.filter((line) => line.level === "error"),
+			[],
+			"the server logs no error for a rejection that the app handles",
+		);
+		process.stdout.write(`ok ${runtime} own rejection listener\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
 /**
  * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
  * server at once, though the app left a timer.
@@ -818,6 +849,7 @@ const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
 	await checkCrash(runtime);
+	await checkOwnRejectionListener(runtime);
 	if (runtime === "node") {
 		await checkStart();
 		await checkLoadedModules();

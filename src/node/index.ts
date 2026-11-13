@@ -80,9 +80,15 @@ export const host: HostRuntime = {
 			process.once("uncaughtException", crash);
 			if ("Bun" in globalThis) {
 				// Why: Bun does not send a rejection with no handler to `uncaughtException`, as Node.js and Deno do.
-				process.once("unhandledRejection", (reason) => {
+				const onRejection = (reason: unknown) => {
+					// Why the count: an app's own listener handles the rejection, as on Node.js and Deno.
+					if (process.listenerCount("unhandledRejection") > 1) {
+						return;
+					}
+					process.off("unhandledRejection", onRejection);
 					crash(reason, "unhandledRejection");
-				});
+				};
+				process.on("unhandledRejection", onRejection);
 			}
 		},
 	},
