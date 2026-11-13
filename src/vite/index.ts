@@ -126,10 +126,10 @@ export type HostBuild = {
 	entryFileName: string;
 	/**
 	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
-	 * runs after each prerender pass and after the build, so it can run two
-	 * times. Why after the pass too: when `appServer` comes before the
-	 * framework's plugin, the pass runs after the build. Why sync: Vite does
-	 * not wait for the end of that pass.
+	 * runs one time, after the build and the prerender pass. When `appServer`
+	 * comes before the framework's plugin, the pass runs after the build. Then
+	 * `output` runs after the build, with no prerendered file, and again after
+	 * the pass. Why sync: Vite does not wait for the end of that pass.
 	 */
 	output?: (build: HostOutput) => void;
 };
@@ -620,8 +620,16 @@ function withPeers(start: { name: string; from: string }[]): Set<string> {
 	return names;
 }
 
+/**
+ * `.app-server.json` while the build runs. The client build writes
+ * `incomplete`, and the post step of `appServer` removes it. Why: the
+ * framework starts its prerender pass with a new instance of this plugin, so
+ * the file tells that instance whether the post step still comes.
+ */
+type DraftManifest = BuildManifest & { incomplete?: true | undefined };
+
 /** Writes `.app-server.json` into the client build. */
-function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): void {
+function writeBuildManifest(clientDirectory: string, manifest: DraftManifest): void {
 	mkdirSync(clientDirectory, { recursive: true });
 	writeFileSync(
 		join(clientDirectory, BUILD_MANIFEST_FILE),
@@ -631,9 +639,9 @@ function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): v
 
 /**
  * Writes the build ID and the script hashes of the client build
- * ({@link scriptHashesOf}) into `.app-server.json`, and keeps the rest of the
- * file. Why after the build too: a build with no prerender pass can have HTML
- * files, such as `public/offline.html`.
+ * ({@link scriptHashesOf}) into `.app-server.json`, removes `incomplete`, and
+ * keeps the rest of the file. Why the script hashes of each build: a build
+ * with no prerender pass can have HTML files, such as `public/offline.html`.
  */
 function completeBuildManifest(clientDirectory: string, buildId: string | undefined): void {
 	if (!existsSync(clientDirectory)) {
@@ -647,6 +655,8 @@ function completeBuildManifest(clientDirectory: string, buildId: string | undefi
 		...(typeof recorded === "object" && recorded != null ? recorded : {}),
 		...(buildId == null ? {} : { buildId }),
 		scriptHashes: scriptHashesOf(clientDirectory),
+		// Why `undefined`: JSON leaves out a field with no value.
+		incomplete: undefined,
 	});
 }
 
@@ -714,11 +724,13 @@ function appBuildId({ bundleId, assetsDirectory, assets }: ClientBuild): string 
 }
 
 /**
- * The `buildId` and the `assetsPath` of the build manifest that the client
- * build wrote. Why keep them: the prerender pass runs after the client build,
- * which knows them.
+ * The `buildId`, the `assetsPath`, and `incomplete` of the build manifest
+ * that the client build wrote. Why keep them: the prerender pass runs after
+ * the client build, which knows them.
  */
-function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildId" | "assetsPath"> {
+function clientBuildFields(
+	clientDirectory: string,
+): Pick<DraftManifest, "buildId" | "assetsPath" | "incomplete"> {
 	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
 	const manifest: unknown = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
 	if (typeof manifest !== "object" || manifest == null) {
@@ -731,14 +743,16 @@ function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildI
 		...("assetsPath" in manifest && typeof manifest.assetsPath === "string"
 			? { assetsPath: manifest.assetsPath }
 			: {}),
+		...("incomplete" in manifest && manifest.incomplete === true ? { incomplete: true } : {}),
 	};
 }
 
 /**
  * Records each 2xx path and the headers of each non-document response while
  * the framework's prerender pass runs. It writes them to `.app-server.json` in
- * the client build when the preview server closes, with the script hashes of
- * each HTML file.
+ * the client build when the preview server closes. When the post step of the
+ * build ran before the pass, it also does the work of that step for the files
+ * of the pass: the script hashes, the copies, and `afterPass`.
  */
 function capture(
 	server: PreviewServer,
@@ -779,22 +793,28 @@ function capture(
 		});
 		next();
 	});
+	// Why sync: Vite does not wait for this listener.
 	server.httpServer.once("close", () => {
+		const recorded = clientBuildFields(clientDirectory);
+		// Why: with `incomplete`, the post step of the build comes after this pass, and it does this
+		// work for each file. Without it, that step ran before this pass, as it does when `appServer`
+		// comes before the framework's plugin.
+		const afterPostStep = recorded.incomplete !== true;
 		writeBuildManifest(clientDirectory, {
-			...clientBuildFields(clientDirectory),
+			...recorded,
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
 			),
-			scriptHashes: scriptHashesOf(clientDirectory),
+			scriptHashes: afterPostStep ? scriptHashesOf(clientDirectory) : {},
 		});
-		// Why here too: the copy step of `buildApp` runs before this pass when `appServer` comes
-		// before the framework's plugin. Why sync: Vite does not wait for this listener.
-		// Why each file that the pass changed, not each path: a path does not name its file, as
-		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
-		// modification time in steps of 1 or 2 s.
-		writeAllCopies(clientDirectory, { changedSince: started - 2000, contentTypes });
-		afterPass();
+		if (afterPostStep) {
+			// Why each file that the pass changed, not each path: a path does not name its file, as
+			// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
+			// modification time in steps of 1 or 2 s.
+			writeAllCopies(clientDirectory, { changedSince: started - 2000, contentTypes });
+			afterPass();
+		}
 	});
 }
 
@@ -937,7 +957,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
-	const copies: Plugin = {
+	const postStep: Plugin = {
 		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
 		enforce: "post",
@@ -988,6 +1008,9 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					prerendered: [],
 					headers: {},
 					scriptHashes: {},
+					// Why: the post step of this build completes the file. Until then, a prerender pass
+					// leaves the script hashes, the copies, and the host's output to that step.
+					incomplete: true,
 				});
 			}
 		},
@@ -1044,5 +1067,5 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 			}
 		},
 	};
-	return [main, copies, standalone(options.externals)];
+	return [main, postStep, standalone(options.externals)];
 }

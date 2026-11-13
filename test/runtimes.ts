@@ -531,11 +531,17 @@ process.once("SIGTERM", () => server.close());
  * function.
  */
 async function checkVercel(): Promise<void> {
-	execFileSync(`${binDirectory}/react-router`, ["build"], {
+	const buildLog = execFileSync(`${binDirectory}/react-router`, ["build"], {
 		cwd: reactRouterDirectory,
 		env: { ...process.env, APP_SERVER_HOST: "vercel" },
-		stdio: ["ignore", "ignore", "inherit"],
+		stdio: ["ignore", "pipe", "inherit"],
+		encoding: "utf8",
 	});
+	assert.equal(
+		buildLog.match(/the CDN serves \d+ prerendered paths/gu)?.length,
+		1,
+		"the build writes the host's output one time, after the prerender pass",
+	);
 	const output = join(reactRouterDirectory, ".vercel/output");
 	const copy = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
 	cpSync(join(output, "functions/index.func"), copy, { recursive: true, verbatimSymlinks: true });

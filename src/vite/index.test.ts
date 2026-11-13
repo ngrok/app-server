@@ -341,6 +341,76 @@ describe("appServer", () => {
 		}
 	});
 
+	it("writes each copy and the host's output one time when the prerender pass runs before the post step", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-pass-first-"));
+		const client = join(directory, "build/client");
+		const page = `<p>${"Prerendered text for an agent.\n".repeat(50)}</p><script>go();</script>`;
+		const copy = join(client, "page/.index.html.br");
+		const outputs: unknown[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: ({ clientDirectory }) => {
+					outputs.push(JSON.parse(readFileSync(join(clientDirectory, ".app-server.json"), "utf8")));
+				},
+			},
+		};
+		const [main, copies] = appServer(options);
+		const writeBundle = main?.writeBundle;
+		await (typeof writeBundle === "object" ? writeBundle.handler : writeBundle)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+			{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+			{ dir: client } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+			{ "assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code: "go()" } } as never,
+		);
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			// Why a new instance: the framework starts the preview from the config file again.
+			plugins: [appServer(options), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+		mkdirSync(join(client, "page"), { recursive: true });
+		writeFileSync(join(client, "page/index.html"), page);
+		await (await fetch(new URL("/page", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+		const afterPass = { outputs: outputs.length, copy: existsSync(copy) };
+
+		const buildApp = copies?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: {},
+				},
+			} as never,
+		);
+
+		expect(afterPass).toStrictEqual({ outputs: 0, copy: false });
+		expect(outputs).toStrictEqual([
+			{
+				buildId: expect.stringMatching(/^[0-9a-f]{16}$/u),
+				assetsPath: "/assets/",
+				prerendered: ["/page"],
+				headers: {},
+				scriptHashes: { "/page/index.html": [sha256("go();")] },
+			},
+		]);
+		expect(brotliDecompressSync(readFileSync(copy)).toString()).toBe(page);
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("writes the host's output again after a prerender pass that runs after the build", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		const outDir = "late-pass";
@@ -355,7 +425,17 @@ describe("appServer", () => {
 				},
 			},
 		};
-		const hook = appServer(options)[1]?.buildApp;
+		const [main, copies] = appServer(options);
+		const writeBundle = main?.writeBundle;
+		await (typeof writeBundle === "object" ? writeBundle.handler : writeBundle)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+			{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+			{ dir: join(root, outDir) } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+			{ "assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code: "go()" } } as never,
+		);
+		const hook = copies?.buildApp;
 		await (typeof hook === "object" ? hook.handler : hook)?.call(
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
 			{} as never,
