@@ -1,6 +1,7 @@
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { connect } from "node:net";
+import { buffer } from "node:stream/consumers";
 import { constants, gunzipSync } from "node:zlib";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { defaultPlugins } from "../core/create-server.js";
@@ -118,26 +119,36 @@ describe("the node response writer", () => {
 		expect(gunzipSync(body).toString()).toBe(page);
 	});
 
-	it("sends a response with no body with a Content-Length of 0, but not a HEAD response, a 204, or a 304", async () => {
-		const url = await listening(
-			async (request) =>
-				new Response(null, { status: Number(new URL(request.url).pathname.slice(1)) }),
-			[],
-		);
-		const framingOf = async (path: string, method = "GET") => {
-			const response = await new Promise<IncomingMessage>((resolve, reject) => {
-				httpRequest(new URL(path, url), { method }, resolve).once("error", reject).end();
-			});
-			await bodyOf(response);
-			return [response.headers["content-length"], response.headers["transfer-encoding"]];
-		};
+	it.each([
+		{ request: "GET /308", framing: ["content-length: 0"] },
+		{ request: "GET /200", framing: ["content-length: 0"] },
+		{ request: "GET /200?Content-Length=0", framing: ["content-length: 0"] },
+		{ request: "GET /200?Transfer-Encoding=chunked", framing: ["transfer-encoding: chunked"] },
+		{ request: "HEAD /200", framing: [] },
+		{ request: "GET /204", framing: [] },
+		{ request: "GET /304", framing: [] },
+	])(
+		"sends the framing headers $framing for a response with no body to `$request`",
+		async ({ request, framing }) => {
+			const url = await listening(async (incoming) => {
+				const { pathname, searchParams } = new URL(incoming.url);
+				return new Response(null, {
+					status: Number(pathname.slice(1)),
+					headers: [...searchParams],
+				});
+			}, []);
+			// Why a raw socket: the HTTP client of Node.js refuses a head with two framing headers.
+			const socket = connect(Number(new URL(url).port), "127.0.0.1");
+			socket.write(`${request} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
+			const [head = ""] = String(await buffer(socket))
+				.toLowerCase()
+				.split("\r\n\r\n");
 
-		await expect(framingOf("/308")).resolves.toStrictEqual(["0", undefined]);
-		await expect(framingOf("/200")).resolves.toStrictEqual(["0", undefined]);
-		await expect(framingOf("/200", "HEAD")).resolves.toStrictEqual([undefined, undefined]);
-		await expect(framingOf("/204")).resolves.toStrictEqual([undefined, undefined]);
-		await expect(framingOf("/304")).resolves.toStrictEqual([undefined, undefined]);
-	});
+			expect(
+				head.split("\r\n").filter((line) => /^(?:content-length|transfer-encoding):/u.test(line)),
+			).toStrictEqual(framing);
+		},
+	);
 
 	it("sends the shell of a streamed page at once, with no timer, before the rest exists", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout"] });
