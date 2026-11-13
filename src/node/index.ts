@@ -10,10 +10,6 @@ import { tcp } from "./tcp.js";
 
 export {
 	//,
-	devServerStage,
-} from "./dev-server.js";
-export {
-	//,
 	nodeFiles,
 } from "./files.js";
 export {
@@ -24,9 +20,7 @@ export {
 
 export type {
 	//,
-	DevServerStageOptions,
 	NodeBindings,
-	NodeMiddleware,
 } from "./dev-server.js";
 export type {
 	//,
