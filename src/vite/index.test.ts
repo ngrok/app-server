@@ -680,14 +680,20 @@ describe("appServer", () => {
 		}).toThrow('needs an ES module server build, and this build has the format "cjs"');
 	});
 
-	it("fails the build for a base other than /", async () => {
+	it("fails the build for a base other than /, with each framework adapter", async () => {
+		const framework = {
+			serverModule: "virtual:custom/server-build",
+			runtimeModule: "custom-framework",
+			isPrerenderPass: () => false,
+		};
+
 		await expect(
 			preview({
 				root,
 				configFile: false,
 				base: "/docs/",
 				logLevel: "silent",
-				plugins: [appServer({ framework: reactRouterAdapter(), host: node() })],
+				plugins: [appServer({ framework, host: node() })],
 				preview: { port: 0, host: "127.0.0.1" },
 			}),
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');

@@ -29,3 +29,13 @@ appServer({ host: { name: "edge", runtimeModule: "edge-host", entryFileName: "ap
 // After
 appServer({ host: { runtimeModule: "edge-host", entryFileName: "app-server.js" } });
 ```
+
+**`FrameworkBuild` has no `validate`.** The `appServer` plugin now checks Vite's `base` itself, for each framework adapter. Before, each adapter of the package made the check, so a custom adapter with no `validate` built with a `base` other than `/`, and the server then served at `/` only. Such a build now fails with `@ngrok/app-server serves a build at "/" only`. The plugin no longer calls `validate`, also in plain JavaScript, where no type error shows it. To check the Vite config, add a Vite plugin with a `configResolved` hook.
+
+```ts
+// Before
+appServer({ framework: { ...adapter, validate: (config) => check(config) } });
+
+// After
+plugins: [{ name: "my-check", configResolved: (config) => check(config) }, appServer({ framework: adapter })];
+```

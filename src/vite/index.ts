@@ -105,8 +105,6 @@ export type FrameworkBuild = {
 	contentTypes?: Readonly<Record<string, string>>;
 	/** Whether a preview server runs the framework's prerender pass. */
 	isPrerenderPass: (server: PreviewServer) => boolean;
-	/** Throws for a config that the adapter does not support, so the build fails, not the first request. */
-	validate?: (config: ResolvedConfig) => void;
 };
 
 /**
@@ -911,7 +909,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		name: "@ngrok/app-server",
 		configResolved: (config) => {
 			const framework = options.framework ?? detectFramework(config.plugins);
-			framework.validate?.(config);
+			// Why here and not in an adapter: the server serves at "/" with each framework.
+			if (config.base !== "/") {
+				throw new Error(
+					`@ngrok/app-server serves a build at "/" only, and this config has the base "${config.base}".`,
+				);
+			}
 			resolved = {
 				config,
 				framework,

@@ -18,12 +18,5 @@ export function tanstackStartAdapter(): FrameworkBuild {
 		// Why this flag: Start sets it in the build process before it starts the preview server
 		// of its prerender pass.
 		isPrerenderPass: () => process.env.TSS_PRERENDERING === "true",
-		validate: (config) => {
-			if (config.base !== "/") {
-				throw new Error(
-					`@ngrok/app-server serves a build at "/" only, and this config has the base "${config.base}".`,
-				);
-			}
-		},
 	};
 }

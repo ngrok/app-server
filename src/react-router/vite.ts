@@ -15,12 +15,5 @@ export function reactRouterAdapter(): FrameworkBuild {
 		contentTypes: CONTENT_TYPES,
 		// Why this flag: React Router sets it for the preview server of its prerender pass only.
 		isPrerenderPass: () => process.env.IS_RR_BUILD_REQUEST === "yes",
-		validate: (config) => {
-			if (config.base !== "/") {
-				throw new Error(
-					`@ngrok/app-server serves a build at "/" only, and this config has the base "${config.base}".`,
-				);
-			}
-		},
 	};
 }
