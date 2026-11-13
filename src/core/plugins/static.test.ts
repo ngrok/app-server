@@ -830,6 +830,24 @@ describe("compressed copies from the build", () => {
 		expect(response.headers.get("Content-Encoding")).toBeNull();
 	});
 
+	it("sends the file, not its copy, when a hook that a stage adds to headerHooks marks it no-transform", async () => {
+		const marks: Plugin = {
+			name: "marks",
+			middleware: async (context, next) => {
+				context.get("headerHooks")?.push((headers) => {
+					headers.set("Cache-Control", "public, no-transform");
+				});
+				await next();
+			},
+		};
+		const { request } = await testServer({ plugins: [marks, prerendered()], clientDirectory });
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+	});
+
 	it("calls the paths of buildId one time for a file with a copy", async () => {
 		const paths = vi.fn<(path: string) => boolean>(() => false);
 		const { request } = await testServer({

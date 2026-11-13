@@ -472,6 +472,29 @@ describe("streamingCompress", () => {
 		await expect(bodyOf("Content-Range", "bytes 0-1502/2000")).resolves.toStrictEqual([null, page]);
 	});
 
+	it("leaves a body alone when a hook that a stage adds to headerHooks marks it no-transform", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const marks: Plugin = {
+			name: "marks",
+			middleware: async (context, next) => {
+				context.get("headerHooks")?.push((headers) => {
+					headers.set("Cache-Control", "public, no-transform");
+				});
+				await next();
+			},
+		};
+		const { request } = await testServer({
+			plugins: [marks, streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		await expect(response.text()).resolves.toBe(page);
+	});
+
 	it("calls the paths of buildId one time for a response that it compresses", async () => {
 		const paths = vi.fn<(path: string) => boolean>(() => false);
 		const { request } = await testServer({

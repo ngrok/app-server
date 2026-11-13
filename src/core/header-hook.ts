@@ -66,12 +66,12 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
 }
 
 /**
- * The hook list of a request. `viewed` marks a list that holds a hook from
- * {@link withHeaderHook}: only such a hook can change the body that a stage
- * picks, so only such a list needs a run on a view. Why a property: a
- * `WeakSet` of the lists costs about 80 ns for each marked request.
+ * The hook list of a request. `builtIn` counts its hooks from
+ * {@link withBuiltInHeaderHook}. Why a count of these, and no mark for the
+ * other hooks: a stage can add a hook to the list itself, and each hook that
+ * the count does not cover gets a run on a view.
  */
-type HookList = HeaderHook[] & { viewed?: true };
+type HookList = HeaderHook[] & { builtIn?: number };
 
 /**
  * Runs `hook` on the response headers after the later stages. In an app
@@ -97,11 +97,12 @@ export function withHeaderHook(
 	next: Next,
 	hook: HeaderHook,
 ): Promise<void> {
-	const hooks: HookList | undefined = context.get("headerHooks");
-	if (hooks != null) {
-		hooks.viewed = true;
+	const hooks = context.get("headerHooks");
+	if (hooks == null) {
+		return hookAfter(context, next, hook);
 	}
-	return withBuiltInHeaderHook(context, next, hook);
+	hooks.push(hook);
+	return next();
 }
 
 /**
@@ -121,10 +122,11 @@ export function withBuiltInHeaderHook(
 	next: Next,
 	hook: HeaderHook,
 ): Promise<void> {
-	const hooks = context.get("headerHooks");
+	const hooks: HookList | undefined = context.get("headerHooks");
 	if (hooks == null) {
 		return hookAfter(context, next, hook);
 	}
+	hooks.builtIn = (hooks.builtIn ?? 0) + 1;
 	hooks.push(hook);
 	return next();
 }
@@ -215,9 +217,9 @@ export function listView(head: string[]): ResponseHeaders {
 }
 
 /**
- * The header hooks of the request, when one of them is from
- * {@link withHeaderHook} and so can change the body that a stage picks. With
- * `undefined`, a stage reads the headers as they are.
+ * The header hooks of the request, when one of them is not from
+ * {@link withBuiltInHeaderHook} and so can change the body that a stage
+ * picks. With `undefined`, a stage reads the headers as they are.
  *
  * @example
  * const hooks = bodyHooks(context);
@@ -225,7 +227,7 @@ export function listView(head: string[]): ResponseHeaders {
  */
 export function bodyHooks(context: Context<AppServerEnv>): readonly HeaderHook[] | undefined {
 	const hooks: HookList | undefined = context.get("headerHooks");
-	return hooks?.viewed === true ? hooks : undefined;
+	return hooks == null || hooks.length === (hooks.builtIn ?? 0) ? undefined : hooks;
 }
 
 /**
@@ -254,8 +256,8 @@ export function hookedView(hooks: readonly HeaderHook[], head: string[]): Respon
  * passed. Why: a stage that picks a body by a header, such as
  * `Cache-Control: no-transform`, must see the value that a hook sets where
  * the response leaves. So a hook can run more than once. Why a view: the
- * hooks change only the view, so `headers` needs no copy. With no hook from
- * {@link withHeaderHook}, it gives `headers` and runs no hook.
+ * hooks change only the view, so `headers` needs no copy. When each hook is
+ * from {@link withBuiltInHeaderHook}, it gives `headers` and runs no hook.
  *
  * @example
  * forbidsTransform(hookedHeaders(context, headers).get("Cache-Control"));

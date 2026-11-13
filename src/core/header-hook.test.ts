@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { testServer } from "../test-server.js";
+import { forbidsTransform } from "./compression.js";
+import { defaultPlugins } from "./create-server.js";
 import { withHeaderHook } from "./header-hook.js";
 import type { AppServerEnv } from "./types.js";
 
@@ -79,5 +81,46 @@ describe("withHeaderHook", () => {
 				attributes: expect.objectContaining({ "error.message": "The stage failed." }),
 			}),
 		);
+	});
+});
+
+describe("the header hooks of the default plugins", () => {
+	// Why: the static stages and `streamingCompress` run no view for these hooks, so a hook that
+	// changes one of these headers would send a body that the headers forbid.
+	it("keep no-transform, Content-Encoding, and Content-Range as the response has them", async () => {
+		const sent: Record<string, Record<string, string>> = {
+			"/page": { "Content-Type": "text/html" },
+			"/cached": { "Content-Type": "text/html", "Cache-Control": "public, max-age=60" },
+			"/marked": { "Content-Type": "text/plain", "Cache-Control": "public, no-transform" },
+			"/encoded": { "Content-Type": "text/plain", "Content-Encoding": "br" },
+			"/part": { "Content-Type": "text/plain", "Content-Range": "bytes 0-1/2" },
+		};
+		const { request } = await testServer({
+			plugins: defaultPlugins({
+				accessLog: { serverTiming: true },
+				noindex: { unlessHeader: "X-Edge" },
+				buildId: { value: "b1", paths: () => true },
+				contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
+			}),
+			render: async (incoming) =>
+				new Response("hi", { headers: sent[new URL(incoming.url).pathname] ?? {} }),
+		});
+
+		for (const [path, headers] of Object.entries(sent)) {
+			const response = await request(path);
+
+			// Why the path: a failure then names the response.
+			expect([
+				path,
+				forbidsTransform(response.headers.get("Cache-Control")),
+				response.headers.get("Content-Encoding"),
+				response.headers.get("Content-Range"),
+			]).toStrictEqual([
+				path,
+				forbidsTransform(headers["Cache-Control"] ?? null),
+				headers["Content-Encoding"] ?? null,
+				headers["Content-Range"] ?? null,
+			]);
+		}
 	});
 });
