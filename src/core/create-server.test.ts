@@ -1154,6 +1154,21 @@ describe("the pipeline", () => {
 		},
 	);
 
+	it("logs one error and the access line when a plugin after the default plugins gives no response", async () => {
+		const { request, lines } = await testServer({
+			plugins: defaultPlugins({ beforeStatic: forgetsAt["a plugin"]?.plugins ?? [] }),
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([500, "Internal Server Error"]);
+		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(summary(lines)).toStrictEqual([
+			["unhandled error", noAnswer],
+			["request", 500],
+		]);
+	});
+
 	it("answers a request that no stage answers with the app's onError", async () => {
 		const { request, lines } = await pipeline({
 			...forgetsAt["a plugin"],

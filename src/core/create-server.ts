@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, Next } from "hono";
 import type { ErrorHandler, HTTPResponseError } from "hono/types";
 import { asError, hookSink, jsonSink, requestLogger } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
@@ -386,6 +386,54 @@ export function createServer({
 		const dispatch = app.fetch;
 		app.fetch = async (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
 	}
+	// Why not each plugin: one with only `setup` or `onShutdown` has no work in a request.
+	// Why copies: the server reads the `middleware` and the `etagPart` of each plugin one time, here.
+	const stages = plugins.flatMap(({ middleware, etagPart }) =>
+		middleware == null && etagPart == null ? [] : [{ middleware, etagPart }],
+	);
+	/**
+	 * Runs the stage at `index` for the request of `run`. The stage runs each
+	 * later stage through its `next`. After the last stage, `run.rest` runs the
+	 * app's routes and the framework. `run.reached` is the last stage that
+	 * started, so a second `next()` in one stage throws, as in Hono.
+	 *
+	 * Why not one Hono middleware for each plugin: Hono runs an async function
+	 * for each one, and a second one must turn a thrown value that is not an
+	 * `Error` into one. This function does both jobs. As Hono does for an
+	 * `Error`, it answers each thrown value with `onError` at the stage that
+	 * threw, so each earlier plugin sees that answer after its `next()`.
+	 */
+	const runStage = async (
+		run: { context: Context<AppServerEnv, string>; rest: Next; reached: number },
+		index: number,
+	): Promise<void> => {
+		if (index <= run.reached) {
+			throw new Error("next() called multiple times");
+		}
+		run.reached = index;
+		const { context } = run;
+		const stage = stages[index];
+		try {
+			if (stage == null) {
+				await run.rest();
+				return;
+			}
+			const part = stage.etagPart?.();
+			if (part != null) {
+				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
+			}
+			// oxlint-disable-next-line typescript/promise-function-async -- `runStage` is async, and a second async function costs each stage a promise.
+			const next = () => runStage(run, index + 1);
+			const answer = await (stage.middleware == null ? next() : stage.middleware(context, next));
+			// Why the check: a response that a stage returns after its `next()` does not replace the answer.
+			if (answer != null && !context.finalized) {
+				context.res = answer;
+			}
+		} catch (error) {
+			context.error = asError(error);
+			context.res = await onError(context.error, context);
+		}
+	};
 	app.use(async (context, next) => {
 		const requestLog = requestLogger(logger, context);
 		context.set("logger", requestLog);
@@ -409,7 +457,7 @@ export function createServer({
 		const edge = given?.claim(requestLog) === true ? given : undefined;
 		// Why finish in the request context: a header hook can read `requestContext()`.
 		await withRequestContext(requestStore, context, async () => {
-			await next();
+			await runStage({ context, rest: next, reached: -1 }, 0);
 			// Why here: Hono makes this check after this stage returns. By then, with no edge, the
 			// header hooks have made an empty 200 the response of the request.
 			if (!context.finalized) {
@@ -428,32 +476,6 @@ export function createServer({
 		// Why cancel: Hono drops the body of a HEAD response without a cancel, so a stream would run on.
 		if (context.req.method === "HEAD") {
 			await context.res.body?.cancel();
-		}
-	});
-	// Why not each plugin: one with only `setup` or `onShutdown` has no work in a request.
-	const stages = plugins.filter(
-		({ middleware, etagPart }) => middleware != null || etagPart != null,
-	);
-	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
-	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
-	for (const { middleware, etagPart } of stages) {
-		app.use(async (context, next) => {
-			const part = etagPart?.();
-			if (part != null) {
-				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
-			}
-			try {
-				return await (middleware == null ? next() : middleware(context, next));
-			} catch (error) {
-				throw asError(error);
-			}
-		});
-	}
-	app.use(async (_, next) => {
-		try {
-			await next();
-		} catch (error) {
-			throw asError(error);
 		}
 	});
 
