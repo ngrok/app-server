@@ -954,13 +954,14 @@ describe("a page that a stage with rewritesHtml changes", () => {
 		},
 	);
 
-	it("has no ETag, also not from the headers option, so the ETag of its file gets the full page", async () => {
+	it("has no ETag and no length, also not from the headers option, so the ETag of its file gets the full page", async () => {
 		const plain = await staticServer();
 		const fileTag = (await plain.request("/banner/small")).headers.get("ETag") ?? "";
+		const ofFile = { ETag: '"v1"', "Content-Length": "5" };
 		const { request } = await testServer({
 			plugins: [
 				addsBanner,
-				prerendered({ headers: ({ path }) => (path === "/plain" ? { ETag: '"v1"' } : undefined) }),
+				prerendered({ headers: ({ path }) => (path === "/plain" ? ofFile : undefined) }),
 			],
 			clientDirectory,
 		});
@@ -970,7 +971,11 @@ describe("a page that a stage with rewritesHtml changes", () => {
 
 		expect(fileTag).not.toBe("");
 		expect([revalidated.status, revalidated.headers.get("ETag")]).toStrictEqual([200, null]);
-		expect([tagged.status, tagged.headers.get("ETag")]).toStrictEqual([200, null]);
+		expect([
+			tagged.status,
+			tagged.headers.get("ETag"),
+			tagged.headers.get("Content-Length"),
+		]).toStrictEqual([200, null, null]);
 		await expect(revalidated.text()).resolves.toBe(`${pages["/banner/small"]}${banner}`);
 	});
 

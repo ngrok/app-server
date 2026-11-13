@@ -446,8 +446,9 @@ async function changedPage(
 	context: Context<AppServerEnv>,
 	{ files, file, head }: { files: StaticFiles; file: StaticFile; head: Head },
 ): Promise<Response> {
-	// Why not the ETag of `headers`: it does not have the values that the stage adds.
+	// Why not the ETag or the length of `headers`: they are for the bytes of the file.
 	head.delete("etag");
+	head.delete("content-length");
 	if (context.get("rewritesHtml") !== true) {
 		const parts = context.get("etagParts") ?? [];
 		const hash =
