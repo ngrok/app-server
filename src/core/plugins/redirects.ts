@@ -59,7 +59,8 @@ const NO_RULES: readonly CompiledRule[] = [];
 
 /**
  * A part of a URL path that a URL parse changes: a character that the parse
- * encodes or removes, a `\`, or a dot segment.
+ * encodes or removes, a `\`, or a dot segment. It also matches a `%`,
+ * because Hono does not decode each escape.
  */
 const PARSE_CHANGES = /[^!$&-;=@-[\]_a-z|~]|\/\.\.?(?:\/|$)/u;
 
@@ -86,7 +87,11 @@ function firstSegment(path: string): string {
 	return end === -1 ? path.slice(1) : path.slice(1, end);
 }
 
-/** The pattern of `from`, with a named group for each `:name` and for `*`, or `undefined` for an exact path. */
+/**
+ * The pattern of `from`, with a named group for each `:name` and for `*`, or
+ * `undefined` for an exact path. It also gives the first segment of `from`,
+ * and the names that `to` can use.
+ */
 function compilePattern(from: string): Pick<CompiledRule, "pattern" | "first"> & {
 	names: Set<string>;
 } {
