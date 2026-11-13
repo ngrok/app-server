@@ -194,6 +194,11 @@ export type HostRuntime = {
 	 * `streamingCompress` uses it for a client that prefers brotli to gzip.
 	 */
 	brotli?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	/**
+	 * How the host stops the server that the entry's `start` starts. A host
+	 * with `listeners` must give it. Without it, no code can shut the server
+	 * down: a stop signal ends the process with no drain and no `onShutdown`.
+	 */
 	lifecycle?: Lifecycle;
 };
 
