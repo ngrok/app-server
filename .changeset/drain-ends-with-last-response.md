@@ -6,4 +6,4 @@ On Node.js, the drain now ends when the last open response ends. Before, a keep-
 
 Now each response that starts in the drain says `Connection: close`, and the server closes each connection when its last response ends. Bun and Deno already end the drain with the last response.
 
-Measured on Node.js 26.13 with one request in flight on a keep-alive connection, a handler that answers 200 ms after the drain begins, and `shutdownDeadlineMs: 4000`: the drain took 4,001 ms before and 206 ms now, in each of 3 runs.
+The test ran on Node.js 26.13 with one request in flight on a keep-alive connection, a handler that answers 200 ms after the drain begins, and `shutdownDeadlineMs: 4000`. In 3 runs of each build, the drain took 4,001 to 4,002 ms before and 205 to 206 ms now.
