@@ -66,7 +66,7 @@ For each app:
 
 ### What changes for your app
 
-- The app needs Node.js 26+, Vite 8.3+, and React Router 8.5+. See [Requirements](#requirements).
+- The app needs Node.js 26, Vite 8.3+, and React Router 8.5+. See [Requirements](#requirements).
 - The package has ES modules only.
 - A plugin holds Hono middleware, not Express middleware.
 - With `defaultPlugins()`, a request body over 10 mebibytes (MiB) gets a 413, and a page URL with a trailing slash gets a 308. Change both with the options of `defaultPlugins()`.
@@ -74,7 +74,7 @@ For each app:
 
 ## Requirements
 
-- Node.js 26+, Bun 1.3+, or Deno 2.9+
+- Node.js 26, Bun 1.3+, or Deno 2.9+
 - Vite 8.3+
 - React Router 8.5+, or TanStack Start 1.169+
 - An ES module app and server build. The package has no CommonJS build, and the Vite plugin refuses a CommonJS server build.
@@ -82,8 +82,10 @@ For each app:
 ## Install
 
 ```sh
-pnpm add -E @ngrok/app-server hono
+pnpm add -E @ngrok/app-server hono@4.13.16
 ```
+
+The package pins its version of Hono. Install the same version, so the app and the package share one copy of Hono. With two copies, the types of one copy do not fit the other: TypeScript refuses a middleware of the app's copy, such as `cors()` from `hono/cors`, as the `middleware` of a plugin. When you upgrade this package, set `hono` to the version in its `dependencies`.
 
 ## Set up
 
@@ -163,15 +165,15 @@ After the build and after the prerender pass, `appServer` writes a gzip copy (`.
 
 The build exports `appServer`, and the CLI calls it. So the copy of this package in the build runs the server, and the CLI's copy runs nothing. The CLI refuses a build from a version of this package with another entry protocol.
 
-A React Router app with no Vite plugin also works: `app-server serve build/server/index.js` reads a plain React Router build and runs it with the CLI's copy, the node host, and the default plugins. In that build, a route that calls `shutdownSignal()`, `eventStream()`, `requestContext()`, or `cspNonce()` must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
+A React Router app with no Vite plugin also works: `app-server serve build/server/index.js` reads a plain React Router build and runs it with the CLI's copy, the node host, and the default plugins. In that build, a route that calls `shutdownSignal()`, `eventStream()`, `requestContext()`, `logger()`, or `cspNonce()`, or that reads `appServerContext`, must import the CLI's copy, so do not bundle `@ngrok/app-server` into it.
 
 ## Commands
 
 - `app-server start`: development. Vite in middleware mode inside the pipeline, with HMR on the same port. It needs the `appServer` plugin. Each request loads the latest server entry, so an edit to a route or to `server.ts` applies at once. A Vite plugin gets the CLI's HTTP server as `server.httpServer` in its `configureServer` hook, so it can wait for `listening` and `close`. A Vite restart, such as after an edit to `vite.config.ts`, keeps that server open. So a new plugin instance gets no `listening`, and the old instance gets `close` only at exit. To clean up for each instance, use Vite's `closeServer` hook. The port is `--port`, else `PORT`, else Vite's `server.port`. When that port is in use, `start` tries each next port, unless Vite's `server.strictPort` is true. The host is `HOST`, else Vite's `server.host`. When it listens, `start` prints its URLs as `vite dev` does, through Vite's logger. Its other log lines, such as a port in use, use the text format of Go's `log/slog`, not JSON. On `SIGTERM` or `SIGINT`, it stops Vite and the server, then exits.
 - `node build/server/app-server.js`: production, with no install. Use `dist/server/app-server.js` for TanStack Start. It reads `PORT` and `HOST`, and it drains on `SIGTERM` or `SIGINT`, as `app-server serve` does. It has no `--port`. It sets `NODE_ENV` to `production` when `NODE_ENV` has no value.
-- `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. A server process serves the client build that was there at start. A deploy starts a new process.
+- `app-server serve [path]`: production. With no path, it runs the first of `build/server/app-server.js` (React Router), `dist/server/app-server.js` (TanStack Start), and `build/server/index.js` (a plain React Router build). The port is `--port`, else `PORT`, else 3000. The host is `HOST`, else every interface. A `port` or a `host` that the app gives to `tcp()` wins over them, with no message, so leave both out of `tcp()` to let the operator choose. A port in use stops startup at once. On `SIGTERM` or `SIGINT`, it drains, then exits, even when the app left a timer. A server process serves the client build that was there at start. A deploy starts a new process.
 
-`-p` is short for `--port`. `--help` writes the usage. A bad argument writes a message and the usage, and exits with code 1.
+`-p` is short for `--port`. `--help`, or `-h`, writes the usage. A bad argument writes a message and the usage, and exits with code 1.
 
 On Bun, run `bun build/server/app-server.js`, or `bun node_modules/@ngrok/app-server/dist/cli.js serve`. On Deno, run `deno run --allow-net --allow-env --allow-read --allow-sys build/server/app-server.js`, or give the same flags to `node_modules/@ngrok/app-server/dist/cli.js serve`. A native package on Deno also needs `--allow-ffi`. For `start` on Deno, also give `--allow-ffi --allow-write --ignore-read=/proc/sys/fs/binfmt_misc/WSLInterop`. Vite loads its native bundler and writes its cache. On Linux, Vite also reads a WSL file that Deno gives only to `--allow-all`.
 
@@ -180,7 +182,7 @@ On Bun, run `bun build/server/app-server.js`, or `bun node_modules/@ngrok/app-se
 `vite build`, or `react-router build`, writes a server build that runs with no `npm install`. Copy the build directory alone, and run its server entry:
 
 - `appServer` bundles each dependency into the server build. For the build, it sets `ssr.noExternal: true`, unless the app sets its own `ssr.noExternal` or sets `ssr.external: true`.
-- Some packages stay external: each package in the app's `ssr.external` or in the bundler's `external` option, the whole package of an external subpath, each peer dependency of a package that the app keeps external, the peers of each peer, each native package, and each package that reads a file next to its own module. So the bundle and an external package use one copy of a package, such as `react` for a component library. For a `RegExp` or a function in the bundler's `external` option, the build tests the name of each package in the `dependencies`, `optionalDependencies`, and `devDependencies` of the app. It keeps the peers of each match external too. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`. A package reads a file next to its module when the file that an import resolves to has `new URL("./…", import.meta.url)`, `fileURLToPath(import.meta.url)`, or `import.meta.dirname`. For example, `@vercel/og` reads `resvg.wasm` so.
+- Some packages stay external: each package in the app's `ssr.external` or in the bundler's `external` option, the whole package of an external subpath, each peer dependency of a package that the app keeps external, the peers of each peer, each native package, and each package that reads a file next to its own module. So the bundle and an external package use one copy of a package, such as `react` for a component library. For a `RegExp` or a function in the bundler's `external` option, the build tests the name of each package in the `dependencies`, `optionalDependencies`, and `devDependencies` of the app. It keeps the peers of each match external too. A package is native when a `.node` file is in it, or in a package of its `dependencies` or `optionalDependencies`. For example, `oxc-parser` gets its addon from `@oxc-parser/binding-linux-x64-gnu`. A package reads a file next to its module when the file that an import resolves to has `new URL("./…", import.meta.url)`, `fileURLToPath(import.meta.url)`, `import.meta.dirname`, or `import.meta.filename`. For example, `@vercel/og` reads `resvg.wasm` so.
 - The build copies each external package, with its installed dependencies, into `node_modules` in the server build. Each file stays where its package expects it, so CommonJS, a file read through `__dirname`, and a `.node` addon work.
 - The build then removes each copied file that the server build cannot load, as [`@vercel/nft`](https://github.com/vercel/nft) traces it from the modules of the build, with the export conditions of Node, Bun, and Deno. So a source map, an edge build, or a dependency that a package bundled into its own file does not reach the deploy. For `@vercel/og` 1.0.1, the copy goes from 42.9 MB in 453 files to 23.6 MB. Five kinds of package keep each file: a native package and each package that it depends on (a native package can load a library, such as libvips, that a trace cannot see), each package in `ssr.external`, each package that the app gives to `require.resolve()` or `import.meta.resolve()`, each package that the trace misses files of, with each package that it depends on, and each package in `externals.whole`. The trace misses files of a package when its loaded code has `import.meta.dirname` or `import.meta.filename`, or when it cannot parse a loaded module, such as a TypeScript entry for Bun. It also misses a file that a loaded module gives to `require.resolve()` or `import.meta.resolve()` through the `exports` of a package, so that package keeps each file too. Add a package to `externals.whole` when it reads a file whose path the trace cannot find.
 - The build does not copy a package in `externals.omit`. Use it for an optional dependency that a package loads in a `try`. For example, `@vercel/og` uses `sharp` when it is installed, else `resvg.wasm`. `appServer({ externals: { omit: ["sharp"] } })` makes the `@vercel/og` copy 3.0 MB. The server fails when it loads an omitted package with no `try`.
@@ -286,12 +288,24 @@ The function differs from a long-lived process:
 9. `assets()`: the files of Vite's `build.assetsDir` (`/assets/*` by default) with a one-year immutable cache. The `appServer` Vite plugin records the directory in `.app-server.json`. A missing asset gets a plain 404 with `Cache-Control: no-store`. In development, Vite serves here. See [Deploys and open tabs](#deploys-and-open-tabs).
 10. `redirects(rules)`, when `defaultPlugins({ redirects })` has rules: a redirect from each old URL to its new URL. See [Redirects](#redirects).
 11. `trailingSlash({ mode })`: a 308 from a page URL to the same URL in the site's trailing-slash form. See [Trailing slashes](#trailing-slashes).
-12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with its content type, an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. A `no-transform` response never gets a copy, and an HTML page gets none when `runtimeEnv` adds values to it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework. The content type comes from the file's extension. Besides the types that Hono knows, `.sh` gets `application/x-sh`, `.yaml` and `.yml` get `text/yaml`, `.rss` gets `application/rss+xml`, `.atom` gets `application/atom+xml`, and `.pem` gets `application/x-pem-file`, as with `express.static`. An unknown extension gets `application/octet-stream`.
+12. `prerendered({ headers, rewrite, skip, cacheControl })`: every file in the client build, with its content type, an ETag, a 304 for a matching `If-None-Match`, and a 206 for one byte range of a file that is not HTML. A range that starts after the end of the file gets a 416. A request with `If-Range` gets the full file, because the ETag is weak. An HTML page, a markdown file, and a data file of the framework get `Cache-Control: public, max-age=0, must-revalidate`, and every other file gets `public, max-age=3600, stale-while-revalidate=86400`. A captured header, the `headers` option, and `cacheControl` change it. A file with a compressed copy from the build gets `Vary: Accept-Encoding`. A client gets the copy that its `Accept-Encoding` prefers, brotli before gzip, with no byte ranges and an ETag for that encoding. A `no-transform` response never gets a copy, and an HTML page gets none when `runtimeEnv` adds values to it. A directory answers with its `index.html`. Each file has one URL: `/a//b`, `/a/index.html`, and `/a%2Fb` go on to the framework. Dotfiles stay private, except `/.well-known/`. A path with no file, or a path that `skip` matches, goes on to the framework. The content type comes from the file's extension. Besides the types that Hono knows, `.sh` gets `application/x-sh`, `.yaml` and `.yml` get `text/yaml`, `.rss` gets `application/rss+xml`, `.atom` gets `application/atom+xml`, and `.pem` gets `application/x-pem-file`, as with `express.static`. An unknown extension gets `application/octet-stream`.
 13. `privateDocuments()`: `Cache-Control: private, no-cache` on each HTML document and each framework data response (such as a React Router `.data` request) from the app's routes or the framework that has no `Cache-Control`. A shared cache then never keeps a page or loader data that the server rendered for one user. A response with its own `Cache-Control` keeps it. A resource route that sends per-user JSON sets its own `Cache-Control`.
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, a Hono `middleware`, and optional hooks:
+The options `requestId`, `accessLog`, and `prerendered` of `defaultPlugins()` take the options of the plugin of the same name, and `trailingSlash` takes the mode.
+
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. To find a plugin in the array, compare its `name`. The names, in the order of the list, are `health`, `request-id`, `access-log`, `streaming-compress`, `security-headers`, `body-limit`, `noindex`, `build-id`, `content-security-policy`, `runtime-env`, `assets`, `redirects`, `trailing-slash`, `prerendered`, and `private-documents`. A filter on a name that no plugin has removes nothing, with no error. For example, behind a proxy that compresses each response, remove the compression of the server:
+
+```ts
+createServer({
+	plugins: defaultPlugins().filter((plugin) => plugin.name !== "streaming-compress"),
+});
+```
+
+Keep `assets` in the array, because it runs Vite in development.
+
+Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, a Hono `middleware`, and optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";
@@ -322,7 +336,7 @@ A `middleware` returns a `Response`, or it calls `await next()`. If no stage ans
 
 At shutdown, the server runs each `onShutdown` at the same time. When one throws, the server logs `plugin shutdown failed` with the error and the name of the plugin as `app_server.plugin`. When one is still open at the drain deadline, the server logs `plugin shutdown passed the deadline` with the names of the open plugins as `app_server.plugins`, and stops waiting.
 
-A plugin that sets a header on the response uses `withHeaderHook`. The hook changes the head once, where the response leaves, after the later stages and after the code that each stage runs after `await next()`. The hook of an inner stage runs first, so an outer stage has the last word. On Node.js and Vercel, the hooks change the list of headers that the server writes, so the response needs no copy. So code after `await next()` sees the response of the later stages without the changes of their hooks. To read or change the final headers, use a hook. A hook can read `requestContext()`. A hook that throws gets the answer of the app's `onError`, as a stage that throws does. On Node.js and Vercel, a wrapper of the app's `fetch` gets the response before the hooks: a header that it sets or deletes goes out, but it does not see the headers that the hooks set. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hooks also run on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages and `streamingCompress()` also run the hooks on a view of the headers before they choose a body, so a `no-transform`, a `Content-Encoding`, or a `Content-Range` from a hook keeps the body as it is. So a hook runs two or three times for a response with gzip or a compressed copy. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A view run can come before the code that a stage runs after `await next()`, and a throw in it changes nothing. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
+A plugin that sets a header on the response uses `withHeaderHook`. The hook changes the head once, where the response leaves, after the later stages and after the code that each stage runs after `await next()`. The hook of an inner stage runs first, so an outer stage has the last word. On Node.js and Vercel, the hooks change the list of headers that the server writes, so the response needs no copy. So code after `await next()` sees the response of the later stages without the changes of their hooks. To read or change the final headers, use a hook. A hook can read `requestContext()`. A hook that throws gets the answer of the app's `onError`, as a stage that throws does. On Node.js and Vercel, a wrapper of the app's `fetch` gets the response before the hooks: a header that it sets or deletes goes out, but it does not see the headers that the hooks set. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hooks also run on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages and `streamingCompress()` also run the hooks on a view of the headers before they choose a body, so a `no-transform`, a `Content-Encoding`, or a `Content-Range` from a hook keeps the body as it is. So a hook runs two or three times for a response that `streamingCompress()` compresses or that has a compressed copy. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A view run can come before the code that a stage runs after `await next()`, and a throw in it changes nothing. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 
 A plugin that changes a response with a value it reads at run time, as `runtimeEnv` and `buildId` do, returns that value from `etagPart`. The server adds it to the ETag of each static file that the request reaches after the plugin, so a 304 never keeps a response made with an old value.
 
@@ -338,6 +352,17 @@ const version: Plugin = {
 ```
 
 A `beforeStatic` plugin that changes the bytes of an HTML page, as `runtimeEnv` does, calls `c.set("rewritesHtml", true)` before its `next()`. The static stages then send the HTML file as it is on disk, not its compressed copy. Without it, a client that accepts gzip or brotli gets the copy, with a `Content-Encoding` that the plugin must not change.
+
+A plugin can keep its own value on the Hono context, such as the ID of the user. For TypeScript, declare the value one time, in a module such as `server.ts`. `c.set("userId", …)` and `c.get("userId")` then type-check in each plugin, each route, and each option callback. The declaration needs the one copy of Hono of [Install](#install).
+
+```ts
+// server.ts
+declare module "hono" {
+	interface ContextVariableMap {
+		userId: string;
+	}
+}
+```
 
 ## Protect pages
 
@@ -357,7 +382,7 @@ import type { Plugin } from "@ngrok/app-server";
 const auth: Plugin = {
 	name: "auth",
 	middleware: async (c, next) => {
-		if (!c.req.path.startsWith("/app")) {
+		if (!c.req.path.toLowerCase().startsWith("/app")) {
 			return next();
 		}
 		if (!(await hasSession(c.req.raw))) {
@@ -372,7 +397,7 @@ const auth: Plugin = {
 export default createServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) });
 ```
 
-`hasSession` stands for the app's own session check.
+`hasSession` stands for the app's own session check. The plugin compares the lowercase path, because React Router and TanStack Router match a path in any letter case: without it, `/APP/settings` passes the check, and the framework renders the page. The plugin protects only the paths that it names, so also keep a session check in each loader that reads private data.
 
 ## Security headers
 
@@ -722,7 +747,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 export default { prerender: ["/docs/button", "/markdown/docs/button.md"] };
 
 // server.ts
-const twinOf = (path: string) => `/markdown${path === "/" ? "/index" : path}.md`;
+const twinOf = ({ path }: { path: string }) => `/markdown${path === "/" ? "/index" : path}.md`;
 createServer({ plugins: defaultPlugins({ prerendered: { markdownTwins: { twinOf } } }) });
 ```
 
@@ -842,6 +867,28 @@ defaultPlugins({
 });
 ```
 
+`userId` stands for a value that a plugin of the app sets with `c.set("userId", …)`. For its type, see the `ContextVariableMap` declaration in [The pipeline](#the-pipeline).
+
+`accessLog()` writes one `request` line for each response, with the level `info`, or `error` for a 5xx. The line has `http.url`, `http.status_code`, `http.useragent`, `http.referer`, `network.client.ip`, `network.bytes_written`, and `duration`. It has `http.route` for a route that the framework matched, and `http.client_aborted` for a client that left before the end of the response.
+
+The server also writes these lines. A line of a request also has `http.request_id`, `http.method`, and `http.url_details.path`. An error goes out as `error.*` fields.
+
+| Message                               | Level   | Attributes                                          | When                                                                                                                                  |
+| ------------------------------------- | ------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `listening`                           | `info`  | `app_server.urls`                                   | The listeners take connections.                                                                                                       |
+| `waiting before the drain`            | `info`  | `app_server.delay_ms`                               | A stop signal came, and `shutdownDelayMs` is more than 0.                                                                             |
+| `draining`                            | `info`  | `app_server.deadline_ms`                            | The drain starts.                                                                                                                     |
+| `stopped`                             | `info`  |                                                     | The drain ended.                                                                                                                      |
+| `plugin shutdown passed the deadline` | `warn`  | `app_server.deadline_ms`                            | An `onShutdown` hook ran for longer than `shutdownDeadlineMs`. Stop its work on `shutdownSignal()`, or raise the deadline.            |
+| `plugin shutdown failed`              | `error` | `error.*`                                           | An `onShutdown` hook threw.                                                                                                           |
+| `shutdown failed`                     | `error` | `error.*`                                           | A listener did not stop.                                                                                                              |
+| `setup failed`                        | `error` | `error.*`                                           | On a serverless host, the setup threw, such as the `setup` of a plugin. The request fails, and the next request runs the setup again. |
+| `unhandled error`                     | `error` | `error.*`                                           | A stage, a route, or the framework threw, and the client got a 500. Or a response body failed after its head went out.                |
+| `access log attributes failed`        | `error` | `error.*`, and the attributes of the `request` line | The `attributes` callback of `accessLog()` threw. This line goes out in place of the `request` line.                                  |
+| `readiness check failed`              | `warn`  | `error.*`, when the check threw                     | The `ready` check of `health()` starts to fail, and `/readyz` answers 503.                                                            |
+| `readiness check passed`              | `info`  |                                                     | The `ready` check passes again.                                                                                                       |
+| `prerendered paths with no file`      | `warn`  | `app_server.missing_paths`                          | At startup, the client build has no file for a prerendered path. The framework answers that path.                                     |
+
 ## Health checks
 
 `health()` answers `/livez` and `/readyz` with `Cache-Control: no-store`. `/livez` always answers 200. `/readyz` answers 200 until the server gets a stop signal, then 503. `ready` adds an app check, such as a database ping. When the check starts to fail, one warn line goes to the log, and when it passes again, one info line. A stop signal during the check also gives 503. `defaultPlugins()` runs `health()` first, so a probe skips the access log. Its `health` option takes the options of `health()`:
@@ -886,6 +933,8 @@ export const env = runtimeEnv(
 export default createServer({ plugins: defaultPlugins({ env }) });
 ```
 
+Server code reads the parsed values from `env.values`, such as `env.values.SESSION_KEY`. `env.publicValues` has only the public values.
+
 The values whose names start with `PUBLIC_` go into each HTML document at serve time, prerendered pages included, so one build serves every environment. Read them in the browser:
 
 ```ts
@@ -896,7 +945,7 @@ When there are public values, the server sends each prerendered page from its fi
 
 ## Long-lived responses
 
-`eventStream()` makes a server-sent event response that sends a heartbeat every 15 s, stops when the client disconnects, and closes at shutdown so the drain does not wait for it:
+`eventStream()` makes a server-sent event response that sends a heartbeat every 15 s, stops when the client disconnects, and closes at shutdown so the drain does not wait for it. Its options are `signal`, `heartbeatMs` for another heartbeat interval, and `headers` for more response headers:
 
 ```ts
 import { eventStream } from "@ngrok/app-server";
@@ -953,11 +1002,25 @@ const html = await withRequestContext({ cspNonce: "test-nonce" }, () => renderTo
 
 A framework adapter or a host adapter is two small objects. A third-party adapter uses the same contract.
 
-- `FrameworkBuild` (from `@ngrok/app-server/vite`): the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config. It also takes `contentTypes`, with the same value as on the run side. When one of these types is compressible, the build writes the compressed copies of each file with that type.
-- `FrameworkRuntime` (from `@ngrok/app-server`): `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`. To give the access log `http.route`, `fetch` sets `routePattern` on the Hono context to the route pattern that the request matched.
-- `HostBuild` (from `@ngrok/app-server/vite`): the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output, such as `.vercel/output`. `output` runs one time, after the build and the prerender pass. If `appServer` comes before the framework's plugin, `output` runs after the build and again after the pass, so it must be safe to run two times. `output` gets the paths of the build and the URL path of Vite's `build.assetsDir`.
-- `HostRuntime` (from `@ngrok/app-server`): the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, gzip and brotli streams, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
+- `FrameworkBuild` (from `@ngrok/app-server/vite`): a `name`, the framework's server module, the module of the run side, how to detect the prerender pass, and a check of the Vite config. An optional `runtimeOptions` is the source of an object literal with more options for `runtime`, such as a build constant of the framework. It also takes `contentTypes`, with the same value as on the run side. When one of these types is compressible, the build writes the compressed copies of each file with that type.
+- `FrameworkRuntime` (from `@ngrok/app-server`): a `name`, `fetch(request, context)`, plus, when the framework has them, its client build, its prerendered paths, its data requests, and the content types that `mime` lacks. The run-side module exports `runtime(serverModule, { mode })`. To give the access log `http.route`, `fetch` sets `routePattern` on the Hono context to the route pattern that the request matched.
+- `HostBuild` (from `@ngrok/app-server/vite`): a `name`, the module of the run side, the file name of the server entry, and an optional `output` that writes the host's deploy output, such as `.vercel/output`. `output` must be sync, because Vite does not wait for it. It runs one time, after the build and the prerender pass. If `appServer` comes before the framework's plugin, `output` runs after the build and again after the pass, so it must be safe to run two times. `output` gets the paths of the build and the URL path of Vite's `build.assetsDir`.
+- `HostRuntime` (from `@ngrok/app-server`): a `name`, the client build's files, the default listeners (a serverless host has none), request storage for `requestContext()`, gzip and brotli streams, and a lifecycle for a long-lived process. The run-side module exports `host`. `files(...).open(path, range)` must honor `range`, because the static stages send those bytes in a 206. An optional `files(...).snapshot()` lists the client build once. The production server calls it at start, answers each lookup from that list, and keeps each file up to 256 KiB in memory after the first read, up to 32 MiB in all. The `.<file>.gz` and `.<file>.br` copies count in that limit. A client that accepts brotli reads only the `.br` copies, so the copies make the memory that a site needs smaller. If clients read each file in all three forms, a large site can need more than 32 MiB. Then the files that the server reads last stream from disk. Restart the server after you change the client build. A file that you remove while it runs gets a 500, unless it is in memory.
 - `ResponseEdge` (from `@ngrok/app-server`): for a listener that writes each response itself. The listener makes one for each request and gives it as the `edge` binding. The server runs the header hooks on a list of the headers and keeps the list in the edge, so it copies no response for them. The listener writes `edge.headersFor(response)` in place of the headers of the response, adds each body byte to `edge.bytes`, gives an error that stops the response to `edge.fail`, and calls `edge.close(status, aborted, head)` once, with the status and the header list that it sent. The access log takes its line from that report. Only the first request that gets an edge uses it: a request that the app sends through itself again with `c.env` changes its own response. The node host's listener on Node.js and the vercel handler give one. Without it, as on Bun and Deno, the server makes one new response with the headers after the hooks and a body that counts its bytes.
+
+`createEntry` (from `@ngrok/app-server`) joins the app with the two run sides. The server entry that `appServer` generates calls it, and a build with no Vite plugin can call it too. `serverModule` stands for the framework's server module:
+
+```ts
+import { createEntry, createServer } from "@ngrok/app-server";
+import { host } from "@ngrok/app-server/node";
+import { runtime } from "@ngrok/app-server/react-router";
+
+export const appServer = createEntry({
+	app: createServer(),
+	host,
+	framework: (mode) => runtime(serverModule, { mode }),
+});
+```
 
 ## Options
 
