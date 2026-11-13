@@ -177,10 +177,11 @@ describe("redirects", () => {
 	});
 
 	it("matches the path as a URL parse gives it, for each ASCII character and a character outside ASCII in a URL as the client sent it", async () => {
+		// Why no `*`: `redirects()` refuses a rule with a `*` inside a segment.
 		const characters = [
 			...Array.from({ length: 128 }, (_, index) => String.fromCodePoint(index)),
 			"é",
-		];
+		].filter((character) => character !== "*");
 		const statuses = await Promise.all(
 			characters.map(async (character) => {
 				const url = `http://localhost/a${character}b`;

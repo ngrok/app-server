@@ -1,9 +1,10 @@
 import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { defaultPlugins } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import type { EventStreamSink } from "./event-stream.js";
 import { abortShutdownSignal, renewShutdownSignal, shutdownSignal } from "./shutdown.js";
-import { collectGarbage } from "../test-server.js";
+import { collectGarbage, testServer } from "../test-server.js";
 
 afterEach(() => {
 	vi.useRealTimers();
