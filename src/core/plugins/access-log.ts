@@ -64,6 +64,8 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  * with an `edge`, such as the node listener, counts the bytes.
  *
  * - A 5xx line has the level `error`, and each other line has the level `info`.
+ * - A 5xx whose client went away before the app answered has the status
+ *   `499` and the level `info`.
  * - A line has `http.route` when the framework adapter gives the route
  *   pattern that it matched, such as `/domains/:domainId`.
  * - In development, a request that Vite answers, such as a source module,
@@ -98,15 +100,21 @@ export function accessLog({
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;
 			}
+			// Why read it now: the Node.js listener also aborts the signal when it closes the socket of a
+			// body that failed after the head.
+			const clientLeft = context.req.raw.signal.aborted;
 			// Why a catch: a log line must never change the response or stop its stream. The listener can
 			// call the report from an event of its socket, where a throw stops the process.
 			onResponseSent(context, (sent) => {
-				const line = lineAttributes(context, sent, started);
+				// Why 499, nginx's "Client Closed Request": React Router answers a request whose client went
+				// away with a 500, and the app did not fail.
+				const status = clientLeft && sent.aborted && sent.status >= 500 ? 499 : sent.status;
+				const line = lineAttributes(context, { ...sent, status }, started);
 				try {
 					// Why `error` for a 5xx only: Datadog takes the status of a line from its level, and crawlers
 					// make most 4xx responses.
 					const logger = context.get("logger");
-					logger[sent.status >= 500 ? "error" : "info"](
+					logger[status >= 500 ? "error" : "info"](
 						"request",
 						attributes == null ? line : { ...line, ...attributes({ context, sent }) },
 					);

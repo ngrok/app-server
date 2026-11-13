@@ -339,6 +339,67 @@ describe("accessLog on the Node.js listener", () => {
 		});
 	});
 
+	it("logs a 5xx as 499 at info when the client went away before the app answered", async () => {
+		let arrived = () => {};
+		const started = new Promise<void>((resolve) => {
+			arrived = resolve;
+		});
+		const { url, requestLines } = await listening([accessLog()], async (request) => {
+			arrived();
+			await new Promise((resolve) => {
+				request.signal.addEventListener("abort", resolve, { once: true });
+			});
+			// Why: React Router answers a request whose signal aborted with a 500.
+			return new Response("Unexpected Server Error", { status: 500 });
+		});
+
+		const client = httpGet(new URL("/login", url).href).once("error", () => {});
+		await started;
+		client.destroy();
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(1);
+		});
+
+		expect(requestLines()[0]).toMatchObject({
+			level: "info",
+			attributes: { "http.status_code": 499, "http.client_aborted": true },
+		});
+	});
+
+	it("logs a 5xx at error when its body fails and the client stays", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		onTestFinished(() => {
+			vi.restoreAllMocks();
+		});
+		let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+		const { url, requestLines } = await listening(
+			[accessLog()],
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							source = controller;
+							controller.enqueue(encoder.encode("first"));
+						},
+					}),
+					{ status: 503, headers: { "Content-Type": "text/plain" } },
+				),
+		);
+
+		const response = await getRaw(new URL("/fails", url).href);
+		response.once("error", () => {});
+		await firstChunk(response);
+		source?.error(new Error("render failed"));
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(1);
+		});
+
+		expect(requestLines()[0]).toMatchObject({
+			level: "error",
+			attributes: { "http.status_code": 503, "http.client_aborted": true },
+		});
+	});
+
 	it("counts only the bytes that went out before a body fails, and marks the line", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		onTestFinished(() => {
