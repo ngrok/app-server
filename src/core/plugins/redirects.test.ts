@@ -167,6 +167,25 @@ describe("redirects", () => {
 		});
 	});
 
+	it("matches the path as a URL parse gives it, for each ASCII character and a character outside ASCII in a URL as the client sent it", async () => {
+		const characters = [
+			...Array.from({ length: 128 }, (_, index) => String.fromCodePoint(index)),
+			"é",
+		];
+		const statuses = await Promise.all(
+			characters.map(async (character) => {
+				const url = `http://localhost/a${character}b`;
+				// Why the parsed path: a rule is the path as it is in the URL.
+				const rules: RedirectRule[] = [{ from: new URL(url).pathname, to: "/moved" }];
+				return (await redirectedAsSent(rules, url)).status;
+			}),
+		);
+		const notMoved = characters.filter((_, index) => statuses[index] !== 301);
+
+		// Why percent-encoded: a control character does not print.
+		expect(notMoved.map((character) => encodeURIComponent(character))).toStrictEqual([]);
+	});
+
 	it("goes on for a path with no rule when the request URL does not parse", async () => {
 		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header, and a request
 		// that matches no rule must not fail on it.
