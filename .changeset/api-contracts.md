@@ -2,7 +2,18 @@
 "@ngrok/app-server": minor
 ---
 
-Breaking changes to the contracts of a plugin, a host adapter, and a listener. An app that uses only `createServer`, `defaultPlugins()`, and the adapters of this package changes nothing for the first four.
+Breaking changes to the install and to the contracts of a plugin, a host adapter, and a listener. The first change is for each app. The others are for an app with a plugin that logs in `setup`, a host or a listener of its own, or an import of a removed export.
+
+**`hono` is a peer dependency (`^4.13.16`), not a dependency.** The app and the package now share one copy of Hono. Before, the package pinned one version, and an app with another version got a second copy. TypeScript then refused a middleware of the app's copy, such as `cors()` from `hono/cors`, as the `middleware` of a plugin, and it refused `app.route("/api", new Hono())`.
+
+```sh
+# Before: the version that the package pinned
+pnpm add -E @ngrok/app-server hono@4.13.16
+# After
+pnpm add -E @ngrok/app-server hono
+```
+
+The app must have `hono` 4.13.16 or later. pnpm, npm, and Bun install a peer that the app does not have. With Yarn, or with pnpm and `auto-install-peers=false`, add it: `pnpm add -E hono`. The server now runs on the app's version of Hono. Measured with the README install line, when the latest Hono was 4.13.18. An empty app had 2 versions of Hono and 3 type errors before, and it has 1 version and 0 errors now. The server build of a React Router app whose `server.ts` imports `cors()` held two copies of Hono before, and it holds one now: the JavaScript in `build/server` goes from 1,821,793 to 1,761,656 bytes.
 
 **`info.logger` in the `setup` of a plugin is a logger with one method for each level**, as `logger()` and `c.get("logger")` are. Before, it was the sink. TypeScript reports each call. In JavaScript, the old call throws when it runs.
 

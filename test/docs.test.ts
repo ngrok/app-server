@@ -303,7 +303,20 @@ describe("the README and the code", () => {
 		expect(section(readme, "Requirements")).toContain(`- ${versions}`);
 	});
 
-	it("installs the Hono version that the package pins, so an app gets one copy", () => {
-		expect(section(readme, "Install")).toContain(` hono@${packageJson.dependencies.hono}\n`);
+	it("installs the package with each peer dependency that is not optional, so an app gets one copy of each", () => {
+		const optional: Record<string, { optional?: boolean }> = packageJson.peerDependenciesMeta;
+		const required = Object.keys(packageJson.peerDependencies).filter(
+			(name) => optional[name]?.optional !== true,
+		);
+		const line = /^pnpm add -E (?<packages>.+)$/mu.exec(section(readme, "Install"));
+
+		expect(line?.groups?.packages?.split(" ")).toStrictEqual([packageJson.name, ...required]);
+	});
+
+	it("states the Hono versions of the peer range", () => {
+		const floor = /^\^(?<version>[\d.]+)$/u.exec(packageJson.peerDependencies.hono)?.groups
+			?.version;
+
+		expect(section(readme, "Requirements")).toContain(`- Hono ${floor}+\n`);
 	});
 });

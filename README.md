@@ -75,6 +75,7 @@ For each app:
 ## Requirements
 
 - Node.js 26, Bun 1.3+, or Deno 2.9+
+- Hono 4.13.16+
 - Vite 8.3+
 - React Router 8.5+, or TanStack Start 1.169+
 - An ES module app and server build. The package has no CommonJS build, and the Vite plugin refuses a CommonJS server build.
@@ -82,10 +83,10 @@ For each app:
 ## Install
 
 ```sh
-pnpm add -E @ngrok/app-server hono@4.13.16
+pnpm add -E @ngrok/app-server hono
 ```
 
-The package pins its version of Hono. Install the same version, so the app and the package share one copy of Hono. With two copies, the types of one copy do not fit the other: TypeScript refuses a middleware of the app's copy, such as `cors()` from `hono/cors`, as the `middleware` of a plugin. When you upgrade this package, set `hono` to the version in its `dependencies`.
+Hono is a peer dependency, so the app and the package share one copy of it. A middleware of the app's Hono, such as `cors()` from `hono/cors`, then fits the `middleware` of a plugin.
 
 ## Set up
 
