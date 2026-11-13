@@ -133,6 +133,7 @@ export type {
 export type {
 	//,
 	RedirectRule,
+	RedirectsOptions,
 } from "./plugins/redirects.js";
 export type {
 	//,

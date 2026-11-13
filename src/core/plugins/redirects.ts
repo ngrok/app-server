@@ -26,6 +26,18 @@ export type RedirectRule = {
 	status?: 301 | 308;
 };
 
+/** Options for {@link redirects}. */
+export type RedirectsOptions = {
+	/**
+	 * The mode of the `trailingSlash` plugin that runs after this plugin. In
+	 * the `never` mode, a local target loses its trailing slash. Each other
+	 * mode sends the target as the rule has it. `defaultPlugins()` gives its
+	 * own mode, which is `never` by default.
+	 * @default "preserve"
+	 */
+	trailingSlash?: TrailingSlash;
+};
+
 /** A rule, compiled at startup. */
 type CompiledRule = {
 	/** The `from` path with no trailing slash. */
@@ -231,7 +243,7 @@ function withQuery(target: string, search: string): string {
  */
 export function redirects(
 	rules: readonly RedirectRule[],
-	{ trailingSlash = "preserve" }: { trailingSlash?: TrailingSlash } = {},
+	{ trailingSlash = "preserve" }: RedirectsOptions = {},
 ): Plugin {
 	const compiled = rules.map((rule, index) => compileRule(rule, index));
 	const exact = new Map<string, CompiledRule>();
