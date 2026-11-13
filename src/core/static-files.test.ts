@@ -80,6 +80,33 @@ describe("hasDotSegment", () => {
 });
 
 describe("keptFiles", () => {
+	it("gives each response its own bytes, so a reader that changes or moves its chunk leaves the next response whole", async () => {
+		const text = "0123456789";
+		const source: StaticFiles = {
+			stat: async () => ({ kind: "file", size: text.length, mtimeMs: 0 }),
+			open: async () => new Response(text).body ?? new ReadableStream(),
+		};
+		const files = keptFiles(source);
+		const chunk = async (range?: { start: number; end: number }) => {
+			const { value } = await (await files.open("/digits.txt", range)).getReader().read();
+			return value ?? new Uint8Array();
+		};
+		const decoder = new TextDecoder();
+
+		const changed = await chunk();
+		changed.fill(0);
+		const moved = await chunk();
+		const before = decoder.decode(moved);
+		// Why a transfer: it detaches the buffer of the chunk, as a write to a byte stream does.
+		structuredClone(moved.buffer, { transfer: [moved.buffer] });
+		const part = await chunk({ start: 2, end: 4 });
+		part.fill(0);
+
+		expect(before).toBe(text);
+		expect(decoder.decode(await chunk())).toBe(text);
+		expect(decoder.decode(await chunk({ start: 2, end: 4 }))).toBe("234");
+	});
+
 	it("reads a file once for concurrent first requests, so the memory limit holds other files too", async () => {
 		const sizes: Record<string, number> = { "/large.js": 256 * 1024, "/small.js": 1 };
 		const reads: string[] = [];
