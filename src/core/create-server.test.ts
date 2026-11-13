@@ -1577,6 +1577,11 @@ describe("the pipeline", () => {
 			await answer("/page?x=1", { headers: { "X-Forwarded-Proto": "https" } }),
 			await answer("/.env", encoded("identity")),
 			await answer("/.well-known/x", encoded("identity")),
+			// Why: a path with an encoded line break must run each stage, as each other path does.
+			await answer("/x%0A", encoded("identity")),
+			await answer("/x%0D", encoded("identity")),
+			await answer("/x%E2%80%A8", encoded("identity")),
+			await answer("/x%0A/", encoded("identity")),
 		];
 
 		expect(answers).toStrictEqual([
@@ -1601,6 +1606,10 @@ describe("the pipeline", () => {
 			[200, html, "gzip", privately, null, "max-age=31536000"],
 			[200, html, null, privately, null, null],
 			[200, html, null, privately, null, null],
+			[200, html, null, privately, null, null],
+			[200, html, null, privately, null, null],
+			[200, html, null, privately, null, null],
+			[308, "", null, null, "/x%0A", null],
 		]);
 		// Why a count: a line goes out when its response closes, which can be after the next request.
 		const counts = () => {
@@ -1613,8 +1622,8 @@ describe("the pipeline", () => {
 		};
 		await expect.poll(counts).toStrictEqual({
 			"listening undefined": 1,
-			"request 200": 12,
-			"request 308": 4,
+			"request 200": 15,
+			"request 308": 5,
 			"request 404": 1,
 			"request 500": 2,
 			"unhandled error A non-Error value was thrown: boom": 1,
