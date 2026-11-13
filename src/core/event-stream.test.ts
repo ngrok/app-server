@@ -162,6 +162,40 @@ describe("eventStream", () => {
 		expect(producerSignal?.reason).toBe("the client left");
 	});
 
+	// Why: a request can arrive after the shutdown signal aborted, and the drain must not wait for it.
+	it.each<{ source: string; start: (produce: () => void) => Response }>([
+		{
+			source: "the request aborted",
+			start: (produce) => eventStream({ signal: AbortSignal.abort() }, produce),
+		},
+		{
+			source: "the server shut down",
+			start: (produce) => {
+				abortShutdownSignal();
+				return eventStream({}, produce);
+			},
+		},
+	])("ends at once and does not run produce when $source before the call", async ({ start }) => {
+		onTestFinished(renewShutdownSignal);
+		const produce = vi.fn<() => void>();
+
+		const response = start(produce);
+
+		await expect(readAll(response)).resolves.toBe("");
+		// Why a turn of the event loop: `produce` starts in a microtask.
+		await nextTurn();
+		expect(produce).not.toHaveBeenCalled();
+	});
+
+	// Why: the server cancels the body of a HEAD response, and the listener the body of a closed socket.
+	it("aborts the producer's signal when the client cancels the body", async () => {
+		const { signal, reader } = await openStream();
+
+		await reader.cancel();
+
+		expect(signal.aborted).toBe(true);
+	});
+
 	it("errors the stream when produce rejects", async () => {
 		const response = eventStream({}, async () => {
 			throw new Error("upstream failed");
@@ -283,6 +317,10 @@ describe("eventStream", () => {
 		});
 		const socket = connect(Number(new URL(server.urls[0] ?? "").port), "127.0.0.1");
 		socket.on("error", () => {});
+		// Why: when the stream does not stop, the shutdown waits for a client that does not read.
+		onTestFinished(() => {
+			socket.destroy();
+		});
 
 		// The client sends its request, and reads nothing.
 		socket.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
