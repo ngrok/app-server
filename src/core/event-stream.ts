@@ -9,10 +9,11 @@ export type ServerSentEvent = {
 
 /** What {@link eventStream} passes to its producer. */
 export type EventStreamSink = {
+	/** Sends `event` at once. It does not wait for the client. */
 	send: (event: ServerSentEvent) => void;
 	/**
-	 * Aborts when the client disconnects or the server shuts down, while the stream is open. Stop
-	 * the work on it.
+	 * Aborts while the stream is open: when the client disconnects, when the server shuts down, or
+	 * when more than 1 MiB of events wait for the client. Stop the work on it.
 	 */
 	signal: AbortSignal;
 };
@@ -34,6 +35,15 @@ export type EventStreamOptions = {
 /** Why: `setInterval` turns a longer delay, and a delay under 1, into 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
 
+/**
+ * The most bytes of events that wait for a client. Why 1 MiB: a burst of 1,000 events of 1 KiB
+ * fits, and a client that does not read cannot fill the memory.
+ */
+const MAX_QUEUED_BYTES = 1024 * 1024;
+
+/** Why one object: a stream reads its strategy and does not keep it. */
+const QUEUE_STRATEGY = new ByteLengthQueuingStrategy({ highWaterMark: MAX_QUEUED_BYTES });
+
 function formatEvent({ data, event, id }: ServerSentEvent): string {
 	// Why: a line break in `event` or `id` would start another field or event.
 	if (/[\r\n]/u.test(`${event ?? ""}${id ?? ""}`)) {
@@ -53,6 +63,11 @@ function formatEvent({ data, event, id }: ServerSentEvent): string {
  * sends a heartbeat comment, it stops when the client disconnects, and it
  * closes at server shutdown so the drain does not wait for the deadline. The
  * stream closes when `produce` resolves.
+ *
+ * `send` does not wait for the client. The events that the client has not
+ * read wait in memory, up to 1 MiB. When more wait, the stream stops with an
+ * error, and `signal` aborts with that error as its `reason`. On Bun, the
+ * runtime reads the stream ahead of the client, so the limit does not apply.
  *
  * @example
  * export async function loader({ request }: Route.LoaderArgs) {
@@ -101,18 +116,32 @@ export function eventStream(
 		stopped.abort(upstream.reason);
 	}
 	function write(text: string) {
-		open?.enqueue(encoder.encode(text));
+		if (open == null) {
+			return;
+		}
+		open.enqueue(encoder.encode(text));
+		// Why under 0: the size is `MAX_QUEUED_BYTES` less the bytes that wait for the client.
+		if ((open.desiredSize ?? 0) < 0) {
+			const error = new Error(
+				"The event stream stopped: more than 1 MiB of events waited for the client.",
+			);
+			end()?.error(error);
+			stopped.abort(error);
+		}
 	}
 
-	const body = new ReadableStream<Uint8Array>({
-		start(controller) {
-			open = controller;
+	const body = new ReadableStream<Uint8Array>(
+		{
+			start(controller) {
+				open = controller;
+			},
+			cancel() {
+				end();
+				stopped.abort();
+			},
 		},
-		cancel() {
-			end();
-			stopped.abort();
-		},
-	});
+		QUEUE_STRATEGY,
+	);
 	if (upstream.aborted) {
 		close();
 	} else {

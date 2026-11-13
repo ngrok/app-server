@@ -1,9 +1,14 @@
-import { getEventListeners } from "node:events";
+import { getEventListeners, once } from "node:events";
+import { connect } from "node:net";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { defaultPlugins } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
+import type { EventStreamSink } from "./event-stream.js";
 import { abortShutdownSignal, renewShutdownSignal, shutdownSignal } from "./shutdown.js";
+import { tcp } from "../node/tcp.js";
+import { testServer } from "../test-server.js";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -103,6 +108,97 @@ describe("eventStream", () => {
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
 	});
 
+	it("keeps 1 MiB of events for a client that does not read, and fails the stream for more", async () => {
+		const produced = Promise.withResolvers<undefined>();
+		let producerSignal: AbortSignal | undefined;
+		let abortedAtLimit: boolean | undefined;
+		const response = eventStream({}, ({ send, signal }) => {
+			producerSignal = signal;
+			// Why 8 less: `data: ` and the two line ends add 8 bytes, so this event is 1 MiB.
+			send({ data: "x".repeat(1024 * 1024 - 8) });
+			abortedAtLimit = signal.aborted;
+			send({ data: "" });
+			produced.resolve(undefined);
+		});
+		await produced.promise;
+
+		const failure: unknown = await readAll(response).catch((error: unknown) => error);
+
+		expect(abortedAtLimit).toBe(false);
+		expect(failure).toStrictEqual(
+			new Error("The event stream stopped: more than 1 MiB of events waited for the client."),
+		);
+		expect(producerSignal?.reason).toBe(failure);
+	});
+
+	it("closes the connection of a client that stops reading", async () => {
+		const reason = Promise.withResolvers<unknown>();
+		const { internals, framework } = await testServer({
+			plugins: defaultPlugins(),
+			render: async (request) =>
+				eventStream({ signal: request.signal }, async ({ send, signal }) => {
+					signal.addEventListener("abort", () => {
+						reason.resolve(signal.reason);
+					});
+					const data = "x".repeat(64 * 1024);
+					while (!signal.aborted) {
+						send({ data });
+						// Why a turn of the event loop: the listener writes each event to the socket.
+						await new Promise((resolve) => {
+							setImmediate(resolve);
+						});
+					}
+				}),
+			options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })] },
+		});
+		const server = await internals.listen(framework, []);
+		onTestFinished(async () => {
+			await server.shutdown();
+			renewShutdownSignal();
+		});
+		const socket = connect(Number(new URL(server.urls[0] ?? "").port), "127.0.0.1");
+		socket.on("error", () => {});
+
+		// The client sends its request, and reads nothing.
+		socket.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		await expect(reason.promise).resolves.toStrictEqual(
+			new Error("The event stream stopped: more than 1 MiB of events waited for the client."),
+		);
+		// Why read now: a socket that does not read does not see that the server closed it.
+		const received: Buffer[] = [];
+		socket.on("data", (chunk: Buffer) => {
+			received.push(chunk);
+		});
+		await once(socket, "close");
+		// Why: the last chunk of a complete response is `0`, and a cut response must not have it.
+		expect(Buffer.concat(received).subarray(-5).toString()).not.toBe("0\r\n\r\n");
+	});
+
+	it("sends each event at once to a client that reads, also past 1 MiB in total", async () => {
+		const data = "x".repeat(256 * 1024);
+		let sendNext = () => {};
+		const clientRead = async () =>
+			new Promise<void>((resolve) => {
+				sendNext = resolve;
+			});
+		const response = eventStream({}, async ({ send }) => {
+			for (let count = 0; count < 8; count += 1) {
+				send({ data });
+				await clientRead();
+			}
+		});
+		const reader = response.body?.getReader();
+		const sizes: number[] = [];
+
+		for (let chunk = await reader?.read(); chunk?.done === false; chunk = await reader?.read()) {
+			sizes.push(chunk.value.byteLength);
+			sendNext();
+		}
+
+		expect(sizes).toStrictEqual(Array.from({ length: 8 }, () => data.length + 8));
+	});
+
 	// Why: Node.js keeps a signal that follows `shutdownSignal()`, with each listener that the producer
 	// left on it, until the server stops.
 	it.each<{ source: string; abort: (request: AbortController) => void }>([
@@ -148,7 +244,7 @@ describe("eventStream", () => {
 	// until the server stops.
 	it.each<{
 		end: string;
-		produce: () => Promise<void>;
+		produce: (sink: EventStreamSink) => Promise<void>;
 		finish: (response: Response) => Promise<unknown>;
 	}>([
 		{ end: "produce resolves", produce: async () => {}, finish: readAll },
@@ -164,15 +260,25 @@ describe("eventStream", () => {
 			produce: async () => new Promise(() => {}),
 			finish: async (response) => response.body?.cancel(),
 		},
+		{
+			end: "the client does not read",
+			produce: async ({ send }) => {
+				// Why two events: the client can take the first one before it waits.
+				send({ data: "x".repeat(1024 * 1024) });
+				send({ data: "x".repeat(1024 * 1024) });
+				return new Promise(() => {});
+			},
+			finish: async (response) => readAll(response).catch(() => {}),
+		},
 	])(
 		"frees a listener that the producer left on the signal, after $end",
 		async ({ produce, finish }) => {
 			const request = new AbortController();
 			const streamed = async () => {
 				const onAbort = () => {};
-				const response = eventStream({ signal: request.signal }, async ({ signal }) => {
-					signal.addEventListener("abort", onAbort);
-					return produce();
+				const response = eventStream({ signal: request.signal }, async (sink) => {
+					sink.signal.addEventListener("abort", onAbort);
+					return produce(sink);
 				});
 				await finish(response);
 				return new WeakRef(onAbort);

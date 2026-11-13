@@ -910,6 +910,14 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 `heartbeatMs` sets the milliseconds between two heartbeats. It must be an integer from 1 to 2,147,483,647, or `eventStream()` throws a `RangeError`.
 
+`send()` does not wait for the client. The events that the client has not read wait in memory, up to 1 mebibyte (MiB). When more than 1 MiB waits:
+
+- The stream stops with an error. On Node.js, the server logs it as an `unhandled error`.
+- The server closes the connection. An `EventSource` then connects again and sends the `id` of its last event as `Last-Event-ID`.
+- `signal` aborts, with the error as its `reason`.
+
+A producer that sends more than 1 MiB before the client can read it also stops its stream, such as a long replay in one turn of the event loop. Send a long history in another response. On Bun, `Bun.serve` reads the stream ahead of the client and holds the events itself, so the limit does not apply.
+
 For other long work, stop on `shutdownSignal()`.
 
 ## Testing
