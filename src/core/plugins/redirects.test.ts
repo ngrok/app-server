@@ -132,8 +132,15 @@ describe("redirects", () => {
 		];
 		const moved = { status: 301, location: "/new" };
 
-		// Each path is `/old` after the URL parse.
-		for (const path of ["/x/../old", "/./old", "/x/%2e%2e/old", String.raw`/x\..\old`]) {
+		// Each path is `/old` or `/old/` after the URL parse.
+		for (const path of [
+			"/x/../old",
+			"/./old",
+			"/x/%2e%2e/old",
+			String.raw`/x\..\old`,
+			"/old/x/..",
+			"/old/.",
+		]) {
 			await expect(redirected(rules, path)).resolves.toStrictEqual(moved);
 			await expect(redirectedAsSent(rules, `http://localhost${path}`)).resolves.toStrictEqual(
 				moved,
