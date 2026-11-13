@@ -261,6 +261,16 @@ describe("trailingSlash", () => {
 		);
 	});
 
+	it("serves a path in the mode's form when a URL parse takes a different path from the Host header", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+
+		// Why: Deno gives the `Host` header as the client sent it. A URL parse takes the path `/b/`
+		// from `http://a\b/`, and the path `/b` from `http://a\b?c/x/`.
+		await expect(answerAsSent(never, String.raw`http://a\b/`)).resolves.toStrictEqual(page);
+		await expect(answerAsSent(always, String.raw`http://a\b?c/x/`)).resolves.toStrictEqual(page);
+	});
+
 	it("trims a long run of slashes in linear time", async () => {
 		const { request } = await serve("never");
 		const path = `/a${"/".repeat(50_000)}b/`;

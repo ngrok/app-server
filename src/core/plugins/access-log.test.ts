@@ -121,6 +121,13 @@ describe("accessLog", () => {
 		);
 	});
 
+	it("logs a query of plain keys when the request URL does not parse", async () => {
+		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header.
+		await expect(loggedAsSent(["http://1.2.3.4.5/a?x=1"])).resolves.toStrictEqual([
+			"/a?x=REDACTED",
+		]);
+	});
+
 	it("logs a streamed response when its body ends, with every byte counted", async () => {
 		const held = heldStream("shell");
 		const { request, lines } = await testServer({

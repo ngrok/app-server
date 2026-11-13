@@ -160,6 +160,21 @@ describe("redirects", () => {
 		).resolves.toStrictEqual({ status: 200, location: null });
 	});
 
+	it("goes on for a path with no rule when a URL parse takes a path with a rule from the Host header", async () => {
+		const noRedirect = { status: 200, location: null };
+
+		// Why: Deno gives the `Host` header as the client sent it. A URL parse takes the path `/old/`
+		// from `http://a\old/`, and the path `/` from a host with a `?` or a `#`.
+		await expect(
+			redirectedAsSent([{ from: "/old", to: "/new" }], String.raw`http://a\old/`),
+		).resolves.toStrictEqual(noRedirect);
+		for (const url of ["http://a?b/other", "http://a#b/other"]) {
+			await expect(redirectedAsSent([{ from: "/", to: "/home" }], url)).resolves.toStrictEqual(
+				noRedirect,
+			);
+		}
+	});
+
 	it("encodes a value in the query of the target, so it stays one value", async () => {
 		await expect(
 			redirected([{ from: "/search/:term", to: "/results?q=:term" }], "/search/one&two+three"),
