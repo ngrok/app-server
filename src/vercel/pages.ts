@@ -51,7 +51,7 @@ function isEntry(value: unknown): value is Entry {
  * @example
  * await writePages("build/server/app-server.js", ".vercel/output/static/_app-server/pages", "pages.json");
  */
-export async function writePages(
+async function writePages(
 	entryFile: string,
 	staticDirectory: string,
 	reportFile: string,
