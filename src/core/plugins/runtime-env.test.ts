@@ -48,6 +48,26 @@ describe("runtimeEnv", () => {
 		expect(env.publicValues).toStrictEqual({ PUBLIC_API_URL: "https://api.example.com/</script>" });
 	});
 
+	it("sends the values of the publicPrefix option to the browser, and no PUBLIC_ value", async () => {
+		const env = runtimeEnv(schema, { source: validSource, publicPrefix: "SESSION_" });
+		const { request } = await testServer({
+			plugins: [env],
+			render: async () =>
+				new Response("<html><head></head></html>", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		expect(env.publicValues).toStrictEqual({ SESSION_KEY: "secret-key" });
+		await expect((await request("/")).text()).resolves.toBe(
+			'<html><head><script id="app-server-public-env" type="application/json">{"SESSION_KEY":"secret-key"}</script></head></html>',
+		);
+	});
+
+	it("stops startup for an empty publicPrefix, which would send each value to the browser", () => {
+		expect(() => runtimeEnv(schema, { source: validSource, publicPrefix: "" })).toThrow(
+			'runtimeEnv needs a publicPrefix of one character or more, not "".',
+		);
+	});
+
 	it("stops startup with a message that names each bad value", async () => {
 		const env = runtimeEnv(schema, {
 			source: { PORT: "abc", PUBLIC_API_URL: "https://a.example" },

@@ -167,3 +167,13 @@ The error names the rule and the fix:
 ```
 The redirect from /café can never match. A rule matches the path only. Write it percent-encoded, with no query and no fragment: /caf%C3%A9.
 ```
+
+Breaking change: `runtimeEnv(schema, { publicPrefix: "" })` now throws. Before, an empty prefix made each value public, so the server wrote each value, secrets included, into each HTML document. Set a prefix of one character or more, and give each public value a name with that prefix.
+
+```ts
+// Before: `SESSION_KEY` went into each HTML document.
+runtimeEnv(z.object({ API_URL: z.url(), SESSION_KEY: z.string() }), { publicPrefix: "" });
+
+// After
+runtimeEnv(z.object({ PUBLIC_API_URL: z.url(), SESSION_KEY: z.string() }));
+```

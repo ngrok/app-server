@@ -965,7 +965,7 @@ export default createServer({ plugins: defaultPlugins({ env }) });
 
 Server code reads the parsed values from `env.values`, such as `env.values.SESSION_KEY`. `env.publicValues` has only the public values.
 
-The values whose names start with `PUBLIC_` go into each HTML document at serve time, prerendered pages included, so one build serves every environment. Read them in the browser:
+The values whose names start with `PUBLIC_` go into each HTML document at serve time, prerendered pages included, so one build serves every environment. To use another prefix, set `publicPrefix`, such as `runtimeEnv(schema, { publicPrefix: "VITE_" })`. An empty prefix stops startup, because each value, such as a secret, would then reach the browser. Read the public values in the browser:
 
 ```ts
 const publicEnv = JSON.parse(document.getElementById("app-server-public-env")?.textContent ?? "{}");

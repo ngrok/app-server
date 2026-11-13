@@ -145,6 +145,12 @@ export function runtimeEnv<Schema extends StandardSchemaV1>(
 	schema: Schema,
 	{ source = process.env, publicPrefix = "PUBLIC_" }: RuntimeEnvOptions = {},
 ): RuntimeEnv<InferOutput<Schema>> {
+	// Why: each name starts with `""`, so each value, such as a secret, would go into each HTML document.
+	if (publicPrefix === "") {
+		throw new RangeError(
+			'runtimeEnv needs a publicPrefix of one character or more, not "". With "", each value, such as a secret, goes into each HTML document.',
+		);
+	}
 	let parsed:
 		| {
 				values: InferOutput<Schema>;
