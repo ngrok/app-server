@@ -447,8 +447,9 @@ export function createServer({
 			// oxlint-disable-next-line typescript/promise-function-async -- `runStage` is async, and a second async function costs each stage a promise.
 			const next = () => runStage(run, index + 1);
 			const answer = await (stage.middleware == null ? next() : stage.middleware(context, next));
-			// Why the check: a response that a stage returns after its `next()` does not replace the answer.
-			if (answer != null && !context.finalized) {
+			// Why a truthy test: as in Hono, a value such as `false` from `allowed && next()` is no answer.
+			// Why `finalized`: a response that a stage returns after its `next()` does not replace the answer.
+			if (answer && !context.finalized) {
 				context.res = answer;
 			}
 		} catch (error) {

@@ -1169,9 +1169,26 @@ describe("the pipeline", () => {
 
 	const noAnswer =
 		"No stage answered the request. A middleware must return a Response or call `await next()`.";
+	/**
+	 * A pipeline whose plugin returns `value` and does not call `next()`. Why
+	 * the cast: the type takes a `Response` only, but a middleware in JavaScript
+	 * can return each value, such as `false` from `allowed && next()`.
+	 */
+	const returns = (value: unknown): Stages => ({
+		plugins: [
+			{
+				name: "forgetful",
+				middleware: (async () => value) as NonNullable<Plugin["middleware"]>,
+			},
+		],
+	});
 	/** A pipeline with a stage at each place that returns no response and does not call `next()`. */
 	const forgetsAt: Record<string, Stages> = {
-		"a plugin": { plugins: [{ name: "forgetful", middleware: async () => {} }] },
+		"a plugin": returns(undefined),
+		"a plugin that returns null": returns(null),
+		"a plugin that returns false": returns(false),
+		"a plugin that returns 0": returns(0),
+		'a plugin that returns ""': returns(""),
 		"a middleware of the app": {
 			routes: (app) => {
 				app.use("/", async () => {});
