@@ -10,7 +10,6 @@ import type { HostBuild } from "../vite/index.js";
  */
 export function node(): HostBuild {
 	return {
-		name: "node",
 		runtimeModule: "@ngrok/app-server/node",
 		entryFileName: "app-server.js",
 	};

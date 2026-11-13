@@ -428,7 +428,6 @@ function checkCdnPaths(paths: readonly string[]): void {
 export function vercel(options: VercelOptions = {}): HostBuild {
 	checkCdnPaths(options.cdnPaths ?? []);
 	return {
-		name: "vercel",
 		runtimeModule: "@ngrok/app-server/vercel",
 		entryFileName: "app-server.js",
 		output: (build) => {

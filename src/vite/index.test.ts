@@ -155,7 +155,7 @@ describe("appServer with no options", () => {
 		const entry = await serverEntry(
 			{
 				framework: tanstackStartAdapter(),
-				host: { name: "edge", runtimeModule: "edge-host", entryFileName: "edge.js" },
+				host: { runtimeModule: "edge-host", entryFileName: "edge.js" },
 				app: "./src/app.ts",
 			},
 			{ plugins: [frameworkPlugin("react-router:virtual-modules")], projectRoot: project },

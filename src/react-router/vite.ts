@@ -10,7 +10,6 @@ import { CONTENT_TYPES } from "./content-types.js";
  */
 export function reactRouterAdapter(): FrameworkBuild {
 	return {
-		name: "react-router",
 		serverModule: "virtual:react-router/server-build",
 		runtimeModule: "@ngrok/app-server/react-router",
 		contentTypes: CONTENT_TYPES,

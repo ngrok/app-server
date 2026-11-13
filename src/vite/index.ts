@@ -81,8 +81,6 @@ const UNCAPTURED_HEADERS = new Set([
  * `reactRouterAdapter()` from `@ngrok/app-server/react-router/vite`.
  */
 export type FrameworkBuild = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The Vite ID of the framework's server module, such as `virtual:react-router/server-build`. */
 	serverModule: string;
 	/**
@@ -116,8 +114,6 @@ export type FrameworkBuild = {
  * `node()` from `@ngrok/app-server/node/vite`.
  */
 export type HostBuild = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The module whose `host` export is the run side, a `HostRuntime`. */
 	runtimeModule: string;
 	/** The file name of the server entry in the server build, such as `app-server.js`. */

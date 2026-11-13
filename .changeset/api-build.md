@@ -19,3 +19,13 @@ import type { RequestContext } from "@ngrok/app-server";
 ```
 
 `app-server serve` with a module that is not a server build still stops at startup. Its message is now `The server module is not a React Router server build.`
+
+**`FrameworkBuild` and `HostBuild` have no `name`.** No log and no error read it. Delete `name` from the object of a custom adapter. TypeScript reports each one in a typed object literal.
+
+```ts
+// Before
+appServer({ host: { name: "edge", runtimeModule: "edge-host", entryFileName: "app-server.js" } });
+
+// After
+appServer({ host: { runtimeModule: "edge-host", entryFileName: "app-server.js" } });
+```

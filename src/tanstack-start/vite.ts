@@ -11,7 +11,6 @@ import type { FrameworkBuild } from "../vite/index.js";
  */
 export function tanstackStartAdapter(): FrameworkBuild {
 	return {
-		name: "tanstack-start",
 		serverModule: "virtual:tanstack-start-server-entry",
 		runtimeModule: "@ngrok/app-server/tanstack-start",
 		// Why in the entry: Start defines `TSS_SERVER_FN_BASE` at build time, so only bundled code sees it.
