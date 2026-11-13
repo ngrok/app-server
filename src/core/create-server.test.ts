@@ -1418,22 +1418,31 @@ describe("the pipeline", () => {
 		],
 		"a plugin that gives no response": [forgetsAt["a plugin"], noAnswer],
 	};
+	/**
+	 * An app `onError` that gives no response, for each value that it returns.
+	 * An `async` handler with no last `return` gives a promise of `undefined`.
+	 */
+	const silent: Record<string, () => unknown> = {
+		undefined: () => undefined,
+		false: () => false,
+		"a promise of undefined": async () => {},
+	};
 	const unanswered = Object.keys(faultsAt).flatMap((place) =>
-		[undefined, false].map((answer) => ({ place, answer })),
+		Object.keys(silent).map((answer) => ({ place, answer })),
 	);
 	/**
-	 * The pipeline of `place` in `faultsAt`, with an app `onError` that returns
-	 * `answer`. Why the cast: the type takes a `Response` only, but an error
+	 * The pipeline of `place` in `faultsAt`, with the app `onError` of `answer`
+	 * in `silent`. Why the cast: the type takes a `Response` only, but an error
 	 * handler in JavaScript can return each value, such as `undefined` from a
 	 * handler with no last `return`.
 	 */
-	async function withSilentOnError(place: string, answer: unknown) {
+	async function withSilentOnError(place: string, answer: string) {
 		const [stages = {}] = faultsAt[place] ?? [];
 		return pipeline({
 			...stages,
 			routes: (app) => {
 				stages.routes?.(app);
-				app.onError((() => answer) as Parameters<AppServer["onError"]>[0]);
+				app.onError(silent[answer] as Parameters<AppServer["onError"]>[0]);
 			},
 		});
 	}
