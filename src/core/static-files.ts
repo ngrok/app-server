@@ -27,32 +27,38 @@ const CORE_CONTENT_TYPES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Whether a URL path names a dotfile or goes through a dot directory.
- * `/.well-known/` stays reachable.
+ * A segment that starts with a dot: one after the first segment, or a first
+ * segment that is not `.well-known`. Why an expression: a `split` makes an
+ * array and a string for each segment of each request path.
+ */
+const DOT_SEGMENT = /(?!^)\/\.|^\/\.(?!well-known(?:\/|$))/u;
+
+/**
+ * Whether a URL path, which starts with `/`, names a dotfile or goes through
+ * a dot directory, `.` and `..` included. `/.well-known/` stays reachable.
  *
  * @example
  * hasDotSegment("/assets/.private/key.json"); // => true
  * hasDotSegment("/.well-known/security.txt"); // => false
  */
 export function hasDotSegment(path: string): boolean {
-	return path
-		.split("/")
-		.some(
-			(segment, index) => segment.startsWith(".") && !(index === 1 && segment === ".well-known"),
-		);
+	return DOT_SEGMENT.test(path);
 }
 
 /**
  * Whether a decoded URL path, such as Hono's `context.req.path`, can name a
  * file of the client build. Dotfiles, paths that leave the client build, and
  * a second URL for a file, such as `/a//b` or `/a/index.html`, cannot.
+ *
+ * @example
+ * isFilePath("/docs/button"); // => true
+ * isFilePath("/docs/../.env"); // => false
  */
 export function isFilePath(path: string): boolean {
 	return (
 		path.startsWith("/") &&
 		!path.includes("\0") &&
 		!path.includes("\\") &&
-		!path.split("/").includes("..") &&
 		!path.includes("//") &&
 		!path.endsWith("/index.html") &&
 		!hasDotSegment(path)
