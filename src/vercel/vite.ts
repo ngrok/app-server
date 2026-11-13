@@ -71,7 +71,7 @@ const PAGES = "/_app-server/pages";
 /**
  * The script that finds the pages that the CDN serves. Why the source in a
  * `.ts` module: the tests of this package run the source, and Node.js runs a
- * `.ts` file with no import of its own.
+ * `.ts` file that imports no value of its own.
  */
 const PAGES_SCRIPT = fileURLToPath(
 	new URL(import.meta.url.endsWith(".ts") ? "./pages.ts" : "./vercel-pages.js", import.meta.url),
