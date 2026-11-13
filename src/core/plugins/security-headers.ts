@@ -104,6 +104,11 @@ export type ContentSecurityPolicyOptions = {
 	policy: (document: { scriptSrc: string; context: Context<AppServerEnv> }) => string;
 };
 
+/** The `script-src` source list that trusts `'self'` and each inline script with one of `hashes`. */
+function hashSources(hashes: readonly string[]): string {
+	return ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
+}
+
 /** The bytes of one nonce. Why 16: a nonce must have 128 bits or more. */
 const NONCE_BYTES = 16;
 
@@ -163,11 +168,14 @@ function randomNonce(): string {
  * });
  */
 export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions): Plugin {
-	let scriptHashes: ReadonlyMap<string, readonly string[]> = new Map();
+	/** The source list of each HTML file of the client build that has hashes, by the file's URL path. */
+	let fileSources: ReadonlyMap<string, string> = new Map();
 	return optionPlugin("contentSecurityPolicy", {
 		name: "content-security-policy",
 		setup: (info) => {
-			({ scriptHashes } = info);
+			fileSources = new Map(
+				Array.from(info.scriptHashes, ([file, hashes]) => [file, hashSources(hashes)]),
+			);
 		},
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
@@ -178,20 +186,17 @@ export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions):
 			return withHeaderHook(context, next, (headers) => {
 				// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
 				const file = context.get("staticDocument");
-				const hashes =
-					context.get("documentScriptHashes") ??
-					(file == null ? undefined : (scriptHashes.get(file) ?? []));
+				const devHashes = context.get("documentScriptHashes");
+				// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
+				const fileSource = file == null ? undefined : (fileSources.get(file) ?? "'self'");
+				const hashSource = devHashes == null ? fileSource : hashSources(devHashes);
 				if (
 					headers.has("Content-Security-Policy") ||
-					(hashes == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
+					(hashSource == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
 				) {
 					return;
 				}
-				// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
-				const scriptSrc =
-					hashes == null
-						? `'nonce-${nonce}' 'strict-dynamic'`
-						: ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
+				const scriptSrc = hashSource ?? `'nonce-${nonce}' 'strict-dynamic'`;
 				headers.set("Content-Security-Policy", oneLine(policy({ scriptSrc, context })));
 			});
 		},
