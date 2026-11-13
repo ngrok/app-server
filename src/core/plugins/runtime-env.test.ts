@@ -153,7 +153,7 @@ describe("runtimeEnv", () => {
 		await expect(response.text()).resolves.toContain("app-server-public-env");
 	});
 
-	it("keeps the ETag of a prerendered page, and answers 304 to a client that holds it", async () => {
+	it("keeps the ETag of a prerendered page, and answers 304 with no Content-Type to a client that holds it", async () => {
 		const { request } = await testServer({
 			plugins: [runtimeEnv(schema, { source: validSource }), prerendered()],
 			clientDirectory,
@@ -167,7 +167,11 @@ describe("runtimeEnv", () => {
 		await expect(page.text()).resolves.toContain("app-server-public-env");
 		expect(etag).toMatch(/^W\/"/u);
 		expect(head.headers.get("ETag")).toBe(etag);
-		expect([again.status, again.headers.get("ETag")]).toStrictEqual([304, etag]);
+		expect([
+			again.status,
+			again.headers.get("ETag"),
+			again.headers.get("Content-Type"),
+		]).toStrictEqual([304, etag, null]);
 		await expect(again.text()).resolves.toBe("");
 	});
 

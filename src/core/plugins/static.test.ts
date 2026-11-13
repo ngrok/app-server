@@ -311,14 +311,14 @@ describe("prerendered", () => {
 		expect(generated.status).toBe(200);
 	});
 
-	it("answers 304 to a matching If-None-Match", async () => {
+	it("answers 304 to a matching If-None-Match, with no body and no Content-Type", async () => {
 		const { request } = await staticServer();
 		const etag = (await request("/llms.txt")).headers.get("ETag") ?? "";
 
 		const response = await request("/llms.txt", { headers: { "If-None-Match": etag } });
 
 		expect(etag).toMatch(/^W\/"[\da-f]+-[\da-f]+"$/u);
-		expect(response.status).toBe(304);
+		expect([response.status, response.headers.get("Content-Type")]).toStrictEqual([304, null]);
 		await expect(response.text()).resolves.toBe("");
 	});
 
