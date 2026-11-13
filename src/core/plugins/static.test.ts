@@ -875,6 +875,31 @@ describe("prerendered markdownTwins", () => {
 		});
 	});
 
+	it("adds the headers where the response leaves, so the framework's response needs no copy", async () => {
+		const rendered = new Response("rendered", { headers: { "Content-Type": "text/html" } });
+		let seen: Response | undefined;
+		const watch: Plugin = {
+			name: "watch",
+			middleware: async (context, next) => {
+				await next();
+				seen = context.res;
+			},
+		};
+		const { request } = await testServer({
+			plugins: [watch, prerendered({ markdownTwins: true })],
+			clientDirectory,
+			render: async () => rendered,
+		});
+
+		const response = await request("/docs/rendered", browser);
+
+		expect(seen).toBe(rendered);
+		expect(negotiation(response)).toStrictEqual({
+			vary: "Accept",
+			link: '</docs/rendered.md>; rel="alternate"; type="text/markdown"',
+		});
+	});
+
 	it("adds no Vary: Accept and no Link for a path with no twin or for the twin's own URL", async () => {
 		const { request } = await staticServer({ markdownTwins: true });
 

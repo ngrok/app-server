@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { getPath } from "hono/utils/url";
 import { manifestKey } from "../build-manifest.js";
-import { writableHeaders } from "../header-hook.js";
+import { withHeaderHook } from "../header-hook.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
@@ -192,14 +192,6 @@ async function findTwin(
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
 
-/** Adds `Vary: Accept` to the answer for a path with a twin, so a shared cache keeps both answers. */
-function varyOnAccept(context: Context<AppServerEnv>): void {
-	const vary = withVary(context.res.headers.get("Vary"), "Accept");
-	if (vary != null) {
-		writableHeaders(context).set("Vary", vary);
-	}
-}
-
 /**
  * The percent-encoded URL path for a decoded path, so it holds no space,
  * `>`, or non-ASCII character. Why the replace: a URL removes a tab or a
@@ -212,12 +204,27 @@ function urlPath(path: string): string {
 	).pathname;
 }
 
-/** Adds a `Link` to the twin at `twinPath`, so a client that does not ask for markdown can find it. */
-function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
-	writableHeaders(context).append(
-		"Link",
-		`<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`,
-	);
+/** The later stages of a stage that adds a header hook after its answer: none. */
+async function noLaterStage(): Promise<void> {}
+
+/**
+ * Adds `Vary: Accept` to the answer for a path with a twin, so a shared
+ * cache keeps both answers. With `twinPath`, it also adds a `Link` to the
+ * twin, so a client that does not ask for markdown can find it. Why a header
+ * hook: the answer then needs no copy for the two headers.
+ */
+async function negotiate(context: Context<AppServerEnv>, twinPath?: string): Promise<void> {
+	const link =
+		twinPath == null ? undefined : `<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`;
+	await withHeaderHook(context, noLaterStage, (headers) => {
+		const vary = withVary(headers.get("Vary"), "Accept");
+		if (vary != null) {
+			headers.set("Vary", vary);
+		}
+		if (link != null) {
+			headers.append("Link", link);
+		}
+	});
 }
 
 /**
@@ -267,7 +274,7 @@ function developmentTwins(
 			return next();
 		}
 		context.res = response;
-		varyOnAccept(context);
+		await negotiate(context);
 	};
 }
 
@@ -374,10 +381,7 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					context.res = await serve(context, path, file);
 				}
 				if (twin != null) {
-					varyOnAccept(context);
-				}
-				if (twin != null && preferred == null) {
-					linkToTwin(context, twin.path);
+					await negotiate(context, preferred == null ? twin.path : undefined);
 				}
 			};
 		},
