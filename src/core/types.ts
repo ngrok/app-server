@@ -383,6 +383,12 @@ export type Plugin = {
 	 * the plugin changes nothing.
 	 */
 	etagPart?: () => string | undefined;
+	/**
+	 * Never set it. Why: each function has a `name`, so without this field the
+	 * compiler takes a Hono middleware, or a plugin factory that the app did
+	 * not call, as a plugin.
+	 */
+	call?: never;
 };
 
 /** A running listener. */

@@ -58,6 +58,28 @@ function answerError(error: Error | HTTPResponseError, context: Context<AppServe
 	return context.text("Internal Server Error", 500);
 }
 
+/**
+ * Throws for an entry of `plugins` that is not an object, so a wrong plugin
+ * list stops startup. Why: a function has no `middleware`, so the server
+ * would start and never run it. Why `unknown`: the `Plugin` type rejects
+ * these values, but a build can skip the type check, as Vite's does.
+ */
+function checkPluginObjects(plugins: readonly unknown[]): void {
+	for (const [index, plugin] of plugins.entries()) {
+		if (typeof plugin === "function") {
+			const value = plugin.name === "" ? "a function" : `the function ${plugin.name}`;
+			throw new TypeError(
+				`plugins[${index}] is ${value}, not a plugin. Call a plugin factory, such as requestId(). Put a Hono middleware in a plugin, such as { name: "auth", middleware: basicAuth() }.`,
+			);
+		}
+		if (typeof plugin !== "object" || plugin == null) {
+			throw new TypeError(
+				`plugins[${index}] is ${String(plugin)}, not a plugin. Remove it. To add a plugin on a condition, spread a list: ...(condition ? [plugin] : []).`,
+			);
+		}
+	}
+}
+
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
 const appInternals = new WeakMap<AppServer, ServerInternals>();
 
@@ -340,6 +362,7 @@ export function createServer({
 	shutdownDelayMs = 0,
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
+	checkPluginObjects(plugins);
 	checkOptionPlugins(plugins);
 	checkCount("trustedProxyHops", trustedProxyHops);
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);

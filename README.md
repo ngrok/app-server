@@ -68,7 +68,7 @@ For each app:
 
 - The app needs Node.js 26+, Vite 8.3+, and React Router 8.5+. See [Requirements](#requirements).
 - The package has ES modules only.
-- A plugin is Hono middleware, not Express middleware.
+- A plugin holds Hono middleware, not Express middleware.
 - With `defaultPlugins()`, a request body over 10 mebibytes (MiB) gets a 413, and a page URL with a trailing slash gets a 308. Change both with the options of `defaultPlugins()`.
 - The package does not support React Router `serverBundles`, and the app must serve at `/`. See [Limits](#limits).
 
@@ -291,7 +291,7 @@ The function differs from a long-lived process:
 
 A route that takes a body larger than the limit needs a higher `bodyLimit` for the whole app, because each request passes the limit before it reaches a route.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is Hono middleware plus optional hooks:
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. Two plugins of one named option, such as `defaultPlugins()` with a second `buildId()`, stop startup. One would replace the headers of the other, so the value that the app gave would be lost. Use the option. A plugin is an object with a `name`, a Hono `middleware`, and optional hooks:
 
 ```ts
 import { withHeaderHook } from "@ngrok/app-server";
@@ -307,6 +307,16 @@ const frameOptions: Plugin = {
 	onShutdown: async () => {}, // at shutdown, while the listeners drain, up to the deadline
 };
 ```
+
+A function is not a plugin. To use a Hono middleware, such as `basicAuth()` from `hono/basic-auth`, put it in a plugin:
+
+```ts
+import { basicAuth } from "hono/basic-auth";
+
+const auth: Plugin = { name: "basic-auth", middleware: basicAuth({ username, password }) };
+```
+
+If an entry of the plugin list is not an object, `createServer` stops startup with an error that names the entry and the fix. The `Plugin` type also rejects a function. A function in the list is a Hono middleware with no plugin around it, or a plugin factory that the app did not call, such as `requestId` in place of `requestId()`.
 
 A plugin that sets a header on the response uses `withHeaderHook`. The hook changes the head once, where the response leaves, after the later stages and after the code that each stage runs after `await next()`. The hook of an inner stage runs first, so an outer stage has the last word. On Node.js and Vercel, the hooks change the list of headers that the server writes, so the response needs no copy. So code after `await next()` sees the response of the later stages without the changes of their hooks. To read or change the final headers, use a hook. A hook can read `requestContext()`. A hook that throws gets the answer of the app's `onError`, as a stage that throws does. On Node.js and Vercel, a wrapper of the app's `fetch` gets the response before the hooks: a header that it sets or deletes goes out, but it does not see the headers that the hooks set. In development, Vite answers some requests itself, such as source modules and `public/` files, and sends the response before the earlier stages get it back. The hooks also run on those responses, before Vite sends the head, so each response gets the same headers in development and in production. The static stages and `streamingCompress()` also run the hooks on a view of the headers before they choose a body, so a `no-transform`, a `Content-Encoding`, or a `Content-Range` from a hook keeps the body as it is. So a hook runs two or three times for a response with gzip or a compressed copy. Each run must give the same headers, and a hook must do nothing else, such as log, count, or store a value. A view run can come before the code that a stage runs after `await next()`, and a throw in it changes nothing. A hook can `get`, `has`, `set`, `append`, and `delete` a header.
 

@@ -244,6 +244,45 @@ describe("createServer", () => {
 		);
 	});
 
+	it("stops startup for a function in the plugin list, and names the fix", () => {
+		// @ts-expect-error -- a Hono middleware is not a plugin: an object with a name holds it.
+		const bare: Plugin = basicAuth({ username: "admin", password: "secret" });
+		// @ts-expect-error -- the app must call the plugin factory.
+		const uncalled: Plugin = requestId;
+
+		expect(() => createServer({ plugins: defaultPlugins({ beforeStatic: [bare] }) })).toThrow(
+			'plugins[7] is the function basicAuth, not a plugin. Call a plugin factory, such as requestId(). Put a Hono middleware in a plugin, such as { name: "auth", middleware: basicAuth() }.',
+		);
+		expect(() => createServer({ plugins: [health(), uncalled] })).toThrow(
+			"plugins[1] is the function requestId, not a plugin.",
+		);
+		expect(() => createServer({ plugins: [(() => {}) as unknown as Plugin] })).toThrow(
+			"plugins[0] is a function, not a plugin.",
+		);
+	});
+
+	it.each([undefined, null, false, "requestId"])(
+		"stops startup for %j in the plugin list, and names the fix",
+		(value) => {
+			expect(() => createServer({ plugins: [value as unknown as Plugin] })).toThrow(
+				`plugins[0] is ${String(value)}, not a plugin. Remove it. To add a plugin on a condition, spread a list: ...(condition ? [plugin] : []).`,
+			);
+		},
+	);
+
+	it("runs a Hono middleware that a plugin holds", async () => {
+		const auth: Plugin = {
+			name: "basic-auth",
+			middleware: basicAuth({ username: "admin", password: "secret" }),
+		};
+		const { request } = await testServer({ plugins: defaultPlugins({ beforeStatic: [auth] }) });
+
+		const response = await request("/secret");
+
+		expect(response.status).toBe(401);
+		expect(response.headers.get("WWW-Authenticate")).toContain("Basic");
+	});
+
 	it("logs an unhandled error with its cause and answers 500", async () => {
 		const { request, lines } = await testServer({
 			plugins: [],
