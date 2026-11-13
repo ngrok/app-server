@@ -122,8 +122,9 @@ const NONCE_BYTES = 16;
  * Random bytes for 64 nonces. Why a pool: on Node.js, one
  * `crypto.getRandomValues` call costs more than the rest of a nonce. Each
  * nonce takes its own 16 bytes, so no two nonces share a byte. The bytes
- * that no nonce took yet stay in memory, as in the entropy cache of
- * `crypto.randomUUID()`.
+ * that no nonce took yet stay in memory. So each process that starts from a
+ * copy of that memory, such as an image of a virtual machine or a Node.js
+ * startup snapshot, gives the same next nonces, 63 at most.
  */
 const noncePool = new Uint8Array(NONCE_BYTES * 64);
 
