@@ -271,6 +271,14 @@ function errorFields(error: Error, prefix: string): Record<string, unknown> {
 }
 
 /**
+ * What a line gets in place of the fields that a `log` hook that threw was to
+ * give. Why not the fields that the hook got: the hook can redact a value.
+ */
+function hookFailure(hook: keyof LogOptions, thrown: unknown): Attributes {
+	return { "log.error": `the ${hook} hook of the log option threw: ${asError(thrown).message}` };
+}
+
+/**
  * `attributes` with each `Error` value replaced by its fields, after the
  * `change` hook. Each other attribute, such as `http.method`, wins over an
  * error field of the same name.
@@ -293,8 +301,15 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 	const entries = Object.entries(attributes);
 	for (const [key, value] of entries) {
 		if (value instanceof Error) {
-			const fields = errorFields(value, key);
-			Object.assign(flat, change == null ? fields : change({ error: value, prefix: key, fields }));
+			let fields: Attributes = errorFields(value, key);
+			if (change != null) {
+				try {
+					fields = change({ error: value, prefix: key, fields });
+				} catch (error) {
+					fields = hookFailure("error", error);
+				}
+			}
+			Object.assign(flat, fields);
 		} else {
 			flat[key] = value;
 		}
@@ -311,7 +326,8 @@ function flattenErrors(attributes: Attributes, change: LogOptions["error"]): Att
 
 /**
  * A sink that writes each line to `sink`, after it replaces each `Error`
- * value with its fields, and then runs the `attributes` hook.
+ * value with its fields, and then runs the `attributes` hook. A hook that
+ * throws does not stop the line: `log.error` takes the place of its fields.
  *
  * @example
  * hookSink(jsonSink()).log({ level: "error", message: "failed", attributes: { error: new Error("boom") } });
@@ -326,11 +342,17 @@ export function hookSink(
 			const flat = flattenErrors(line.attributes, changeError);
 			// Why keep `line` when nothing changes: a line seldom holds an error, and then it needs no copy.
 			const flatLine = flat === line.attributes ? line : { ...line, attributes: flat };
-			sink.log(
-				changeAttributes == null
-					? flatLine
-					: { ...flatLine, attributes: changeAttributes(flatLine) },
-			);
+			if (changeAttributes == null) {
+				sink.log(flatLine);
+				return;
+			}
+			let attributes: Attributes;
+			try {
+				attributes = changeAttributes(flatLine);
+			} catch (error) {
+				attributes = hookFailure("attributes", error);
+			}
+			sink.log({ ...flatLine, attributes });
 		},
 	};
 }

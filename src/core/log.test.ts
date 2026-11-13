@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import { Context } from "hono";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { flushLogs, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
+import { accessLog } from "./plugins/access-log.js";
+import { testServer } from "../test-server.js";
 import type { AppServerEnv, LogSink } from "./types.js";
 
 /** A spy on stdout that keeps each write out of the test output. */
@@ -411,6 +413,77 @@ describe("hookSink", () => {
 		hookSink(sink).log({ level: "info", message: "request", attributes });
 
 		expect(lines[0]).toBe(attributes);
+	});
+});
+
+describe("a log hook that throws", () => {
+	it("answers 500 for a route that throws, and writes log.error in place of the error fields", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			options: {
+				log: {
+					error: () => {
+						throw new TypeError("no code");
+					},
+				},
+			},
+			render: async () => {
+				throw new Error("the database is down");
+			},
+		});
+
+		const response = await request("/boom");
+
+		expect(response.status).toBe(500);
+		await expect(response.text()).resolves.toBe("Internal Server Error");
+		expect(lines).toStrictEqual([
+			{
+				level: "error",
+				message: "unhandled error",
+				attributes: {
+					"http.request_id": undefined,
+					"http.method": "GET",
+					"http.url_details.path": "/boom",
+					"log.error": "the error hook of the log option threw: no code",
+				},
+			},
+			{
+				level: "error",
+				message: "request",
+				attributes: expect.objectContaining({ "http.status_code": 500 }),
+			},
+		]);
+	});
+
+	it("answers the request, and writes log.error in place of the attributes of each line", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			options: {
+				log: {
+					attributes: () => {
+						throw new TypeError("no referer");
+					},
+				},
+			},
+			routes: (app) => {
+				app.get("/logs", (context) => {
+					context.get("logger").info("loading", { "usr.email": "a@example.com" });
+					return context.text("ok");
+				});
+			},
+		});
+
+		const response = await request("/logs");
+
+		expect(response.status).toBe(200);
+		await expect(response.text()).resolves.toBe("ok");
+		const attributes = {
+			"log.error": "the attributes hook of the log option threw: no referer",
+		};
+		expect(lines).toStrictEqual([
+			{ level: "info", message: "loading", attributes },
+			{ level: "info", message: "request", attributes },
+		]);
 	});
 });
 

@@ -804,6 +804,8 @@ createServer({
 });
 ```
 
+A hook that throws stops neither the line nor the request. The line goes out with `log.error`, which gives the hook and its message, in place of the fields that the hook was to give: each attribute for `attributes`, and the fields of that error for `error`. Why not the fields that the hook got: a hook can redact a value.
+
 `requestContext()` gives the request ID, the logger, the CSP nonce, and the client address of the request that runs. It works with each framework. It gives `undefined` outside a server request:
 
 ```ts
