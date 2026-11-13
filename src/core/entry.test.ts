@@ -452,6 +452,22 @@ describe("createEntry", () => {
 		expect(setup).toHaveBeenCalledTimes(1);
 	});
 
+	it("gives the app the bindings of each request through fetch, before and after the setup ends", async () => {
+		const app = createServer({ plugins: [], logger: recordingLogger([]) });
+		app.get("/address", (context) => context.text(context.get("clientAddress") ?? "none"));
+		const entry = createEntry({
+			app,
+			host: { name: "serverless", files: nodeHost.files },
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+		const address = async (remoteAddress: string) =>
+			(await entry.fetch(new Request("http://localhost/address"), { remoteAddress })).text();
+
+		await expect(address("203.0.113.1")).resolves.toBe("203.0.113.1");
+		await expect(address("203.0.113.2")).resolves.toBe("203.0.113.2");
+	});
+
 	it("runs each setup again on the next request after a setup fails", async () => {
 		const setup = vi.fn<() => void>().mockImplementationOnce(() => {
 			throw new Error("config server down");
