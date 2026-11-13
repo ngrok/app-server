@@ -373,7 +373,7 @@ export type Plugin = {
 	 */
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
-	onShutdown?: () => Promise<void>;
+	onShutdown?: () => void | Promise<void>;
 	/**
 	 * A value that this plugin's changes to a response depend on, such as the
 	 * env values it writes into each document. The server adds it to the ETag

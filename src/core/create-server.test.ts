@@ -750,6 +750,33 @@ describe("createServer", () => {
 		]);
 	});
 
+	it("runs an onShutdown that returns no promise one time, and logs one that throws", async () => {
+		const onShutdown = vi.fn<() => void>();
+		const { internals, lines } = await testServer({
+			plugins: [
+				{ name: "timer", onShutdown },
+				{
+					name: "cache",
+					onShutdown: () => {
+						throw new Error("no cleanup");
+					},
+				},
+			],
+		});
+
+		await internals.stopPlugins();
+		await internals.stopPlugins();
+
+		expect(onShutdown).toHaveBeenCalledTimes(1);
+		expect(lines).toMatchObject([
+			{
+				level: "error",
+				message: "plugin shutdown failed",
+				attributes: { "app_server.plugin": "cache", "error.message": "no cleanup" },
+			},
+		]);
+	});
+
 	it("logs the drain deadline and the access line of a response that it cuts, before `stopped`", async () => {
 		const { internals, framework, lines } = await testServer({
 			plugins: defaultPlugins(),
