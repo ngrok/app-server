@@ -7,12 +7,15 @@ import { createLogger } from "vite";
 const entry = join(import.meta.dirname, "entry.js");
 const logger = createLogger("info");
 
-/** Vite's logger method for `level`, which also writes each message as a JSON line for the check. */
+/**
+ * Vite's logger method for `level`, which also writes each message as a JSON line for the check.
+ * Why Vite's line first: the check reads the server's URL from the first line that has it.
+ */
 function recorded(level) {
 	return (message, options) => {
+		logger[level](message, options);
 		const text = stripVTControlCharacters(message);
 		process.stdout.write(`${JSON.stringify({ level, message: "vite logger", text })}\n`);
-		logger[level](message, options);
 	};
 }
 
@@ -22,8 +25,14 @@ export default {
 	logLevel: "info",
 	// Why: the check sees which lines `start` gives to Vite's logger.
 	customLogger: { ...logger, info: recorded("info"), warn: recorded("warn") },
-	// Why: a WebSocket proxy route, so the check sees whether Vite adds an `upgrade` listener.
-	server: { proxy: { "/proxied": { target: "ws://127.0.0.1:9", ws: true } } },
+	server: {
+		// Why: a WebSocket proxy route, so the check sees whether Vite adds an `upgrade` listener.
+		proxy: { "/proxied": { target: "ws://127.0.0.1:9", ws: true } },
+		// Why: `start` serves HTTP only, and the check sees that it says so and keeps Vite's host check.
+		https: {},
+		// Why only with `BROWSER`: the check gives a script. A run by hand opens no browser.
+		open: process.env.BROWSER != null,
+	},
 	plugins: [
 		{
 			name: "@ngrok/app-server",
@@ -45,6 +54,8 @@ export default {
 					server.httpServer?.once("listening", () => {
 						const upgrades = server.httpServer?.listenerCount("upgrade");
 						process.stdout.write(`${JSON.stringify({ message: "upgrade listeners", upgrades })}\n`);
+						const urls = server.resolvedUrls?.local;
+						process.stdout.write(`${JSON.stringify({ message: "resolved URLs", urls })}\n`);
 					});
 				},
 			},

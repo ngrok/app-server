@@ -103,7 +103,8 @@ async function isFreeOnWildcard(port: number): Promise<boolean> {
 	return true;
 }
 
-function boundPort(server: Server, fallback: number): number {
+/** The port that `server` listens on, or `fallback` for a server with no TCP address. */
+export function boundPort(server: Server, fallback: number): number {
 	const address = server.address();
 	return typeof address === "object" && address != null ? address.port : fallback;
 }

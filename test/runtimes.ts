@@ -408,15 +408,16 @@ async function checkOwnRejectionListener(runtime: string): Promise<void> {
 }
 
 /**
- * `app-server start` on Node: it moves on from a port in use as `vite dev` does, a Vite plugin
- * gets the HTTP server's events, and Ctrl+C stops the server at once, though the app left a timer.
+ * `app-server start` on Node: it moves on from a port in use and opens the browser as `vite dev`
+ * does, a Vite plugin gets the HTTP server's events and URLs, and Ctrl+C stops the server at once,
+ * though the app left a timer.
  */
 async function checkStart(): Promise<void> {
 	const held = await holdPort();
 	const { child, url, lines } = startServer(
 		"node",
 		[cliPath, "start", "--port", String(held.port)],
-		{ cwd: devDirectory, env: { HOST: "127.0.0.1" } },
+		{ cwd: devDirectory, env: { HOST: "127.0.0.1", BROWSER: join(devDirectory, "open.js") } },
 	);
 	try {
 		const base = await url;
@@ -432,6 +433,26 @@ async function checkStart(): Promise<void> {
 		);
 		const page = await fetch(new URL("/", base));
 		assert.equal(await page.text(), "rendered");
+		assert.ok(
+			lines.some(
+				(line) =>
+					line.message === "vite logger" &&
+					line.level === "warn" &&
+					String(line.text).includes("ignores `server.https`"),
+			),
+			"`start` warns that it ignores `server.https`",
+		);
+		const foreign = await request(new URL("/@vite/client", base).href, { Host: "evil.example" });
+		foreign.resume();
+		assert.equal(
+			foreign.statusCode,
+			403,
+			"Vite checks the `Host` header, though `server.https` is set",
+		);
+		await waitFor(
+			async () => lines.some((line) => line.message === "browser opened" && line.url === base),
+			"`start` opens the browser for `server.open`",
+		);
 		// Why: the `exit` event can come before the last stdout line.
 		const stdoutEnded = new Promise<void>((resolve) => {
 			child.stdout.once("end", resolve);
@@ -444,6 +465,11 @@ async function checkStart(): Promise<void> {
 			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
 			["vite plugin saw listening", "vite plugin saw close"],
 			"a Vite plugin gets the HTTP server's events",
+		);
+		assert.deepEqual(
+			lines.filter((line) => line.message === "resolved URLs").map((line) => line.urls),
+			[[base]],
+			"a Vite plugin reads `server.resolvedUrls` in its `listening` listener",
 		);
 		assert.deepEqual(
 			lines.filter((line) => line.message === "upgrade listeners").map((line) => line.upgrades),
