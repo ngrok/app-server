@@ -167,6 +167,9 @@ export type Lifecycle = {
 	onStop: (stop: () => Promise<void>) => void;
 };
 
+/** A host stream that compresses a byte stream. */
+export type CompressStream = (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+
 /** The run side of a host adapter: where the server runs. */
 export type HostRuntime = {
 	/** The files of the client build at `clientDirectory`, a file path or a `file:` URL. */
@@ -182,12 +185,12 @@ export type HostRuntime = {
 	 * Gzips a byte stream and flushes after each chunk. Without it and
 	 * `brotli`, `streamingCompress` sends each response as it is.
 	 */
-	gzip?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	gzip?: CompressStream;
 	/**
 	 * Compresses a byte stream with brotli and flushes after each chunk.
 	 * `streamingCompress` uses it for a client that prefers brotli to gzip.
 	 */
-	brotli?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	brotli?: CompressStream;
 	/**
 	 * How the host stops the server that the entry's `start` starts. A host
 	 * with `listeners` must give it. Without it, no code can shut the server
@@ -326,9 +329,10 @@ export type SetupInfo = {
 	/** Content types of the framework's files that `mime` does not know, by file extension. */
 	contentTypes: Readonly<Record<string, string>>;
 	/** The host's gzip stream, when it has one. */
-	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	gzip: CompressStream | undefined;
 	/** The host's brotli stream, when it has one. */
-	brotli?: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	// Why optional, and `gzip` is not: a patch release added it, so a setup object from before it still type-checks.
+	brotli?: CompressStream | undefined;
 	/** The server's logger. Its lines carry no request fields. */
 	logger: RequestLogger;
 } & (
