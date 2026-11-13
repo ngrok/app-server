@@ -1717,7 +1717,7 @@ describe("the pipeline", () => {
 		expect(receivers).toStrictEqual([undefined, undefined]);
 	});
 
-	it("adds the etagPart of each plugin that a request passed to the ETag of a file, in order", async () => {
+	it("adds the etagPart of each plugin that a request passed to the ETag of a file, and the order of the plugins changes the ETag", async () => {
 		const part = (value: string | undefined): Plugin => ({
 			name: `part-${value}`,
 			etagPart: () => value,
