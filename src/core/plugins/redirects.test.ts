@@ -44,6 +44,12 @@ describe("redirects", () => {
 		});
 	});
 
+	it("redirects a HEAD request as it does a GET", async () => {
+		await expect(
+			redirected([{ from: "/old", to: "/new" }], "/old?ref=ad", { method: "HEAD" }),
+		).resolves.toStrictEqual({ status: 301, location: "/new?ref=ad" });
+	});
+
 	it("adds the query string to a target that has its own", async () => {
 		await expect(
 			redirected([{ from: "/old", to: "/new?tab=1" }], "/old?ref=ad"),

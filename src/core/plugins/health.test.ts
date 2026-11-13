@@ -64,6 +64,21 @@ describe("health", () => {
 		expect((await throwing.request("/readyz")).status).toBe(503);
 	});
 
+	it("answers a HEAD probe, and hands a POST to a probe path to the next stage", async () => {
+		// Why a failing check: the 503 of the probe is not the 200 of the framework.
+		const { request } = await testServer({ plugins: [health({ ready: () => false })] });
+
+		const live = await request("/livez", { method: "HEAD" });
+		const ready = await request("/readyz", { method: "HEAD" });
+		const posted = await Promise.all(
+			["/livez", "/readyz"].map(async (path) => (await request(path, { method: "POST" })).text()),
+		);
+
+		expect([live.status, live.headers.get("Cache-Control")]).toStrictEqual([200, "no-store"]);
+		expect(ready.status).toBe(503);
+		expect(posted).toStrictEqual(["rendered", "rendered"]);
+	});
+
 	it("logs one line when the app check starts to fail, and one when it passes again", async () => {
 		let up = false;
 		const { request, lines } = await testServer({
