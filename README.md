@@ -908,6 +908,8 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 ```
 
+`heartbeatMs` sets the milliseconds between two heartbeats. It must be an integer from 1 to 2,147,483,647, or `eventStream()` throws a `RangeError`.
+
 For other long work, stop on `shutdownSignal()`.
 
 ## Testing

@@ -50,6 +50,26 @@ describe("eventStream", () => {
 		expect(new TextDecoder().decode(chunk?.value)).toBe(": ping\n\n");
 	});
 
+	// Why: a timer turns a delay that it cannot hold into 1 ms, so the stream would send a ping each millisecond.
+	it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+		"refuses a heartbeatMs of %s with a message that names it",
+		(heartbeatMs) => {
+			expect(() => eventStream({ heartbeatMs }, () => {})).toThrow(
+				new RangeError(
+					`eventStream needs a heartbeatMs that is an integer from 1 to 2147483647, not ${heartbeatMs}.`,
+				),
+			);
+		},
+	);
+
+	it.each([1, 2_147_483_647])("takes a heartbeatMs of %s", async (heartbeatMs) => {
+		const response = eventStream({ heartbeatMs }, ({ send }) => {
+			send({ data: "x" });
+		});
+
+		await expect(readAll(response)).resolves.toBe("data: x\n\n");
+	});
+
 	it("aborts the producer's signal and ends the stream when the request aborts", async () => {
 		const request = new AbortController();
 		let producerSignal: AbortSignal | undefined;
