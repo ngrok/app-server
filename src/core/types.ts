@@ -297,9 +297,10 @@ export type AppServerEnv = {
 		logAttributes?: Readonly<Record<string, unknown>>;
 		/**
 		 * Whether a stage that the request passed changes the bytes of an HTML
-		 * body, as `runtimeEnv` does. The stage sets it before its `next()`.
-		 * The static stages then send an HTML file as it is on disk, not its
-		 * compressed copy, so the stage can change it.
+		 * body. The stage sets it before its `next()`. The static stages then
+		 * send an HTML file as it is on disk: not its compressed copy, and with
+		 * no `Content-Length`, no ETag, and no 304. `runtimeEnv` does not set
+		 * it: its pages keep their ETag.
 		 */
 		rewritesHtml?: boolean;
 	};
