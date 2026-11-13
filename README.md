@@ -941,7 +941,7 @@ response.headers.get("Content-Security-Policy"); // => "script-src 'self' 'sha25
 await server.close();
 ```
 
-`withRequestContext(values, work)` runs `work` as in a server request, so `requestContext()` and `cspNonce()` give `values`. Use it to test a render with no mock. With no `logger`, the log lines go nowhere.
+`withRequestContext(values, work)` runs `work` as in a server request, so `requestContext()` and `cspNonce()` give `values`, also in a test environment with a `document`, such as jsdom or happy-dom. Use it to test a render with no mock. With no `logger`, the log lines go nowhere.
 
 ```tsx
 import { withRequestContext } from "@ngrok/app-server/testing";
