@@ -138,10 +138,12 @@ export function buildId({
 				const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
 				// Why remove the build of an upstream API: the client must read only this app's build.
 				const before = response.get("Server-Timing");
-				const metrics = [
-					...otherMetrics(before),
-					...(isStamped && timing != null ? [timing] : []),
-				].join(", ");
+				const stamp = isStamped && timing != null ? timing : "";
+				// Why no parse with no header: most responses have none, so they have no metric to keep.
+				const metrics =
+					before == null
+						? stamp
+						: [...otherMetrics(before), ...(stamp === "" ? [] : [stamp])].join(", ");
 				if (metrics === "") {
 					response.delete("Server-Timing");
 				} else if (metrics !== before) {

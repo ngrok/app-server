@@ -10,6 +10,12 @@ export function withVary(vary: string | null, name: string): string | undefined 
 	if (vary == null || vary.trim() === "") {
 		return name;
 	}
-	const values = new Set(vary.split(",").map((value) => value.trim().toLowerCase()));
-	return values.has(name.toLowerCase()) || values.has("*") ? undefined : `${vary}, ${name}`;
+	const lower = name.toLowerCase();
+	for (const part of vary.split(",")) {
+		const value = part.trim().toLowerCase();
+		if (value === lower || value === "*") {
+			return undefined;
+		}
+	}
+	return `${vary}, ${name}`;
 }
