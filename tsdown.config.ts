@@ -13,7 +13,9 @@ export default defineConfig({
 		],
 	},
 	minify: false,
-	sourcemap: true,
+	// Why no maps: the output is not minified, so a stack trace reads as it is. Maps would be more
+	// than half of the package.
+	sourcemap: false,
 	target: "ES2025",
 	tsconfig: "tsconfig.json",
 	fixedExtension: false,

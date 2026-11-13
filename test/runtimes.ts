@@ -3,7 +3,15 @@
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+} from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -800,6 +808,11 @@ async function checkTanstackStartDev(runtime: string): Promise<void> {
 	}
 }
 
+assert.deepEqual(
+	readdirSync(dirname(cliPath)).filter((name) => name.endsWith(".map")),
+	[],
+	"the package has no source maps, which would be more than half of its size",
+);
 buildFixtures();
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
