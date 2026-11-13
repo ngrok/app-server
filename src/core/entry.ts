@@ -149,6 +149,7 @@ export function createEntry({
 		return preparing;
 	};
 	let development: FrameworkRuntime | undefined;
+	let developmentReady = false;
 	return {
 		protocol: ENTRY_PROTOCOL,
 		app,
@@ -180,16 +181,21 @@ export function createEntry({
 		},
 		fetchDev: async (request, bindings, devServer) => {
 			development ??= framework("development");
-			await internals.prepare({
-				...(await setupInfo(development)),
-				mode: "development",
-				devServer,
-				prerenderedPaths: development.prerenderedPaths,
-				capturedHeaders: new Map(),
-				scriptHashes: new Map(),
-				// Why none: development has no client build, and Vite's HMR updates an open tab after each edit.
-				buildId: undefined,
-			});
+			// Why only until it succeeds: `prepare` reads the info of its first call. After a failure,
+			// the next request runs each `setup` again.
+			if (!developmentReady) {
+				await internals.prepare({
+					...(await setupInfo(development)),
+					mode: "development",
+					devServer,
+					prerenderedPaths: development.prerenderedPaths,
+					capturedHeaders: new Map(),
+					scriptHashes: new Map(),
+					// Why none: development has no client build, and Vite's HMR updates an open tab after each edit.
+					buildId: undefined,
+				});
+				developmentReady = true;
+			}
 			return app.fetch(request, { ...bindings, framework: development });
 		},
 		async *staticPages() {

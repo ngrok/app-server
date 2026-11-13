@@ -98,6 +98,45 @@ describe("createEntry", () => {
 		await expect(response.text()).resolves.toBe("# Twin");
 	});
 
+	it("asks the host for the files one time for the development requests of an entry", async () => {
+		const files = vi.fn<HostRuntime["files"]>(nodeHost.files);
+		const entry = createEntry({
+			app: createServer({ plugins: [] }),
+			host: { ...nodeHost, files },
+			framework: () => stubFramework(),
+		});
+
+		for (const path of ["/", "/about", "/docs"]) {
+			const response = await entry.fetchDev(
+				new Request(`http://localhost${path}`),
+				{},
+				async (_, next) => next(),
+			);
+			await response.text();
+		}
+
+		expect(files).toHaveBeenCalledTimes(1);
+	});
+
+	it("runs each setup again on the next development request after a setup fails", async () => {
+		const setup = vi.fn<() => void>().mockImplementationOnce(() => {
+			throw new Error("config server down");
+		});
+		const entry = createEntry({
+			app: createServer({ plugins: [{ name: "remote-config", setup }] }),
+			host: nodeHost,
+			framework: () => stubFramework(),
+		});
+		const request = async () =>
+			entry.fetchDev(new Request("http://localhost/"), {}, async (_, next) => next());
+
+		await expect(request()).rejects.toThrow("config server down");
+		const response = await request();
+
+		await expect(response.text()).resolves.toBe("rendered");
+		expect(setup).toHaveBeenCalledTimes(2);
+	});
+
 	it("sends the build ID of the build manifest in production, and none in development", async () => {
 		const { host, fetch } = testHost();
 		const entry = (): ReturnType<typeof createEntry> =>
