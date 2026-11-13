@@ -109,7 +109,11 @@ export type ByteRange = { start: number; end: number };
  * `\`.
  */
 export type StaticFiles = {
-	/** What is at `path`, or `undefined` when nothing is there. */
+	/**
+	 * What is at `path`, or `undefined` when nothing is there. `/` gives the
+	 * directory of the client build. If `/` gives `undefined`, the production
+	 * server warns at start that it found no client build.
+	 */
 	stat: (path: string) => Promise<FileInfo | undefined>;
 	/**
 	 * The bytes of the file at `path`. With `range`, only the bytes from
@@ -331,7 +335,6 @@ export type SetupInfo = {
 	/** The host's gzip stream, when it has one. */
 	gzip: CompressStream | undefined;
 	/** The host's brotli stream, when it has one. */
-	// Why optional, and `gzip` is not: a patch release added it, so a setup object from before it still type-checks.
 	brotli?: CompressStream | undefined;
 	/** The server's logger. Its lines carry no request fields. */
 	logger: RequestLogger;
