@@ -146,9 +146,9 @@ export function accessLog({
 		const start = href.indexOf("/", href.indexOf("//") + 2);
 		if (start !== -1 && !href.includes("#", start)) {
 			const query = href.indexOf("?", start);
-			// Why no parse for a path alone: on Node.js and Bun, a request URL is the `href` of a parsed
-			// URL, or one that the listener checked holds no character that a parse changes. So its path
-			// is the `pathname`. Deno gives the URL as the client sent it, and the line shows that path.
+			// Why no parse for a path alone: on Node.js and Bun, a parse does not change the path of a
+			// request URL that parses, so that path is the `pathname`. Deno gives each URL as the client
+			// sent it, as Node.js and Bun do for a URL that does not parse, and the line shows that path.
 			if (query === -1) {
 				return href.slice(start);
 			}

@@ -66,7 +66,7 @@ const PARSE_CHANGES = /[^!$&-;=@-[\]_a-z|~]|\/\.\.?(?:\/|$)/u;
 
 /**
  * Whether `path`, the path that Hono gives for the URL `href`, is the
- * `pathname` of that URL. Why not always: Hono decodes each escape of the
+ * `pathname` of that URL. Why not always: Hono decodes most escapes of the
  * path, and Deno gives the URL as the client sent it, with no parse.
  */
 function isPathname(path: string, href: string): boolean {
