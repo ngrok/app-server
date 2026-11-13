@@ -347,7 +347,7 @@ function resolveLogScript(module: string): string {
 }
 
 /** What a process loads on Node: no module that only another command or a rare build uses. */
-function checkLoadedModules(): void {
+async function checkLoadedModules(): Promise<void> {
 	const plugin = pathToFileURL(join(import.meta.dirname, "../dist/vite.js")).href;
 	const { specifiers }: { specifiers: string[] } = JSON.parse(
 		execFileSync("node", ["--input-type=module", "-e", resolveLogScript(plugin)], {
@@ -360,7 +360,31 @@ function checkLoadedModules(): void {
 		[],
 		"the import of the Vite plugin does not load the tracer, which only a build that removes files uses",
 	);
-	process.stdout.write("ok node loaded modules\n");
+
+	// Why the React Router app: its build holds its own copy of the server, as each build from the
+	// `appServer` plugin does.
+	const { child, lines, url } = startServer(
+		"node",
+		["--input-type=module", "-e", resolveLogScript(pathToFileURL(cliPath).href), "serve"],
+		{ cwd: reactRouterDirectory },
+	);
+	try {
+		await url;
+		const resolved = (): string[] | undefined => {
+			const logged = lines.find((line) => line.message === "resolved")?.specifiers;
+			return Array.isArray(logged) ? logged.map(String) : undefined;
+		};
+		await waitFor(async () => resolved() != null, "`serve` returns after the server listens");
+		assert.deepEqual(
+			resolved()?.filter((specifier) => /^@?hono(?:\/|$)/u.test(specifier)),
+			[],
+			"`serve` loads no server of the CLI's copy for a build that has its own",
+		);
+		await stopCleanly(child, "the React Router app under the script");
+		process.stdout.write("ok node loaded modules\n");
+	} finally {
+		child.kill("SIGKILL");
+	}
 }
 
 /** The first chunk of a response body, and the whole body. */
@@ -736,7 +760,7 @@ for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
 	if (runtime === "node") {
 		await checkStart();
-		checkLoadedModules();
+		await checkLoadedModules();
 	}
 	await checkReactRouter(runtime);
 	await checkTanstackStart(runtime);

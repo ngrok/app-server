@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import { DEFAULT_ASSETS_PATH, readBuildManifest } from "./build-manifest.js";
 import { serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
+import { ENTRY_PROTOCOL } from "./entry-protocol.js";
 import { asError } from "./log.js";
 import { abortShutdownSignal } from "./shutdown.js";
 import { staticPages } from "./static-pages.js";
@@ -16,9 +17,6 @@ import type {
 	Mode,
 	SetupInfo,
 } from "./types.js";
-
-/** The version of the contract between the CLI and the `appServer` export of a build. */
-export const ENTRY_PROTOCOL = 2;
 
 /**
  * What a server build exports as `appServer`. The CLI calls it, so the copy
@@ -222,19 +220,4 @@ export function createEntry({
 		stopPlugins: internals.stopPlugins,
 		abortShutdownSignal,
 	};
-}
-
-/**
- * Whether a value is an entry of this protocol version.
- *
- * @example
- * isAppServerEntry((await import("./build/server/app-server.js")).appServer); // => true
- */
-export function isAppServerEntry(value: unknown): value is AppServerEntry {
-	return (
-		typeof value === "object" &&
-		value != null &&
-		"protocol" in value &&
-		value.protocol === ENTRY_PROTOCOL
-	);
 }
