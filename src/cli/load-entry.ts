@@ -28,17 +28,16 @@ export async function loadEntry(build: unknown): Promise<AppServerEntry> {
 	}
 	// Why dynamic imports: a build from the `appServer` plugin runs on its own copy of this package,
 	// so only a plain build needs the server of this copy.
-	const [{ createServer }, { createEntry }, { host }, { runtime }] = await Promise.all([
-		import("../core/create-server.js"),
-		import("../core/entry.js"),
-		import("../node/index.js"),
-		import("../react-router/index.js"),
-	]);
+	const [{ createServer }, { createEntry }, { host }, { runtime }, { environmentOptions }] =
+		await Promise.all([
+			import("../core/create-server.js"),
+			import("../core/entry.js"),
+			import("../node/index.js"),
+			import("../react-router/index.js"),
+			import("../vite/entry-source.js"),
+		]);
 	const entry = createEntry({
-		app: createServer({
-			trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1",
-			trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0),
-		}),
+		app: createServer(environmentOptions(process.env)),
 		host,
 		framework: (mode) => runtime(build, { mode }),
 	});
