@@ -5,12 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
+import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
 import type { AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import { withHeaderHook } from "./header-hook.js";
+import { ResponseEdge } from "./response-edge.js";
 import { renewShutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
 import { buildId } from "./plugins/build-id.js";
@@ -18,17 +21,28 @@ import { health } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
 import { requestId } from "./plugins/request-id.js";
 import { runtimeEnv } from "./plugins/runtime-env.js";
+import { prerendered as prerenderedPlugin } from "./plugins/static.js";
 import { tcp } from "../node/tcp.js";
 import { productionSetup, renderedFramework, stubFramework, testServer } from "../test-server.js";
+import type { LoggedLine } from "../test-server.js";
 import type { FrameworkRuntime, Listener, LogSink, Plugin, StartedListener } from "./types.js";
 
 /** Starts an app on a free local port with the default plugins. */
 async function listening(
 	render: FrameworkRuntime["fetch"],
 	plugins: Plugin[] = defaultPlugins(),
-	options: { trustForwardedProto?: boolean } = {},
+	{
+		logger = { log: () => {} },
+		clientDirectory,
+		routes,
+		...options
+	}: {
+		trustForwardedProto?: boolean;
+		logger?: LogSink;
+		clientDirectory?: string;
+		routes?: (app: AppServer) => void;
+	} = {},
 ) {
-	const logger: LogSink = { log: () => {} };
 	const app = createServer({
 		...options,
 		plugins,
@@ -36,11 +50,14 @@ async function listening(
 		listeners: [tcp({ port: 0, host: "127.0.0.1" })],
 		shutdownDeadlineMs: 2_000,
 	});
+	routes?.(app);
 	const internals = serverInternals(app);
 	if (internals == null) {
 		throw new Error("createServer returned an app with no internals.");
 	}
-	await internals.prepare(await productionSetup({ logger }));
+	await internals.prepare(
+		await productionSetup({ logger, ...(clientDirectory == null ? {} : { clientDirectory }) }),
+	);
 	return internals.listen(stubFramework(render), []);
 }
 
@@ -822,5 +839,579 @@ describe("defaultPlugins", () => {
 		expect(defaultPlugins({ beforeStatic: [{ name: "constructor" }] })).toContainEqual({
 			name: "constructor",
 		});
+	});
+});
+
+describe("the pipeline", () => {
+	const about = `<!doctype html><title>about</title>${"<p>x</p>".repeat(300)}`;
+	const script = "console.log(1);".repeat(200);
+	const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-pipeline-"));
+	mkdirSync(join(clientDirectory, "about"));
+	mkdirSync(join(clientDirectory, "assets"));
+	writeFileSync(join(clientDirectory, "about/index.html"), about);
+	writeFileSync(join(clientDirectory, "assets/app-abc.js"), script);
+	writeFileSync(
+		join(clientDirectory, ".app-server.json"),
+		JSON.stringify({
+			buildId: "build-123",
+			prerendered: ["/about"],
+			headers: {},
+			scriptHashes: {},
+		}),
+	);
+
+	afterAll(() => {
+		rmSync(clientDirectory, { recursive: true, force: true });
+	});
+
+	type Stages = Omit<Parameters<typeof testServer>[0], "plugins"> & { plugins?: Plugin[] };
+
+	/**
+	 * A server with `requestId()`, `accessLog()`, and a plugin that records what
+	 * it sees after its `next()`: the status, and the message of `c.error`. The
+	 * `plugins` come after them.
+	 */
+	async function pipeline({ plugins = [], ...rest }: Stages = {}) {
+		const seen: string[] = [];
+		const spy: Plugin = {
+			name: "spy",
+			middleware: async (context, next) => {
+				await next();
+				seen.push(
+					context.error == null
+						? String(context.res.status)
+						: `${context.res.status} ${context.error.message}`,
+				);
+			},
+		};
+		const server = await testServer({
+			...rest,
+			plugins: [requestId(), accessLog(), spy, ...plugins],
+		});
+		return { ...server, seen };
+	}
+
+	/** The message of each log line, with its status or its error message. */
+	const summary = (lines: LoggedLine[]) =>
+		lines.map(({ message, attributes }) => [
+			message,
+			attributes["http.status_code"] ?? attributes["error.message"],
+		]);
+
+	/** A pipeline whose stage at each place calls `fail`. */
+	const throwsAt: Record<string, (fail: () => never) => Stages> = {
+		"a plugin before next()": (fail) => ({
+			plugins: [{ name: "thrower", middleware: async () => fail() }],
+		}),
+		"a plugin that is not async": (fail) => ({
+			plugins: [{ name: "thrower", middleware: () => fail() }],
+		}),
+		"a plugin after next()": (fail) => ({
+			plugins: [
+				{
+					name: "thrower",
+					middleware: async (_context, next) => {
+						await next();
+						fail();
+					},
+				},
+			],
+		}),
+		"a route": (fail) => ({
+			routes: (app) => {
+				app.get("/", () => fail());
+			},
+		}),
+		"the framework": (fail) => ({ render: async () => fail() }),
+	};
+
+	const thrown: [what: string, value: unknown, message: string][] = [
+		["a string", "boom", "A non-Error value was thrown: boom"],
+		["null", null, "A non-Error value was thrown: null"],
+		["an Error", new Error("bang"), "bang"],
+	];
+
+	it.each(
+		thrown.flatMap(([what, value, message]) =>
+			Object.keys(throwsAt).map((place) => ({ what, value, message, place })),
+		),
+	)(
+		"answers 500 for $what that $place throws, logs it, and shows it to each earlier plugin",
+		async ({ value, message, place }) => {
+			const { request, lines, seen } = await pipeline(
+				throwsAt[place]?.(() => {
+					// oxlint-disable-next-line typescript/only-throw-error -- the test throws a value that is not an Error on purpose.
+					throw value;
+				}),
+			);
+
+			const response = await request("/", { headers: { "X-Request-Id": "abc-123" } });
+
+			expect([response.status, await response.text()]).toStrictEqual([
+				500,
+				"Internal Server Error",
+			]);
+			expect(response.headers.get("X-Request-Id")).toBe("abc-123");
+			expect(seen).toStrictEqual([`500 ${message}`]);
+			expect(summary(lines)).toStrictEqual([
+				["unhandled error", message],
+				["request", 500],
+			]);
+		},
+	);
+
+	const exceptions: [what: string, make: () => Error][] = [
+		["an HTTPException", () => new HTTPException(418, { message: "teapot" })],
+		[
+			"an HTTPException of another copy of Hono",
+			() =>
+				Object.assign(new Error("teapot"), {
+					getResponse: () => new Response("teapot", { status: 418 }),
+				}),
+		],
+	];
+
+	it.each(
+		exceptions.flatMap(([what, make]) =>
+			["a plugin before next()", "a plugin after next()", "a route"].map((place) => ({
+				what,
+				make,
+				place,
+			})),
+		),
+	)(
+		"answers $what that $place throws with its own response, and logs no error",
+		async ({ make, place }) => {
+			const { request, lines, seen } = await pipeline(
+				throwsAt[place]?.(() => {
+					throw make();
+				}),
+			);
+
+			const response = await request("/");
+
+			expect([response.status, await response.text()]).toStrictEqual([418, "teapot"]);
+			expect(seen).toStrictEqual(["418 teapot"]);
+			expect(summary(lines)).toStrictEqual([["request", 418]]);
+		},
+	);
+
+	it.each([
+		["an Error", new Error("down"), "down"],
+		["a string", "down", "A non-Error value was thrown: down"],
+	])(
+		"answers %s that a plugin throws with the app's onError, and logs no error",
+		async (_, value, message) => {
+			const { request, lines, seen } = await pipeline({
+				...throwsAt["a plugin before next()"]?.(() => {
+					// oxlint-disable-next-line typescript/only-throw-error -- the test throws a value that is not an Error on purpose.
+					throw value;
+				}),
+				routes: (app) => {
+					app.onError(async (error, context) => context.json({ handled: error.message }, 503));
+				},
+			});
+
+			const response = await request("/");
+
+			expect([response.status, await response.json()]).toStrictEqual([503, { handled: message }]);
+			expect(seen).toStrictEqual([`503 ${message}`]);
+			expect(summary(lines)).toStrictEqual([["request", 503]]);
+		},
+	);
+
+	it("rejects when the app's onError throws", async () => {
+		const { request, lines, seen } = await pipeline({
+			plugins: [
+				{
+					name: "thrower",
+					middleware: async () => {
+						throw new Error("down");
+					},
+				},
+			],
+			routes: (app) => {
+				app.onError(() => {
+					throw new Error("handler failed");
+				});
+			},
+		});
+
+		await expect(request("/")).rejects.toThrow("handler failed");
+		expect(seen).toStrictEqual([]);
+		expect(lines).toStrictEqual([]);
+	});
+
+	it("shows an earlier plugin the response of the later stages before a header hook throws", async () => {
+		const { request, seen } = await pipeline({
+			plugins: [
+				{
+					name: "throws-in-hook",
+					middleware: async (context, next) =>
+						withHeaderHook(context, next, () => {
+							throw new Error("hook failed");
+						}),
+				},
+			],
+		});
+
+		const response = await request("/");
+
+		expect(response.status).toBe(500);
+		expect(seen).toStrictEqual(["200"]);
+	});
+
+	it("stops at a plugin that answers, and runs no later stage", async () => {
+		const render = vi.fn<FrameworkRuntime["fetch"]>(renderedFramework);
+		const { request, lines, seen } = await pipeline({
+			plugins: [{ name: "short", middleware: async (context) => context.text("short", 202) }],
+			render,
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([202, "short"]);
+		expect(render).toHaveBeenCalledTimes(0);
+		expect(seen).toStrictEqual(["202"]);
+		expect(summary(lines)).toStrictEqual([["request", 202]]);
+	});
+
+	it("answers 500 for a second next() in a plugin, and runs the later stages one time", async () => {
+		const render = vi.fn<FrameworkRuntime["fetch"]>(renderedFramework);
+		const { request, lines, seen } = await pipeline({
+			plugins: [
+				{
+					name: "twice",
+					middleware: async (_context, next) => {
+						await next();
+						await next();
+					},
+				},
+			],
+			render,
+		});
+
+		const response = await request("/");
+		await response.text();
+
+		expect(response.status).toBe(500);
+		expect(render).toHaveBeenCalledTimes(1);
+		expect(seen).toStrictEqual(["500 next() called multiple times"]);
+		expect(summary(lines)).toStrictEqual([
+			["unhandled error", "next() called multiple times"],
+			["request", 500],
+		]);
+	});
+
+	it("sends the response that a plugin sets after next(), in place of the answer of a later plugin", async () => {
+		const { request, seen } = await pipeline({
+			plugins: [
+				{
+					name: "replaces",
+					middleware: async (context, next) => {
+						await next();
+						context.res = new Response("replaced", { status: 201 });
+					},
+				},
+				{ name: "short", middleware: async (context) => context.text("short", 202) },
+			],
+		});
+
+		const response = await request("/");
+
+		expect([response.status, await response.text()]).toStrictEqual([201, "replaced"]);
+		expect(seen).toStrictEqual(["201"]);
+	});
+
+	it("runs the setup of a plugin with no middleware, and passes each request on", async () => {
+		const setup = vi.fn<NonNullable<Plugin["setup"]>>();
+		const { request, seen } = await pipeline({ plugins: [{ name: "bare", setup }] });
+
+		await expect((await request("/")).text()).resolves.toBe("rendered");
+		expect(setup).toHaveBeenCalledTimes(1);
+		expect(seen).toStrictEqual(["200"]);
+	});
+
+	it("runs the app's own middleware and route after the plugins", async () => {
+		const { request, seen } = await pipeline({
+			routes: (app) => {
+				app.use("/hi", async (context, next) => {
+					await next();
+					context.header("X-App", "1");
+				});
+				app.get("/hi", (context) => context.text("hi"));
+			},
+		});
+
+		const response = await request("/hi");
+
+		expect([response.status, await response.text()]).toStrictEqual([200, "hi"]);
+		expect(response.headers.get("X-App")).toBe("1");
+		expect(seen).toStrictEqual(["200"]);
+	});
+
+	it("answers a route of a sub-app, and an error there with the sub-app's own onError", async () => {
+		const api = new Hono();
+		api.onError(async (error, context) => context.text(`api: ${error.message}`, 502));
+		api.get("/ok", (context) => context.json({ ok: true }));
+		api.get("/fails", () => {
+			throw new Error("down");
+		});
+		const { request, lines, seen } = await pipeline({
+			routes: (app) => {
+				app.route("/api", api);
+			},
+		});
+
+		const ok = await request("/api/ok");
+		const failed = await request("/api/fails");
+
+		expect([ok.status, await ok.json()]).toStrictEqual([200, { ok: true }]);
+		expect([failed.status, await failed.text()]).toStrictEqual([502, "api: down"]);
+		expect(seen).toStrictEqual(["200", "502 down"]);
+		expect(summary(lines)).toStrictEqual([
+			["request", 200],
+			["request", 502],
+		]);
+	});
+
+	it("runs a plugin after the static stage only for a request that the static stage passes on", async () => {
+		const late: Plugin = {
+			name: "late",
+			middleware: async (context, next) => {
+				await next();
+				context.header("X-Late", "1");
+			},
+		};
+		const { request } = await pipeline({ plugins: [prerenderedPlugin(), late], clientDirectory });
+
+		expect((await request("/page")).headers.get("X-Late")).toBe("1");
+		expect((await request("/about")).headers.get("X-Late")).toBeNull();
+	});
+
+	it.each([
+		["no plugins", []],
+		["a plugin", [requestId()]],
+	])(
+		"answers Hono's 404 for a path with no route before `prepare`, with %s",
+		async (_, plugins) => {
+			const app = createServer({ plugins, logger: { log: () => {} } });
+
+			const response = await app.request("/missing");
+
+			expect([response.status, await response.text()]).toStrictEqual([404, "404 Not Found"]);
+		},
+	);
+
+	it("answers HEAD with the headers of GET and no body, for a rendered and a prerendered page", async () => {
+		const { request, lines } = await testServer({ plugins: defaultPlugins(), clientDirectory });
+		const headers = { "X-Request-Id": "abc-123" };
+
+		for (const path of ["/page", "/about"]) {
+			const get = await request(path, { headers });
+			const head = await request(path, { method: "HEAD", headers });
+
+			expect([head.status, [...head.headers]]).toStrictEqual([get.status, [...get.headers]]);
+			await expect(head.text()).resolves.toBe("");
+			await get.text();
+		}
+		expect(summary(lines)).toStrictEqual(Array.from({ length: 4 }, () => ["request", 200]));
+	});
+
+	it("gives the body of a POST to the framework through the default plugins", async () => {
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			render: async (incoming) => new Response(await incoming.text()),
+		});
+
+		const response = await request("/page", { method: "POST", body: "hello" });
+
+		await expect(response.text()).resolves.toBe("hello");
+	});
+
+	it("adds the etagPart of each plugin that a request passed to the ETag of a file, in order", async () => {
+		const part = (value: string | undefined): Plugin => ({
+			name: `part-${value}`,
+			etagPart: () => value,
+		});
+		const passes: Plugin = {
+			name: "passes",
+			etagPart: () => "two",
+			middleware: async (_context, next) => next(),
+		};
+		const etag = async (plugins: Plugin[]) =>
+			(await (await testServer({ plugins, clientDirectory })).request("/about")).headers.get(
+				"ETag",
+			);
+
+		const oneTwo = await etag([part("one"), part(undefined), passes, prerenderedPlugin()]);
+		const one = await etag([part("one"), prerenderedPlugin()]);
+
+		await expect(etag([part("one"), part("two"), prerenderedPlugin()])).resolves.toBe(oneTwo);
+		await expect(etag([part("two"), part("one"), prerenderedPlugin()])).resolves.not.toBe(oneTwo);
+		await expect(etag([part("one"), prerenderedPlugin(), part("two")])).resolves.toBe(one);
+		await expect(etag([prerenderedPlugin()])).resolves.not.toBe(one);
+	});
+
+	const withEdge: { what: string; stages: Stages; answer: [number, string]; logged: unknown[] }[] =
+		[
+			{ what: "the framework", stages: {}, answer: [200, "rendered"], logged: [["request", 200]] },
+			{
+				what: "a plugin that answers",
+				stages: {
+					plugins: [{ name: "short", middleware: async (context) => context.text("short", 202) }],
+				},
+				answer: [202, "short"],
+				logged: [["request", 202]],
+			},
+			{
+				what: "a string that a plugin throws",
+				stages:
+					throwsAt["a plugin before next()"]?.(() => {
+						// oxlint-disable-next-line no-throw-literal, typescript/only-throw-error -- the test throws a string on purpose.
+						throw "boom";
+					}) ?? {},
+				answer: [500, "Internal Server Error"],
+				logged: [
+					["unhandled error", "A non-Error value was thrown: boom"],
+					["request", 500],
+				],
+			},
+			{
+				what: "null that the framework throws",
+				stages:
+					throwsAt["the framework"]?.(() => {
+						// oxlint-disable-next-line no-throw-literal, typescript/only-throw-error -- the test throws null on purpose.
+						throw null;
+					}) ?? {},
+				answer: [500, "Internal Server Error"],
+				logged: [
+					["unhandled error", "A non-Error value was thrown: null"],
+					["request", 500],
+				],
+			},
+			{
+				what: "an HTTPException that a route throws",
+				stages:
+					throwsAt["a route"]?.(() => {
+						throw new HTTPException(418, { message: "teapot" });
+					}) ?? {},
+				answer: [418, "teapot"],
+				logged: [["request", 418]],
+			},
+		];
+
+	it.each(withEdge)(
+		"gives a listener with an edge the answer and the head for $what",
+		async ({ stages, answer, logged }) => {
+			const { app, framework, lines } = await pipeline(stages);
+			const edge = new ResponseEdge();
+
+			const response = await app.fetch(
+				new Request("http://localhost/", { headers: { "X-Request-Id": "abc-123" } }),
+				{ framework, edge },
+			);
+			const head = edge.headersFor(response) ?? [];
+			const text = await response.text();
+			edge.close(response.status, false, head);
+
+			expect([response.status, text]).toStrictEqual(answer);
+			expect(head.slice(head.indexOf("x-request-id"))).toStrictEqual(["x-request-id", "abc-123"]);
+			expect(summary(lines)).toStrictEqual(logged);
+		},
+	);
+
+	it("answers each kind of request through the Node listener, with one access line for each", async () => {
+		const lines: LoggedLine[] = [];
+		const html = `<!doctype html><html><body>${"<p>hello</p>".repeat(400)}</body></html>`;
+		const server = await listening(
+			async (incoming) =>
+				new Response(incoming.method === "POST" ? await incoming.text() : html, {
+					headers: { "Content-Type": "text/html; charset=utf-8" },
+				}),
+			defaultPlugins(),
+			{
+				trustForwardedProto: true,
+				clientDirectory,
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+				routes: (app) => {
+					app.get("/throws", () => {
+						// oxlint-disable-next-line no-throw-literal, typescript/only-throw-error -- the test throws a string on purpose.
+						throw "boom";
+					});
+				},
+			},
+		);
+		/** The status, the body, and the headers that show which stage answered. */
+		const answer = async (path: string, init: RequestInit = {}) => {
+			const response = await fetch(new URL(path, server.urls[0]), { redirect: "manual", ...init });
+			return [
+				response.status,
+				await response.text(),
+				...["Content-Encoding", "Cache-Control", "Location", "Strict-Transport-Security"].map(
+					(name) => response.headers.get(name),
+				),
+			];
+		};
+		const encoded = (encoding: string): RequestInit => ({
+			headers: { "Accept-Encoding": encoding },
+		});
+		const privately = "private, no-cache";
+
+		const answers = [
+			await answer("/page", encoded("identity")),
+			await answer("/page", encoded("br")),
+			await answer("/page", encoded("gzip")),
+			await answer("/page", { method: "HEAD", ...encoded("identity") }),
+			await answer("/page", { method: "POST", body: "hello" }),
+			await answer("/about", encoded("identity")),
+			await answer("/about/", encoded("identity")),
+			await answer("/assets/app-abc.js", encoded("br, gzip")),
+			await answer("/assets/missing.js"),
+			await answer("/livez"),
+			await answer("/readyz"),
+			await answer("/throws"),
+			await answer("/page?x=1", { headers: { "X-Forwarded-Proto": "https" } }),
+			await answer("/.env", encoded("identity")),
+		];
+
+		expect(answers).toStrictEqual([
+			[200, html, null, privately, null, null],
+			[200, html, "br", privately, null, null],
+			[200, html, "gzip", privately, null, null],
+			[200, "", null, privately, null, null],
+			[200, "hello", null, privately, null, null],
+			[200, about, null, "public, max-age=0, must-revalidate", null, null],
+			[308, "", null, null, "/about", null],
+			[200, script, "br", "public, max-age=31536000, immutable", null, null],
+			[404, "Not Found", null, "no-store", null, null],
+			[200, "ok", null, "no-store", null, null],
+			[200, "ok", null, "no-store", null, null],
+			[500, "Internal Server Error", null, null, null, null],
+			[200, html, "gzip", privately, null, "max-age=31536000"],
+			[200, html, null, privately, null, null],
+		]);
+		// Why a count: a line goes out when its response closes, which can be after the next request.
+		const counts = () => {
+			const count: Record<string, number> = {};
+			for (const [message, detail] of summary(lines)) {
+				const line = `${String(message)} ${String(detail)}`;
+				count[line] = (count[line] ?? 0) + 1;
+			}
+			return count;
+		};
+		await expect.poll(counts).toStrictEqual({
+			"listening undefined": 1,
+			"request 200": 9,
+			"request 308": 1,
+			"request 404": 1,
+			"request 500": 1,
+			"unhandled error A non-Error value was thrown: boom": 1,
+		});
+		await server.shutdown();
 	});
 });
