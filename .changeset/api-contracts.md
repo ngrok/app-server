@@ -30,3 +30,9 @@ export const host: HostRuntime = { files, listeners: () => [tcp()], lifecycle };
 // After
 export const host: HostRuntime = { files, listeners: [tcp()], lifecycle };
 ```
+
+**`@ngrok/app-server` no longer exports `PUBLIC_ENV_SCRIPT_ID`, `RunningServer`, and `FrameworkRuntimeFactory`.** No public function used the two types. Browser code could not import the constant, because the import pulled the server into the client bundle.
+
+- For `PUBLIC_ENV_SCRIPT_ID`, write the ID: `document.getElementById("app-server-public-env")`.
+- For `FrameworkRuntimeFactory`, declare the function: `runtime(serverModule: unknown, options: { mode: Mode }): FrameworkRuntime`. Add the fields of your `runtimeOptions` to `options`.
+- `RunningServer` has no replacement.

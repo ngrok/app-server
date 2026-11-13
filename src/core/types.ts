@@ -92,12 +92,6 @@ export type FrameworkRuntime = {
 	contentTypes?: Readonly<Record<string, string>>;
 };
 
-/** Makes the run side of a framework adapter from the framework's server module. */
-export type FrameworkRuntimeFactory = (
-	serverModule: unknown,
-	info: { mode: Mode },
-) => FrameworkRuntime;
-
 /** What a host knows about a file under the client build. */
 export type FileInfo = {
 	kind: "file" | "directory";

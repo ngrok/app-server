@@ -127,7 +127,7 @@ const appInternals = new WeakMap<AppServer, ServerInternals>();
 export type AppServer = Hono<AppServerEnv>;
 
 /** A server that listens. */
-export type RunningServer = {
+type RunningServer = {
 	/** The URL of each listener. */
 	urls: readonly string[];
 	/**
