@@ -119,9 +119,10 @@ export function createEntry({
 		const runtime = framework("production");
 		const shared = await setupInfo(runtime);
 		const snapshot = await shared.files.snapshot?.();
+		// Why before `keptFiles`: no request reads the manifest, so its bytes must not stay in memory.
+		const manifest = await readBuildManifest(snapshot ?? shared.files);
 		// Why only with a snapshot: it promises that the client build does not change while the server runs.
 		const files = snapshot == null ? shared.files : keptFiles(snapshot);
-		const manifest = await readBuildManifest(files);
 		const info: SetupInfo = {
 			...shared,
 			files,

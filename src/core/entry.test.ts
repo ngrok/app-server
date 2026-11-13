@@ -11,7 +11,7 @@ import { buildId } from "./plugins/build-id.js";
 import { prerendered } from "./plugins/static.js";
 import { requestId } from "./plugins/request-id.js";
 import { requestContext } from "./request-context.js";
-import type { FetchHandler, HostRuntime, Listener, LogSink } from "./types.js";
+import type { FetchHandler, HostRuntime, Listener, LogSink, StaticFiles } from "./types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-entry-"));
 writeFileSync(
@@ -189,6 +189,32 @@ describe("createEntry", () => {
 		expect(lines).toContain(
 			`prerendered paths with no file ${JSON.stringify({ "app_server.missing_paths": ["/gone"] })}`,
 		);
+	});
+
+	it("reads the build manifest with no range, as a file that it does not keep in memory", async () => {
+		const opened: unknown[] = [];
+		const recording = (files: StaticFiles): StaticFiles => {
+			const { snapshot } = files;
+			return {
+				stat: files.stat,
+				open: async (path, range) => {
+					opened.push([path, range]);
+					return files.open(path, range);
+				},
+				...(snapshot == null ? {} : { snapshot: async () => recording(await snapshot()) }),
+			};
+		};
+		const { host } = testHost();
+		const entry = createEntry({
+			app: createServer({ plugins: [], logger: recordingLogger([]) }),
+			host: { ...host, files: (directory) => recording(host.files(directory)) },
+			clientDirectory,
+			framework: () => ({ name: "stub", fetch: renderedFramework }),
+		});
+
+		await entry.start();
+
+		expect(opened).toStrictEqual([["/.app-server.json", undefined]]);
 	});
 
 	it("serves the client build as it was at start", async () => {
