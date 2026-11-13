@@ -1,8 +1,24 @@
-import { get } from "node:http";
+import { Agent, get } from "node:http";
 import type { IncomingMessage } from "node:http";
+import { text } from "node:stream/consumers";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { heldStream } from "../test-server.js";
 import { listenerUrl } from "./runtimes/listen-options.js";
 import { parsePort, tcp } from "./tcp.js";
+
+/** The drain deadline of the tests that stop a listener with an open request. */
+const DEADLINE_MS = 2_000;
+
+/** Sends a GET on a keep-alive connection, and gives the response when its head comes. */
+async function request(url: string): Promise<IncomingMessage> {
+	const agent = new Agent({ keepAlive: true });
+	onTestFinished(() => {
+		agent.destroy();
+	});
+	return new Promise((resolve, reject) => {
+		get(url, { agent }, resolve).once("error", reject);
+	});
+}
 
 describe("parsePort", () => {
 	it("reads the ends of the port range", () => {
@@ -49,12 +65,47 @@ describe("tcp", () => {
 		);
 		onTestFinished(async () => started.stop({ deadlineMs: 0 }));
 
-		const response = await new Promise<IncomingMessage>((resolve, reject) => {
-			get(started.url, resolve).once("error", reject);
-		});
+		const response = await request(started.url);
 		response.resume();
 
 		expect(response.statusCode).toBe(200);
 		expect(response.headers["keep-alive"]).toBe("timeout=620");
+	});
+
+	it("ends the drain with the response of a request in flight, which says Connection: close", async () => {
+		const entered = Promise.withResolvers<undefined>();
+		const answer = Promise.withResolvers<Response>();
+		const started = await tcp({ port: 0, host: "127.0.0.1" }).start(async () => {
+			entered.resolve(undefined);
+			return answer.promise;
+		});
+		const response = request(started.url);
+		await entered.promise;
+
+		const begin = performance.now();
+		const stopped = started.stop({ deadlineMs: DEADLINE_MS });
+		answer.resolve(new Response("ok"));
+		await stopped;
+
+		expect(performance.now() - begin).toBeLessThan(DEADLINE_MS / 2);
+		expect((await response).headers.connection).toBe("close");
+		await expect(text(await response)).resolves.toBe("ok");
+	});
+
+	it("ends the drain with a response that was open when the drain began", async () => {
+		const { response: held, release } = heldStream("first,");
+		const started = await tcp({ port: 0, host: "127.0.0.1" }).start(async () => held);
+		const response = await request(started.url);
+		await new Promise((resolve) => {
+			response.once("readable", resolve);
+		});
+
+		const begin = performance.now();
+		const stopped = started.stop({ deadlineMs: DEADLINE_MS });
+		release();
+		await stopped;
+
+		expect(performance.now() - begin).toBeLessThan(DEADLINE_MS / 2);
+		await expect(text(response)).resolves.toBe("first,rest");
 	});
 });

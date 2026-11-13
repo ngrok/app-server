@@ -851,7 +851,7 @@ export default createServer({
 
 `livePath` and `readyPath` move the probes. `defaultPlugins({ health: false })` turns them off, such as for an app with its own `/livez` route.
 
-On a stop signal, a load balancer removes the server some seconds later. Without a delay, the requests that it sends in that time fail. With `shutdownDelayMs`, the server answers 503 on `/readyz` and serves the other requests for that time. Then it drains. In Kubernetes, set `terminationGracePeriodSeconds` to more than the delay plus `shutdownDeadlineMs`:
+On a stop signal, a load balancer removes the server some seconds later. Without a delay, the requests that it sends in that time fail. With `shutdownDelayMs`, the server answers 503 on `/readyz` and serves the other requests for that time. Then it drains: it takes no new connection, closes each idle connection, and gives each open request until `shutdownDeadlineMs` to finish. The drain ends when the last response ends. On Node.js, each response that starts in the drain says `Connection: close`, so the client sends no next request on a connection that the drain closes. In Kubernetes, set `terminationGracePeriodSeconds` to more than the delay plus `shutdownDeadlineMs`:
 
 ```yaml
 spec:

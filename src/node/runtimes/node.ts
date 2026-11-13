@@ -12,7 +12,11 @@ export async function listen(
 	fetch: FetchHandler,
 	options: ListenOptions,
 ): Promise<StartedListener> {
-	const listener = requestListener(fetch, { trustForwardedProto: options.trustForwardedProto });
+	let draining = false;
+	const listener = requestListener(fetch, {
+		trustForwardedProto: options.trustForwardedProto,
+		isDraining: () => draining,
+	});
 	// Why above the idle timeout: the headers timer runs on a new connection until its first
 	// request comes, and a proxy can open a connection before it has a request for it.
 	const headersTimeout = options.idleTimeoutMs + 1_000;
@@ -40,6 +44,11 @@ export async function listen(
 		url: listenerUrl(options.hostname, port),
 		stop: async ({ deadlineMs }) =>
 			new Promise<void>((resolve, reject) => {
+				draining = true;
+				// Why: `close()` closes only the connections that are idle now. With this timeout,
+				// Node closes each other connection 1 ms after its last response ends.
+				server.keepAliveTimeout = 1;
+				server.keepAliveTimeoutBuffer = 0;
 				const deadline = setTimeout(() => {
 					server.closeAllConnections();
 				}, deadlineMs);
@@ -51,7 +60,6 @@ export async function listen(
 						reject(error);
 					}
 				});
-				server.closeIdleConnections();
 			}),
 	};
 }

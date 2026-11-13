@@ -599,6 +599,7 @@ describe("createServer", () => {
 			}
 		}
 
+		const begin = performance.now();
 		const shutdown = server.shutdown();
 		let rest = "";
 		for (
@@ -610,6 +611,8 @@ describe("createServer", () => {
 		}
 		await shutdown;
 
+		// Why half: `listening` sets a drain deadline of 2 s.
+		expect(performance.now() - begin).toBeLessThan(1_000);
 		expect(first).toBe("data: hello\n\n");
 		expect(rest).toBe("");
 		expect(onShutdown).toHaveBeenCalledTimes(1);

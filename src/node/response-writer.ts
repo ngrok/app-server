@@ -316,15 +316,20 @@ const writesResponses = !("Bun" in globalThis) && !("Deno" in globalThis);
  * the listener.
  * With `trustForwardedProto`, each request takes its scheme from
  * `X-Forwarded-Proto`, as the server option does.
+ * While `isDraining` gives `true`, each response that the listener writes
+ * says `Connection: close`, and Node closes its connection after it.
  *
  * @example
  * http.createServer(requestListener(async (request, bindings) => app.fetch(request, bindings)));
  */
 export function requestListener(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
-	{ trustForwardedProto = false }: { trustForwardedProto?: boolean } = {},
+	{
+		trustForwardedProto = false,
+		isDraining,
+	}: { trustForwardedProto?: boolean; isDraining?: () => boolean } = {},
 ): ReturnType<typeof getRequestListener> {
-	const listener = listenerOf(answer);
+	const listener = listenerOf(answer, isDraining);
 	return trustForwardedProto
 		? async (incoming, outgoing) => {
 				if (incoming instanceof IncomingMessage) {
@@ -338,6 +343,7 @@ export function requestListener(
 /** The listener of {@link requestListener}, with no scheme from `X-Forwarded-Proto`. */
 function listenerOf(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
+	isDraining: (() => boolean) | undefined,
 ): ReturnType<typeof getRequestListener> {
 	return keepGlobalResponse(() =>
 		getRequestListener(async (request, { incoming, outgoing }) => {
@@ -368,6 +374,12 @@ function listenerOf(
 				// Why 500 with no headers: `@hono/node-server` answers a failed request with one.
 				edge.close(500, false, []);
 				throw error;
+			}
+			// Why here and not when the request comes: the head of a request that was in flight
+			// when the drain began goes out now. The client then sends no next request on a
+			// connection that the drain closes.
+			if (isDraining?.() === true) {
+				outgoing.shouldKeepAlive = false;
 			}
 			await writeResponse(response, outgoing, edge);
 			return ALREADY_SENT;
