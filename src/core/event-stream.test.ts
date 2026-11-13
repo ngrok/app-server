@@ -18,6 +18,33 @@ async function readAll(response: Response): Promise<string> {
 	return new TextDecoder().decode(await response.arrayBuffer());
 }
 
+/**
+ * A stream whose producer never ends, with its sink and a reader of its body, so the test sends
+ * each event.
+ */
+async function openStream(): Promise<
+	EventStreamSink & { reader: ReadableStreamDefaultReader<Uint8Array> }
+> {
+	const sink = Promise.withResolvers<EventStreamSink>();
+	const response = eventStream({}, async (given) => {
+		sink.resolve(given);
+		return new Promise(() => {});
+	});
+	if (response.body == null) {
+		throw new Error("The event stream has no body.");
+	}
+	return { ...(await sink.promise), reader: response.body.getReader() };
+}
+
+/** Resolves in the next turn of the event loop. */
+async function nextTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		setImmediate(resolve);
+	});
+}
+
+const LIMIT_MESSAGE = "The event stream stopped: more than 1 MiB of events waited for the client.";
+
 /** Runs a full garbage collection. Why this way: Vitest starts no worker with `--expose-gc`. */
 function collectGarbage(): void {
 	setFlagsFromString("--expose-gc");
@@ -143,27 +170,92 @@ describe("eventStream", () => {
 		await expect(readAll(response)).rejects.toThrow("upstream failed");
 	});
 
-	it("keeps 1 MiB of events for a client that does not read, and fails the stream for more", async () => {
-		const produced = Promise.withResolvers<undefined>();
-		let producerSignal: AbortSignal | undefined;
-		let abortedAtLimit: boolean | undefined;
-		const response = eventStream({}, ({ send, signal }) => {
-			producerSignal = signal;
-			// Why 8 less: `data: ` and the two line ends add 8 bytes, so this event is 1 MiB.
-			send({ data: "x".repeat(1024 * 1024 - 8) });
-			abortedAtLimit = signal.aborted;
+	it("stops a stream when more than 1 MiB of events waited for the client for a turn of the event loop", async () => {
+		vi.useFakeTimers();
+		const { send, signal, reader } = await openStream();
+		send({ data: "" });
+		// The client takes the first event, and then it reads no more.
+		await reader.read();
+		// Why 8 less: `data: ` and the two line ends add 8 bytes, so 1 MiB waits.
+		send({ data: "x".repeat(1024 * 1024 - 8) });
+		await vi.advanceTimersByTimeAsync(1);
+		// These events put the bytes that wait over 1 MiB, so the client gets a turn to read them.
+		send({ data: "" });
+		send({ data: "" });
+		const abortedInTheSameTurn = signal.aborted;
+		await vi.advanceTimersByTimeAsync(1);
+		send({ data: "" });
+
+		const failure: unknown = await reader.read().catch((error: unknown) => error);
+
+		expect(abortedInTheSameTurn).toBe(false);
+		expect(failure).toStrictEqual(new Error(LIMIT_MESSAGE));
+		expect(signal.reason).toBe(failure);
+	});
+
+	it("sends each event of a burst of more than 1 MiB to a client that reads", async () => {
+		const clientRead = Promise.withResolvers<undefined>();
+		const response = eventStream({}, async ({ send }) => {
 			send({ data: "" });
-			produced.resolve(undefined);
+			await clientRead.promise;
+			for (let count = 0; count < 1_100; count += 1) {
+				send({ data: "x".repeat(1024 - 8) });
+			}
 		});
-		await produced.promise;
+		const reader = response.body?.getReader();
+		await reader?.read();
+		clientRead.resolve(undefined);
+		let bytes = 0;
 
-		const failure: unknown = await readAll(response).catch((error: unknown) => error);
+		for (let chunk = await reader?.read(); chunk?.done === false; chunk = await reader?.read()) {
+			bytes += chunk.value.byteLength;
+		}
 
-		expect(abortedAtLimit).toBe(false);
-		expect(failure).toStrictEqual(
-			new Error("The event stream stopped: more than 1 MiB of events waited for the client."),
-		);
-		expect(producerSignal?.reason).toBe(failure);
+		expect(bytes).toBe(1_100 * 1024);
+	});
+
+	it("gives the client a new turn when the events that wait go back to 1 MiB", async () => {
+		vi.useFakeTimers();
+		const { send, signal, reader } = await openStream();
+		send({ data: "" });
+		await reader.read();
+		// Three events wait: 8 bytes, 1 MiB less 8 bytes, and 8 bytes. They are 8 bytes over the limit.
+		send({ data: "" });
+		send({ data: "x".repeat(1024 * 1024 - 16) });
+		send({ data: "" });
+		await vi.advanceTimersByTimeAsync(1);
+		// The client reads 8 bytes, so 1 MiB waits.
+		await reader.read();
+		send({ data: "" });
+		const abortedInTheNewTurn = signal.aborted;
+		await vi.advanceTimersByTimeAsync(1);
+		send({ data: "" });
+
+		expect(abortedInTheNewTurn).toBe(false);
+		expect(signal.aborted).toBe(true);
+	});
+
+	// Why: a body that fails before its first read becomes a 500 on Node.js, and it stops the server on Bun 1.3.
+	it("does not stop a stream that no one reads yet, and gives the first reader a turn", async () => {
+		vi.useFakeTimers();
+		const { send, signal, reader } = await openStream();
+		send({ data: "" });
+		send({ data: "x".repeat(2 * 1024 * 1024) });
+		await vi.advanceTimersByTimeAsync(1);
+		send({ data: "" });
+		await vi.advanceTimersByTimeAsync(1);
+		send({ data: "" });
+		const abortedWithNoReader = signal.aborted;
+		// The client takes the first event, and more than 1 MiB still waits.
+		await reader.read();
+		send({ data: "" });
+		const abortedAtTheFirstRead = signal.aborted;
+		await vi.advanceTimersByTimeAsync(1);
+		send({ data: "" });
+
+		expect(abortedWithNoReader).toBe(false);
+		expect(abortedAtTheFirstRead).toBe(false);
+		expect(signal.aborted).toBe(true);
 	});
 
 	it("closes the connection of a client that stops reading", async () => {
@@ -179,9 +271,7 @@ describe("eventStream", () => {
 					while (!signal.aborted) {
 						send({ data });
 						// Why a turn of the event loop: the listener writes each event to the socket.
-						await new Promise((resolve) => {
-							setImmediate(resolve);
-						});
+						await nextTurn();
 					}
 				}),
 			options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })] },
@@ -197,9 +287,7 @@ describe("eventStream", () => {
 		// The client sends its request, and reads nothing.
 		socket.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
-		await expect(reason.promise).resolves.toStrictEqual(
-			new Error("The event stream stopped: more than 1 MiB of events waited for the client."),
-		);
+		await expect(reason.promise).resolves.toStrictEqual(new Error(LIMIT_MESSAGE));
 		// Why read now: a socket that does not read does not see that the server closed it.
 		const received: Buffer[] = [];
 		socket.on("data", (chunk: Buffer) => {
@@ -297,13 +385,20 @@ describe("eventStream", () => {
 		},
 		{
 			end: "the client does not read",
-			produce: async ({ send }) => {
-				// Why two events: the client can take the first one before it waits.
-				send({ data: "x".repeat(1024 * 1024) });
-				send({ data: "x".repeat(1024 * 1024) });
+			produce: async ({ send, signal }) => {
+				// Why 100 events at most: when the stream does not stop, the test must not fill the memory.
+				for (let count = 0; count < 100 && !signal.aborted; count += 1) {
+					send({ data: "x".repeat(1024 * 1024) });
+					await nextTurn();
+				}
 				return new Promise(() => {});
 			},
-			finish: async (response) => readAll(response).catch(() => {}),
+			finish: async (response) => {
+				const reader = response.body?.getReader();
+				// The client takes the first event, and then it reads no more.
+				await reader?.read();
+				await reader?.closed.catch(() => {});
+			},
 		},
 	])(
 		"frees a listener that the producer left on the signal, after $end",
@@ -320,9 +415,7 @@ describe("eventStream", () => {
 			};
 			const listener = await streamed();
 			// Why a turn of the event loop: a `WeakRef` keeps its target until the turn that made it ends.
-			await new Promise((resolve) => {
-				setImmediate(resolve);
-			});
+			await nextTurn();
 
 			collectGarbage();
 

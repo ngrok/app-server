@@ -13,7 +13,7 @@ export type EventStreamSink = {
 	send: (event: ServerSentEvent) => void;
 	/**
 	 * Aborts while the stream is open: when the client disconnects, when the server shuts down, or
-	 * when more than 1 MiB of events wait for the client. Stop the work on it.
+	 * when the stream stops because the client did not read its events. Stop the work on it.
 	 */
 	signal: AbortSignal;
 };
@@ -36,8 +36,9 @@ export type EventStreamOptions = {
 const MAX_TIMER_MS = 2_147_483_647;
 
 /**
- * The most bytes of events that wait for a client. Why 1 MiB: a burst of 1,000 events of 1 KiB
- * fits, and a client that does not read cannot fill the memory.
+ * The most bytes of events that wait for a client for longer than a turn of the event loop. Why
+ * 1 MiB: a slow client can be 1,000 events of 1 KiB behind, and a client that does not read cannot
+ * fill the memory.
  */
 const MAX_QUEUED_BYTES = 1024 * 1024;
 
@@ -84,9 +85,11 @@ function formatEvent({ data, event, id }: ServerSentEvent): string {
  * stream closes when `produce` resolves.
  *
  * `send` does not wait for the client. The events that the client has not
- * read wait in memory, up to 1 MiB. When more wait, the stream stops with an
- * error, and `signal` aborts with that error as its `reason`. On Bun, the
- * runtime reads the stream ahead of the client, so the limit does not apply.
+ * read wait in memory. When more than 1 MiB still waits after a turn of the
+ * event loop, the next event or heartbeat stops the stream with an error,
+ * and `signal` aborts with that error as its `reason`. On Bun, the runtime
+ * reads the stream ahead of the client, so this does not stop a client that
+ * does not read.
  *
  * @example
  * export async function loader({ request }: Route.LoaderArgs) {
@@ -117,6 +120,12 @@ export function eventStream(
 	// a source lives, and `shutdownSignal()` lives until the server stops.
 	const stopped = new AbortController();
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
+	/** The bytes of each event and heartbeat that the body got. */
+	let sentBytes = 0;
+	/** Whether a turn of the event loop ended after the bytes that wait went over the limit. */
+	let clientHadTurn = false;
+	/** Whether a timer waits to set `clientHadTurn`. */
+	let turnPending = false;
 	/** The controller of the body, until the stream ends. */
 	let open: ReadableStreamDefaultController<Uint8Array> | undefined;
 
@@ -139,14 +148,33 @@ export function eventStream(
 		if (open == null) {
 			return;
 		}
-		open.enqueue(encoder.encode(text));
-		// Why under 0: the size is `MAX_QUEUED_BYTES` less the bytes that wait for the client.
-		if ((open.desiredSize ?? 0) < 0) {
+		const chunk = encoder.encode(text);
+		open.enqueue(chunk);
+		sentBytes += chunk.byteLength;
+		// Why: the size is `MAX_QUEUED_BYTES` less the bytes that wait for the client.
+		const waiting = MAX_QUEUED_BYTES - (open.desiredSize ?? 0);
+		// Why `sentBytes`: while each byte still waits, no one reads the body yet. A body that fails
+		// before its first read is a 500 on Node.js, and it stops the server on Bun 1.3.
+		if (waiting <= MAX_QUEUED_BYTES || waiting === sentBytes) {
+			return;
+		}
+		// Why: this event put the bytes that wait over the limit, so the client gets a turn to read.
+		if (waiting - chunk.byteLength <= MAX_QUEUED_BYTES) {
+			clientHadTurn = false;
+		}
+		if (clientHadTurn) {
 			const error = new Error(
 				"The event stream stopped: more than 1 MiB of events waited for the client.",
 			);
 			end()?.error(error);
 			stopped.abort(error);
+		} else if (!turnPending) {
+			turnPending = true;
+			// Why a timer: no client can read in the turn of the event loop that sends the events.
+			setTimeout(() => {
+				turnPending = false;
+				clientHadTurn = true;
+			}, 0);
 		}
 	}
 
