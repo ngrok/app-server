@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { IMMUTABLE } from "../core/build-manifest.js";
 import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
@@ -56,8 +57,6 @@ export type VercelOptions = {
 	 */
 	maxDuration?: number;
 };
-
-const IMMUTABLE = "public, max-age=31536000, immutable";
 
 /** The most routes of a deployment. See https://vercel.com/docs/limits. */
 const ROUTE_LIMIT = 2048;

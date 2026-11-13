@@ -16,6 +16,9 @@ export const SERVER_ENTRY_FILE = "app-server.js";
 /** The URL path of the hashed files of a build that records none: Vite's default `build.assetsDir`. */
 export const DEFAULT_ASSETS_PATH = "/assets/";
 
+/** The `Cache-Control` of a hashed file. Why one year: the URL of the file changes with its bytes. */
+export const IMMUTABLE = "public, max-age=31536000, immutable";
+
 /** What the Vite plugin records about the client build. */
 export type BuildManifest = {
 	/**
