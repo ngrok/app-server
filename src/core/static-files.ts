@@ -3,7 +3,7 @@ import { getMimeType } from "hono/utils/mime";
 import { COPY_ENCODINGS, copyPath, forbidsTransform, preferredEncoding } from "./compression.js";
 import type { Encoding } from "./compression.js";
 import { bodyHooks, hookedView } from "./header-hook.js";
-import type { AppServerEnv, ByteRange, StaticFiles } from "./types.js";
+import type { AppServerEnv, ByteRange, ServerEnv, StaticFiles } from "./types.js";
 import { withVary } from "./vary.js";
 
 /** A file under the client build that answers a request. */
@@ -327,7 +327,7 @@ function fileHead(type: string, layers: StaticResponseOptions["headers"]): Head 
  * hook of each stage that the request passed, when one of them can change
  * the body that the stage picks. The hooks change only a copy of `head`.
  */
-function sentCacheControl(context: Context<AppServerEnv>, head: Head): string | null {
+function sentCacheControl(context: Context<ServerEnv>, head: Head): string | null {
 	const hooks = bodyHooks(context);
 	if (hooks == null) {
 		return head.get("cache-control") ?? null;
@@ -437,7 +437,7 @@ function changesPages(context: Context<AppServerEnv>): boolean {
  * `etagParts` have these values (see {@link rewritesHtmlWithEtagPart}).
  */
 async function changedPage(
-	context: Context<AppServerEnv>,
+	context: Context<ServerEnv>,
 	{ files, file, head }: { files: StaticFiles; file: StaticFile; head: Head },
 ): Promise<Response> {
 	// Why not the ETag or the length of `headers`: they are for the bytes of the file.
@@ -499,7 +499,7 @@ export type StaticResponseOptions = {
  * }
  */
 export async function staticResponse(
-	context: Context<AppServerEnv>,
+	context: Context<ServerEnv>,
 	{ files, file, headers, contentTypes }: StaticResponseOptions,
 ): Promise<Response> {
 	const head = fileHead(contentType(file.path, contentTypes), headers);

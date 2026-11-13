@@ -295,20 +295,32 @@ export type AppServerEnv = {
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
 		logAttributes?: Readonly<Record<string, unknown>>;
 		/**
-		 * The `etagPart` of each plugin that the request passed, in order. The
-		 * static stages add them to each file's ETag. The server sets this list.
-		 */
-		etagParts?: readonly string[];
-		/**
 		 * Whether a stage that the request passed changes the bytes of an HTML
 		 * body, as `runtimeEnv` does. The stage sets it before its `next()`.
 		 * The static stages then send an HTML file as it is on disk, not its
 		 * compressed copy, so the stage can change it.
 		 */
 		rewritesHtml?: boolean;
+	};
+};
+
+/**
+ * The Hono environment that the server reads: {@link AppServerEnv} and the
+ * lists of a request that the server owns. Why not in `AppServerEnv`: an app
+ * that sets one of them loses the header hooks or the reports of its
+ * response, such as `Cache-Control: private` and the access log line.
+ */
+export type ServerEnv = {
+	Bindings: ServerBindings;
+	Variables: AppServerEnv["Variables"] & {
+		/**
+		 * The `etagPart` of each plugin that the request passed, in order. The
+		 * static stages add them to each file's ETag.
+		 */
+		etagParts?: readonly string[];
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
 		headerHooks?: HeaderHook[];
-		/** The reports of `onResponseSent` for the request. The server sets this list. */
+		/** The reports of `onResponseSent` for the request. */
 		sentReports?: ((sent: SentResponse) => void)[];
 	};
 };

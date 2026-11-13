@@ -81,6 +81,24 @@ async function listening(
 }
 
 describe("createServer", () => {
+	// Why: a plugin that replaces one of these lists loses the header hooks or the reports of its
+	// response, such as `Cache-Control: private` and the access log line.
+	it("rejects a plugin that sets a request list of the server at type check", () => {
+		const plugin: Plugin = {
+			name: "takes-lists",
+			middleware: async (context, next) => {
+				// @ts-expect-error -- Why: the server owns the header hooks of a request.
+				context.set("headerHooks", []);
+				// @ts-expect-error -- Why: the server owns the reports of a request.
+				context.set("sentReports", []);
+				// @ts-expect-error -- Why: the server owns the ETag parts of a request.
+				context.set("etagParts", []);
+				await next();
+			},
+		};
+		expect(plugin.name).toBe("takes-lists");
+	});
+
 	it("runs the app's own routes before the framework", async () => {
 		const { request } = await testServer({
 			plugins: [],

@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { headerIndex, headerList, listView, replaceResponse } from "./header-hook.js";
 import { asError } from "./log.js";
-import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse } from "./types.js";
+import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse, ServerEnv } from "./types.js";
 
 function ignore(): void {}
 
@@ -282,7 +282,8 @@ export function onResponseSent(
 	context: Context<AppServerEnv>,
 	report: (sent: SentResponse) => void,
 ): void {
-	const reports = context.get("sentReports");
+	const server: Context<ServerEnv> = context;
+	const reports = server.get("sentReports");
 	if (reports != null) {
 		reports.push(report);
 		return;

@@ -1,3 +1,4 @@
+import type { Context } from "hono";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -18,7 +19,7 @@ import { requestId } from "./request-id.js";
 import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
-import type { Plugin } from "../types.js";
+import type { Plugin, ServerEnv } from "../types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
 const files: Record<string, string> = {
@@ -851,7 +852,9 @@ describe("compressed copies from the build", () => {
 		const marks: Plugin = {
 			name: "marks",
 			middleware: async (context, next) => {
-				context.get("headerHooks")?.push((headers) => {
+				// Why the annotation: the list is in the environment of the server, not of an app.
+				const server: Context<ServerEnv> = context;
+				server.get("headerHooks")?.push((headers) => {
 					headers.set("Cache-Control", "public, no-transform");
 				});
 				await next();

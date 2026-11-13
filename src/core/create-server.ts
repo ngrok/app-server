@@ -44,6 +44,7 @@ import type {
 	RequestScope,
 	RequestStore,
 	SentResponse,
+	ServerEnv,
 	SetupInfo,
 } from "./types.js";
 
@@ -441,7 +442,7 @@ export function createServer({
 	const sink = appSink ?? jsonSink();
 	const logger = hookSink(sink, log);
 	setProcessSink(logger);
-	const app = new Hono<AppServerEnv>();
+	const app = new Hono<ServerEnv>();
 	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
 	let onError: ErrorHandler<AppServerEnv> = answerError;
 	const setOnError = app.onError.bind(app);
@@ -476,7 +477,7 @@ export function createServer({
 	 * threw, so each earlier plugin sees that answer after its `next()`.
 	 */
 	const runStage = async (
-		run: { context: Context<AppServerEnv, string>; rest: Next; reached: number },
+		run: { context: Context<ServerEnv, string>; rest: Next; reached: number },
 		index: number,
 	): Promise<void> => {
 		if (index <= run.reached) {

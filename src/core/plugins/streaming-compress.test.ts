@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { brotliDecompressSync, constants, gunzipSync } from "node:zlib";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
 import { withHeaderHook } from "../header-hook.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import type { AppServerEnv, Plugin, ServerEnv } from "../types.js";
 import { buildId } from "./build-id.js";
 import { MAX_JOINED_BYTES, streamingCompress } from "./streaming-compress.js";
 
@@ -477,7 +478,9 @@ describe("streamingCompress", () => {
 		const marks: Plugin = {
 			name: "marks",
 			middleware: async (context, next) => {
-				context.get("headerHooks")?.push((headers) => {
+				// Why the annotation: the list is in the environment of the server, not of an app.
+				const server: Context<ServerEnv> = context;
+				server.get("headerHooks")?.push((headers) => {
 					headers.set("Cache-Control", "public, no-transform");
 				});
 				await next();

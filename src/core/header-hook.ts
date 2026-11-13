@@ -1,5 +1,5 @@
 import type { Context, Next } from "hono";
-import type { AppServerEnv, HeaderHook, ResponseHeaders } from "./types.js";
+import type { AppServerEnv, HeaderHook, ResponseHeaders, ServerEnv } from "./types.js";
 
 /**
  * The response that each request made, so a later write can change it in
@@ -97,7 +97,8 @@ export function withHeaderHook(
 	next: Next,
 	hook: HeaderHook,
 ): Promise<void> {
-	const hooks = context.get("headerHooks");
+	const server: Context<ServerEnv> = context;
+	const hooks = server.get("headerHooks");
 	if (hooks == null) {
 		return hookAfter(context, next, hook);
 	}
@@ -122,7 +123,8 @@ export function withBuiltInHeaderHook(
 	next: Next,
 	hook: HeaderHook,
 ): Promise<void> {
-	const hooks: HookList | undefined = context.get("headerHooks");
+	const server: Context<ServerEnv> = context;
+	const hooks: HookList | undefined = server.get("headerHooks");
 	if (hooks == null) {
 		return hookAfter(context, next, hook);
 	}
@@ -225,7 +227,7 @@ export function listView(head: string[]): ResponseHeaders {
  * const hooks = bodyHooks(context);
  * const sent = hooks == null ? undefined : hookedView(hooks, ["cache-control", "public"]);
  */
-export function bodyHooks(context: Context<AppServerEnv>): readonly HeaderHook[] | undefined {
+export function bodyHooks(context: Context<ServerEnv>): readonly HeaderHook[] | undefined {
 	const hooks: HookList | undefined = context.get("headerHooks");
 	return hooks == null || hooks.length === (hooks.builtIn ?? 0) ? undefined : hooks;
 }
