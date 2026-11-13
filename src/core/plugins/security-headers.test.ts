@@ -192,6 +192,30 @@ describe("contentSecurityPolicy", () => {
 		);
 	});
 
+	it("gives each of 1,000 requests its own nonce of 16 bytes in which each byte varies", async () => {
+		const { request } = await testServer({
+			plugins: [csp],
+			render: async () => new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const responses = await Promise.all(Array.from({ length: 1000 }, async () => request("/")));
+		const nonces = responses.map(
+			(response) =>
+				/'nonce-(?<nonce>[^']+)'/u.exec(response.headers.get("Content-Security-Policy") ?? "")
+					?.groups?.nonce ?? "",
+		);
+		const valuesOfByte = Array.from(
+			{ length: 16 },
+			(_, index) => new Set(nonces.map((nonce) => atob(nonce).codePointAt(index))).size,
+		);
+
+		expect(new Set(nonces).size).toBe(1000);
+		// Why `[AQgw]`: the last character of 16 bytes in base64 holds 2 bits.
+		expect(nonces.filter((nonce) => !/^[A-Za-z0-9+/]{21}[AQgw]==$/u.test(nonce))).toStrictEqual([]);
+		// Why 200: 1,000 random bytes take about 251 of the 256 values.
+		expect(valuesOfByte.filter((values) => values < 200)).toStrictEqual([]);
+	});
+
 	it("trusts a prerendered document's inline scripts by their hashes, and its modules by 'self'", async () => {
 		const { request } = await testServer({ plugins: [csp, prerendered()], clientDirectory });
 

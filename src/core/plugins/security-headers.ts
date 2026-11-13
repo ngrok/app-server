@@ -104,9 +104,37 @@ export type ContentSecurityPolicyOptions = {
 	policy: (document: { scriptSrc: string; context: Context<AppServerEnv> }) => string;
 };
 
+/** The bytes of one nonce. Why 16: a nonce must have 128 bits or more. */
+const NONCE_BYTES = 16;
+
+/**
+ * Random bytes for 64 nonces. Why a pool: on Node.js, one
+ * `crypto.getRandomValues` call costs more than the rest of a nonce. Each
+ * nonce takes its own 16 bytes, so no two nonces share a byte. The bytes
+ * that no nonce took yet stay in memory, as in the entropy cache of
+ * `crypto.randomUUID()`.
+ */
+const noncePool = new Uint8Array(NONCE_BYTES * 64);
+
+/**
+ * How many bytes of {@link noncePool} the nonces took. Why all of them at
+ * the start: the first nonce fills the pool, so a process holds no random
+ * bytes before its first request.
+ */
+let takenBytes = noncePool.length;
+
 /** A new random nonce: 16 bytes in base64. */
 function randomNonce(): string {
-	return btoa(String.fromCodePoint(...crypto.getRandomValues(new Uint8Array(16))));
+	if (takenBytes === noncePool.length) {
+		crypto.getRandomValues(noncePool);
+		takenBytes = 0;
+	}
+	let bytes = "";
+	for (const byte of noncePool.subarray(takenBytes, takenBytes + NONCE_BYTES)) {
+		bytes += String.fromCodePoint(byte);
+	}
+	takenBytes += NONCE_BYTES;
+	return btoa(bytes);
 }
 
 /**
