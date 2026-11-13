@@ -23,6 +23,9 @@ afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
+/** A logger for a test that does not read the build log. */
+const quiet = { info: () => {}, warn: () => {} };
+
 function write(path: string, text: string): void {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, text);
@@ -80,7 +83,7 @@ describe("vercel", () => {
 			regions: ["iad1"],
 		});
 
-		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/" });
+		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/", logger: quiet });
 
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
@@ -148,6 +151,7 @@ describe("vercel", () => {
 			clientDirectory: join(nested, "dist/client"),
 			entryFile: join(nested, "dist/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
@@ -174,6 +178,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const client = join(site, ".vercel/output/functions/index.func/build/client");
@@ -202,6 +207,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const siteOutput = join(site, ".vercel/output");
@@ -226,6 +232,7 @@ describe("vercel", () => {
 				clientDirectory: join(custom, "build/client"),
 				entryFile: join(custom, "build/server/app-server.js"),
 				assetsPath: "/blog-assets/build/",
+				logger: quiet,
 			},
 		);
 
@@ -290,6 +297,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const siteOutput = join(site, ".vercel/output");
@@ -366,6 +374,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const pages = join(site, ".vercel/output/static/_app-server/pages");
@@ -397,6 +406,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const { routes } = json(join(site, ".vercel/output/config.json")) as {
@@ -428,6 +438,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const { routes } = json(join(site, ".vercel/output/config.json")) as {
@@ -442,6 +453,39 @@ describe("vercel", () => {
 		expect(filesUnder(join(site, ".vercel/output/static/_app-server/pages"))).toHaveLength(
 			served.size,
 		);
+	});
+
+	it("reports each path that the function serves, with its reason, through Vite's logger", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-report-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const kept = Array.from({ length: 25 }, (_, index) => ({
+			path: `/account/${index}`,
+			reason: "the status is 302",
+		}));
+		write(join(site, "build/server/app-server.js"), entrySource(kept));
+		const logged: string[] = [];
+
+		vercel({ cdnPages: true }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+			logger: {
+				info: (message) => {
+					logged.push(message);
+				},
+				warn: () => {},
+			},
+		});
+
+		expect(logged).toStrictEqual([
+			[
+				"@ngrok/app-server/vercel: the CDN serves 0 prerendered paths, and the function serves 25.",
+				...kept.map(({ path, reason }) => `  ${path}: ${reason}`),
+			].join("\n"),
+		]);
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

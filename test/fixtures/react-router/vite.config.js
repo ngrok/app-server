@@ -7,7 +7,9 @@ import { vercel } from "../../../dist/vercel-vite.js";
 import { appServer } from "../../../dist/vite.js";
 
 export default {
-	logLevel: "warn",
+	// Why `info` for the vercel host: `test/runtimes.ts` reads the report of `vercel()`, which goes
+	// through Vite's logger at that level.
+	logLevel: process.env.APP_SERVER_HOST === "vercel" ? "info" : "warn",
 	ssr: { external: ["@fixture/cjs-greeting"] },
 	plugins: [
 		reactRouter(),

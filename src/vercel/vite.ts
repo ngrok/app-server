@@ -270,22 +270,19 @@ function findCdnPages(
 	return pages;
 }
 
-/** Writes the paths that the function serves, and why, so the build log shows them. */
-function reportPages({ cdn, server }: PagesReport): void {
-	const shown = server.slice(0, 20);
-	process.stdout.write(
+/** Logs each path that the function serves, and why, so the build log shows them. */
+function reportPages({ cdn, server }: PagesReport, logger: HostOutput["logger"]): void {
+	logger.info(
 		[
 			`@ngrok/app-server/vercel: the CDN serves ${cdn.length} prerendered paths, and the function serves ${server.length}.`,
-			...shown.map(({ path, reason }) => `  ${path}: ${reason}`),
-			...(server.length > shown.length ? [`  and ${server.length - shown.length} more`] : []),
-			"",
+			...server.map(({ path, reason }) => `  ${path}: ${reason}`),
 		].join("\n"),
 	);
 }
 
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
-	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
+	{ root, clientDirectory, entryFile, assetsPath, logger }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, cdnPages = false, regions, memory, maxDuration }: VercelOptions,
 ): void {
 	// Why `assetsPath` last: Vercel applies each matched rule in order, so its immutable cache wins
@@ -299,7 +296,7 @@ function writeOutput(
 		routeBudget: ROUTE_LIMIT - routes(prefixes, { assetsPath, cdnHeaders, pages: [] }).length - 1,
 	});
 	if (cdnPages !== false) {
-		reportPages(pages);
+		reportPages(pages, logger);
 	}
 	const fromRoot = (path: string): string => {
 		const inside = relative(root, path);

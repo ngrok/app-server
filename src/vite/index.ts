@@ -22,7 +22,7 @@ import {
 } from "node:path";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
-import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
+import type { Environment, Logger, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
 import {
 	BUILD_MANIFEST_FILE,
 	DEFAULT_ASSETS_PATH,
@@ -129,7 +129,7 @@ export type HostBuild = {
 	output?: (build: HostOutput) => void;
 };
 
-/** What a host's `output` gets: the absolute paths of the build. */
+/** What a host's `output` gets: the absolute paths of the build, and Vite's logger. */
 export type HostOutput = {
 	/** The Vite root. */
 	root: string;
@@ -142,6 +142,8 @@ export type HostOutput = {
 	 * `/assets/`. Its files have content hashes in their names.
 	 */
 	assetsPath: string;
+	/** Vite's logger, so Vite's `logLevel` and `customLogger` apply to what the host prints. */
+	logger: Pick<Logger, "info" | "warn">;
 };
 
 /** Options for {@link appServer}. */
@@ -215,7 +217,7 @@ function defaultApp(root: string): string | undefined {
 		.find((path) => existsSync(path));
 }
 
-/** The paths of the build that a host's `output` gets. */
+/** What a host's `output` gets for the build of `config`. */
 function hostOutput(config: ResolvedConfig): HostOutput {
 	return {
 		root: config.root,
@@ -224,6 +226,7 @@ function hostOutput(config: ResolvedConfig): HostOutput {
 		assetsPath: urlPathOfAssetsDir(
 			config.environments.client?.build.assetsDir ?? config.build.assetsDir,
 		),
+		logger: config.logger,
 	};
 }
 

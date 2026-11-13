@@ -665,6 +665,40 @@ describe("appServer", () => {
 		rmSync(directory, { recursive: true, force: true });
 	});
 
+	it("gives the host's `output` Vite's logger, so `logLevel` applies to what the host prints", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-host-logger-"));
+		const logger = createLogger("silent");
+		const given: unknown[] = [];
+		const [, postStep] = appServer({
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: (build) => {
+					given.push(build.logger);
+				},
+			},
+		});
+
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields of `config`.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: {},
+					logger,
+				},
+			} as never,
+		);
+
+		expect(given).toHaveLength(1);
+		expect(given[0]).toBe(logger);
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("passes the framework's runtime options to its runtime", () => {
 		expect(
 			serverEntrySource({
