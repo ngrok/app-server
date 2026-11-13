@@ -16,7 +16,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
+import {
+	createLogger,
+	createServer as createViteServer,
+	build as viteBuild,
+	preview,
+	resolveConfig,
+} from "vite";
 import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { DEFAULT_BUILD_PATHS } from "../cli/serve.js";
@@ -166,6 +172,30 @@ describe("appServer with no options", () => {
 		expect(entry).toContain('import("edge-host"),');
 		expect(entry).toContain(`import(${JSON.stringify(join(project, "src/app.ts"))}),`);
 		rmSync(project, { recursive: true, force: true });
+	});
+
+	it("stops the dev server at startup for an `app` path with no module, and takes a path with no extension", async () => {
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-missing-")));
+		onTestFinished(() => {
+			rmSync(project, { recursive: true, force: true });
+		});
+		writeFileSync(join(project, "server.ts"), "");
+		const devServer = async (app: string) =>
+			createViteServer({
+				root: project,
+				configFile: false,
+				logLevel: "silent",
+				appType: "custom",
+				// Why no WebSocket server: the test then opens no HMR port.
+				server: { middlewareMode: true, ws: false },
+				plugins: [frameworkPlugin("react-router:virtual-modules"), ...appServer({ app })],
+			});
+
+		await expect(devServer("srever.ts")).rejects.toThrow(
+			`@ngrok/app-server found no module at ${join(project, "srever.ts")} for the \`app\` option. Give a path from the Vite root, ${project}.`,
+		);
+		const started = await devServer("server");
+		await started.close();
 	});
 });
 

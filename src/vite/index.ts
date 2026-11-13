@@ -178,7 +178,8 @@ export type AppServerOptions = {
 	 * The module whose default export is the app from `createServer`, relative
 	 * to the Vite root. When omitted, the plugin uses `server.ts`, else
 	 * `server.js`, in the Vite root. When neither exists, the server uses its
-	 * default plugins.
+	 * default plugins. A path that Vite resolves to no module stops
+	 * `app-server start` and the build.
 	 */
 	app?: string;
 	/**
@@ -996,11 +997,23 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					options.app == null ? defaultApp(config.root) : resolve(config.root, options.app),
 			};
 		},
-		buildStart() {
+		async buildStart() {
 			// Why a chunk and not an input: the framework's own entry stays the same, and its prerender
 			// preview reads that entry.
 			if (isServerBuild(this.environment)) {
 				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: SERVER_ENTRY_FILE });
+			}
+			// Why here and not `existsSync` in `configResolved`: Vite's resolver adds the extension, so
+			// `app: "server"` stays valid. Why not the client build: the app is a server module.
+			const appModule = options.app == null ? undefined : resolved?.appModule;
+			if (
+				appModule != null &&
+				(this.environment.mode === "dev" || isServerBuild(this.environment)) &&
+				(await this.resolve(appModule)) == null
+			) {
+				throw new Error(
+					`@ngrok/app-server found no module at ${appModule} for the \`app\` option. Give a path from the Vite root, ${resolved?.config.root}.`,
+				);
 			}
 		},
 		writeBundle(output, bundle) {

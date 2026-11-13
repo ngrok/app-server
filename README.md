@@ -129,7 +129,7 @@ export default defineConfig({
 
 - `framework`: the framework adapter. Default: the adapter of the framework plugin in the Vite config. The plugin of React Router is `reactRouter()`, and the plugin of TanStack Start is `tanstackStart()`. If the config has neither plugin or both, Vite stops with an error. Then pass `reactRouterAdapter()` from `@ngrok/app-server/react-router/vite` or `tanstackStartAdapter()` from `@ngrok/app-server/tanstack-start/vite`.
 - `host`: the host adapter. Default: `node()` from `@ngrok/app-server/node/vite`.
-- `app`: the module whose default export is the app, relative to the Vite root. Default: `server.ts`, else `server.js`, in the Vite root. If neither file exists, the server uses the default plugins.
+- `app`: the module whose default export is the app, relative to the Vite root. Default: `server.ts`, else `server.js`, in the Vite root. If neither file exists, the server uses the default plugins. An `app` path with no module stops `app-server start` and the build, with an error that names the path.
 - `externals`: how the server build copies the packages that stay external. `whole` lists packages that keep each file, and `omit` lists packages that the build does not copy. Default: no package in either list. See [Deploy](#deploy).
 
 An option that you set replaces its default. Set it for a third-party adapter or for an app in another file:
