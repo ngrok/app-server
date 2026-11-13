@@ -333,8 +333,8 @@ const auth: Plugin = { name: "basic-auth", middleware: basicAuth({ username, pas
 `createServer` stops startup for an entry of the plugin list that is not a plugin, with an error that names the entry and the fix. The `Plugin` type also rejects each of these entries:
 
 - A function: a Hono middleware with no plugin around it, or a plugin factory that the app did not call, such as `requestId` in place of `requestId()`.
-- A list: a missing spread, such as `defaultPlugins()` in place of `...defaultPlugins()`.
-- A promise: an `async` plugin factory with no `await`.
+- A list: a list of plugins with no spread, such as `defaultPlugins()` in place of `...defaultPlugins()`.
+- A promise: the result of an `async` plugin factory with no `await`.
 - A value that is not an object, such as `false` from `condition && plugin`. To add a plugin on a condition, spread a list: `...(condition ? [plugin] : [])`.
 
 A `middleware` returns a `Response`, or it calls `await next()`. If a middleware returns no `Response` and does not call `await next()`, the request has no answer. The client then gets the answer of the app's `onError`. The default `onError` answers a 500 and writes an `unhandled error` line to the log. Each host gives this answer, and so does `createTestServer`.
