@@ -14,7 +14,7 @@ import type { AppServer } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import { withHeaderHook } from "./header-hook.js";
 import { ResponseEdge } from "./response-edge.js";
-import { renewShutdownSignal } from "./shutdown.js";
+import { shutdownSignal } from "./shutdown.js";
 import { accessLog } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
 import { buildId } from "./plugins/build-id.js";
@@ -26,6 +26,7 @@ import { runtimeEnv } from "./plugins/runtime-env.js";
 import { contentSecurityPolicy, securityHeaders } from "./plugins/security-headers.js";
 import { assets, prerendered as prerenderedPlugin } from "./plugins/static.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
+import { host } from "../node/index.js";
 import { tcp } from "../node/tcp.js";
 import { createTestServer } from "../testing/index.js";
 import {
@@ -678,6 +679,75 @@ describe("createServer", () => {
 		expect(onShutdown).toHaveBeenCalledTimes(1);
 	});
 
+	it("stops only its own readiness probe and event streams, with another app server in the process", async () => {
+		/** Starts an app server whose `/events` stream sends `open`, and `still open` after `more` resolves. */
+		const start = async () => {
+			const more = Promise.withResolvers<undefined>();
+			const logger: LogSink = { log: () => {} };
+			const app = createServer({
+				plugins: [health()],
+				logger,
+				listeners: [tcp({ port: 0, host: "127.0.0.1" })],
+				shutdownDeadlineMs: 2_000,
+			});
+			app.get("/events", () =>
+				eventStream({}, async ({ send }) => {
+					send({ data: "open" });
+					await more.promise;
+					send({ data: "still open" });
+					return new Promise(() => {});
+				}),
+			);
+			const internals = serverInternals(app);
+			// Why: in a request, `shutdownSignal()` finds the app server of the request in this storage.
+			internals?.setRequestStore(host.storage);
+			await internals?.prepare(await productionSetup({ logger }));
+			const server = await internals?.listen(stubFramework(), []);
+			const events = await fetch(new URL("/events", server?.urls[0]));
+			const reader = events.body?.getReader();
+			const read = async () => new TextDecoder().decode((await reader?.read())?.value);
+			await expect(read()).resolves.toBe("data: open\n\n");
+			return { server, more, reader, read };
+		};
+		// Why this order: the stream of the first server is open before the second server starts.
+		const first = await start();
+		const second = await start();
+		onTestFinished(async () => second.server?.shutdown());
+
+		await first.server?.shutdown();
+
+		// Why a clean end: a stream that the drain deadline cuts fails its reader.
+		await expect(first.reader?.read()).resolves.toStrictEqual({ done: true, value: undefined });
+		expect((await fetch(new URL("/readyz", second.server?.urls[0]))).status).toBe(200);
+		second.more.resolve(undefined);
+		await expect(second.read()).resolves.toBe("data: still open\n\n");
+	});
+
+	it("answers the readiness probe of a new app server with 200 after another one stopped", async () => {
+		const stopped = await listening(renderedFramework, [health()]);
+		await stopped.shutdown();
+		const { request } = await testServer({ plugins: [health()] });
+
+		expect((await request("/readyz")).status).toBe(200);
+	});
+
+	it("aborts the shutdownSignal() that a plugin read in setup, when its server shuts down", async () => {
+		let signal: AbortSignal | undefined;
+		const server = await listening(renderedFramework, [
+			{
+				name: "reads-signal",
+				setup: () => {
+					signal = shutdownSignal();
+				},
+			},
+		]);
+		const before = signal?.aborted;
+
+		await server.shutdown();
+
+		expect([before, signal?.aborted]).toStrictEqual([false, true]);
+	});
+
 	it.each<{ failure: string; start: Listener["start"] }>([
 		{
 			failure: "rejects",
@@ -937,8 +1007,6 @@ describe("defaultPlugins", () => {
 	});
 
 	it("answers the liveness and readiness probes by default", async () => {
-		// Why: a shutdown test above marks the process as stopping.
-		renewShutdownSignal();
 		const { request } = await testServer({ plugins: defaultPlugins(), clientDirectory });
 
 		const live = await request("/livez");

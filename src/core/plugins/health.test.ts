@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
-import { markStopping, renewShutdownSignal } from "../shutdown.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
-import type { LogSink } from "../types.js";
+import type { FetchHandler, LogSink } from "../types.js";
 import { health } from "./health.js";
 
 describe("health", () => {
@@ -108,22 +107,38 @@ describe("health", () => {
 	});
 
 	it("is not ready when a stop signal comes while the app check runs", async () => {
-		const { request } = await testServer({
+		const logger: LogSink = { log: () => {} };
+		let fetch: FetchHandler | undefined;
+		/** The server, after it listens. */
+		const running: { shutdown?: (() => Promise<void>) | undefined } = {};
+		let stopped: Promise<void> | undefined;
+		const app = createServer({
 			plugins: [
 				health({
-					ready: async () => {
-						markStopping();
+					ready: () => {
+						stopped = running.shutdown?.();
 						return true;
 					},
 				}),
 			],
+			logger,
+			listeners: [
+				{
+					start: async (handler) => {
+						fetch = handler;
+						return { url: "http://localhost:1/", stop: async () => {} };
+					},
+				},
+			],
 		});
+		const internals = serverInternals(app);
+		await internals?.prepare(await productionSetup({ logger }));
+		running.shutdown = (await internals?.listen(stubFramework(), []))?.shutdown;
 
-		try {
-			expect((await request("/readyz")).status).toBe(503);
-		} finally {
-			renewShutdownSignal();
-		}
+		const ready = await fetch?.(new Request("http://localhost/readyz"));
+
+		expect(ready?.status).toBe(503);
+		await stopped;
 	});
 
 	it("fails readiness at the stop signal, and serves requests during the shutdown delay", async () => {

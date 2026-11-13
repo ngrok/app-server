@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import type { ResponseEdge } from "./response-edge.js";
+import type { ShutdownState } from "./shutdown.js";
 
 /** A log level the server writes. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -306,8 +307,8 @@ export type AppServerEnv = {
 
 /**
  * The Hono environment that the server reads: {@link AppServerEnv} and the
- * lists of a request that the server owns. Why not in `AppServerEnv`: an app
- * that sets one of them loses the header hooks or the reports of its
+ * values of a request that the server owns. Why not in `AppServerEnv`: an app
+ * that sets one of the lists loses the header hooks or the reports of its
  * response, such as `Cache-Control: private` and the access log line.
  */
 export type ServerEnv = {
@@ -322,6 +323,8 @@ export type ServerEnv = {
 		headerHooks?: HeaderHook[];
 		/** The reports of `onResponseSent` for the request. */
 		sentReports?: ((sent: SentResponse) => void)[];
+		/** The stop state of the app server that serves the request. */
+		shutdown?: ShutdownState;
 	};
 };
 

@@ -1,10 +1,16 @@
 import { getEventListeners } from "node:events";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultPlugins } from "./create-server.js";
 import { eventStream } from "./event-stream.js";
 import type { EventStreamSink } from "./event-stream.js";
-import { abortShutdownSignal, renewShutdownSignal, shutdownSignal } from "./shutdown.js";
+import { abortShutdownSignal, createShutdownState, shutdownSignal } from "./shutdown.js";
 import { collectGarbage, testServer } from "../test-server.js";
+
+// Why: outside a request, `shutdownSignal()` is the signal of the last `createServer` call, and a
+// test that stops a server leaves that signal aborted.
+beforeEach(() => {
+	createShutdownState();
+});
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -207,7 +213,6 @@ describe("eventStream", () => {
 			},
 		},
 	])("ends at once and does not run produce when $source before the call", async ({ start }) => {
-		onTestFinished(renewShutdownSignal);
 		const produce = vi.fn<() => void>();
 
 		const response = start(produce);
@@ -293,7 +298,6 @@ describe("eventStream", () => {
 	])(
 		"does not abort the signal of a stream that ended by itself when $source later",
 		async ({ abort }) => {
-			onTestFinished(renewShutdownSignal);
 			const request = new AbortController();
 			const onAbort = vi.fn<() => void>();
 			let producerSignal: AbortSignal | undefined;
@@ -313,8 +317,6 @@ describe("eventStream", () => {
 	// Why: a signal walks its list of listeners to add or remove one, so a listener for each open
 	// stream makes each stream cost more as more streams are open.
 	it("adds no listener to shutdownSignal() for an open stream", async () => {
-		// Why: a new signal has no listener of another test.
-		renewShutdownSignal();
 		const response = eventStream({}, async () => new Promise(() => {}));
 
 		expect(getEventListeners(shutdownSignal(), "abort")).toStrictEqual([]);

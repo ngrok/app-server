@@ -31,7 +31,7 @@ import { checkOptionPlugins, perRequestHeadersOf, presenceHeadersOf } from "./pl
 import { checkCount, MAX_TIMER_MS } from "./check-count.js";
 import { releaseContext, setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
-import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
+import { createShutdownState } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	FetchHandler,
@@ -442,6 +442,9 @@ export function createServer({
 	const sink = appSink ?? jsonSink();
 	const logger = hookSink(sink, log);
 	setProcessSink(logger);
+	// Why here and not in `listen`: each app server has its own stop state, and a request with no
+	// listener, such as on a serverless host, reads it too.
+	const shutdown = createShutdownState();
 	const app = new Hono<ServerEnv>();
 	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
 	let onError: ErrorHandler<AppServerEnv> = answerError;
@@ -513,6 +516,7 @@ export function createServer({
 	app.use(async (context, next) => {
 		const requestLog = requestLogger(logger, context);
 		context.set("logger", requestLog);
+		context.set("shutdown", shutdown);
 		const remoteAddress = context.env?.remoteAddress;
 		context.set(
 			"clientAddress",
@@ -619,7 +623,6 @@ export function createServer({
 					"This app server has no listener: the app sets none, and the host has none. A serverless host calls the entry's `fetch`.",
 				);
 			}
-			renewShutdownSignal();
 			let deadlinePassed = false;
 			const fetch: FetchHandler = async (request, bindings) => {
 				const response = await app.fetch(request, { ...bindings, framework });
@@ -649,7 +652,7 @@ export function createServer({
 				urls,
 				shutdown: async () => {
 					stopping ??= (async () => {
-						markStopping();
+						shutdown.stopping = true;
 						if (shutdownDelayMs > 0) {
 							logger.log({
 								level: "info",
@@ -667,7 +670,7 @@ export function createServer({
 							message: "draining",
 							attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
 						});
-						abortShutdownSignal();
+						shutdown.controller.abort();
 						let openListeners = started.length;
 						const deadline = setTimeout(() => {
 							deadlinePassed = true;

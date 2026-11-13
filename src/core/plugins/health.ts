@@ -1,7 +1,7 @@
+import type { Context } from "hono";
 import { asError } from "../log.js";
 import { optionPlugin } from "../plugin-options.js";
-import { isStopping } from "../shutdown.js";
-import type { Plugin, RequestLogger } from "../types.js";
+import type { Plugin, RequestLogger, ServerEnv } from "../types.js";
 
 /** Options for {@link health}. */
 export type HealthOptions = {
@@ -90,24 +90,26 @@ export function health({
 		appFailing = !passed;
 		return passed;
 	};
-	const isReady = async (logger: RequestLogger) => {
-		if (isStopping()) {
+	const isReady = async (context: Context<ServerEnv>) => {
+		// Why the state of the request: another app server of the process can stop first.
+		const stopping = () => context.get("shutdown")?.stopping === true;
+		if (stopping()) {
 			return false;
 		}
-		const appReady = await appCheck(logger);
+		const appReady = await appCheck(context.get("logger"));
 		// Why check again: a stop signal can come while the app check runs.
-		return appReady && !isStopping();
+		return appReady && !stopping();
 	};
 	/** The answer to the probe at `path`, which is `livePath` or `readyPath`. */
-	const answer = async (path: string, logger: RequestLogger) =>
-		path === livePath || (await isReady(logger)) ? probe("ok", 200) : probe("not ready", 503);
+	const answer = async (path: string, context: Context<ServerEnv>) =>
+		path === livePath || (await isReady(context)) ? probe("ok", 200) : probe("not ready", 503);
 	return optionPlugin("health", {
 		name: "health",
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
 			const { method, path } = context.req;
 			return (method === "GET" || method === "HEAD") && (path === livePath || path === readyPath)
-				? answer(path, context.get("logger"))
+				? answer(path, context)
 				: next();
 		},
 	});
