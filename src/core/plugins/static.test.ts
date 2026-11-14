@@ -191,6 +191,32 @@ describe("prerendered", () => {
 		await expect(etag("v1")).resolves.not.toBe(await etag("v2"));
 	});
 
+	// Why: the server keeps the hash of each list of parts, and a list is the same only when each part is.
+	it("gives a new ETag when the first or the last of two parts changes", async () => {
+		const parts = { first: "a1", last: "b1" };
+		const { request } = await testServer({
+			plugins: [
+				{ name: "first", etagPart: () => parts.first },
+				{ name: "last", etagPart: () => parts.last },
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const etag = async () => (await request("/llms.txt")).headers.get("ETag") ?? "";
+
+		const start = await etag();
+		parts.last = "b2";
+		const lastChanged = await etag();
+		const kept = await request("/llms.txt", { headers: { "If-None-Match": start } });
+		parts.first = "a2";
+		const firstChanged = await etag();
+		parts.last = "b1";
+		const lastBack = await etag();
+
+		expect(new Set([start, lastChanged, firstChanged, lastBack]).size).toBe(4);
+		expect(kept.status).toBe(200);
+	});
+
 	it("makes the ETag from the size and the time in hexadecimal, then the hash of the parts", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "app-server-etag-"));
 		onTestFinished(() => {
