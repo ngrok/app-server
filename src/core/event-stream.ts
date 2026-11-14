@@ -13,7 +13,8 @@ export type EventStreamSink = {
 	 * Sends `event` at once. The promise resolves when the client has read
 	 * the earlier events, down to 64 KiB of unread bytes, or when the stream
 	 * ends. It never rejects. Await it, so that a slow client slows the
-	 * producer. A stream with more than 1 MiB of unread bytes stops.
+	 * producer. A stream with more than 1 MiB of unread bytes stops. An
+	 * event with a bad field throws a `TypeError` at once.
 	 */
 	send: (event: ServerSentEvent) => Promise<void>;
 	/** Aborts while the stream is open: when the client disconnects or the server shuts down. Stop the work on it. */
@@ -147,6 +148,7 @@ export function eventStream(
 		close();
 		stopped.abort(upstream.reason);
 	}
+	// oxlint-disable-next-line typescript/promise-function-async -- an `async` function allocates a promise for each event, and a send with room gives the one shared `ROOM`.
 	function send(event: ServerSentEvent): Promise<void> {
 		const controller = open;
 		if (controller == null) {

@@ -48,7 +48,7 @@ async function nextTurn(): Promise<void> {
 describe("eventStream", () => {
 	it("writes each event in the event-stream format and ends when produce resolves", async () => {
 		const response = eventStream(({ send }) => {
-			send({ event: "update", id: "7", data: "line one\nline two" });
+			void send({ event: "update", id: "7", data: "line one\nline two" });
 		});
 
 		expect(response.headers.get("Content-Type")).toBe("text/event-stream; charset=utf-8");
@@ -79,7 +79,7 @@ describe("eventStream", () => {
 				eventStream(
 					// Why it stays open: the server sends a short body that ends at once with no compression.
 					async ({ send }) => {
-						send({ data: "hello" });
+						void send({ data: "hello" });
 						return new Promise(() => {});
 					},
 					given.url.endsWith("/plain")
@@ -102,7 +102,7 @@ describe("eventStream", () => {
 
 	it("splits the data on a lone carriage return, so the client cannot read it as a field", async () => {
 		const response = eventStream(({ send }) => {
-			send({ data: "first\revent: injected" });
+			void send({ data: "first\revent: injected" });
 		});
 
 		await expect(readAll(response)).resolves.toBe("data: first\ndata: event: injected\n\n");
@@ -110,8 +110,8 @@ describe("eventStream", () => {
 
 	it("writes each line of the data as one line, for each kind of line break", async () => {
 		const response = eventStream(({ send }) => {
-			send({ data: "one\r\ntwo\rthree\nfour\n" });
-			send({ id: "8", data: "" });
+			void send({ data: "one\r\ntwo\rthree\nfour\n" });
+			void send({ id: "8", data: "" });
 		});
 
 		await expect(readAll(response)).resolves.toBe(
@@ -124,7 +124,7 @@ describe("eventStream", () => {
 		{ field: "id", event: { id: "7\rdata: injected", data: "x" } },
 	])("refuses a line break in the $field of an event", async ({ event }) => {
 		const response = eventStream(({ send }) => {
-			send(event);
+			void send(event);
 		});
 
 		await expect(readAll(response)).rejects.toThrow(
@@ -144,7 +144,7 @@ describe("eventStream", () => {
 	])("refuses data that is $value", async ({ data, type }) => {
 		const response = eventStream(({ send }) => {
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the test sends a value that its type does not allow.
-			send({ data: data as unknown as string });
+			void send({ data: data as unknown as string });
 		});
 
 		await expect(readAll(response)).rejects.toThrow(
@@ -178,7 +178,7 @@ describe("eventStream", () => {
 	it.each([1, 1.5, 2_147_483_647])("takes a heartbeatMs of %s", async (heartbeatMs) => {
 		const response = eventStream(
 			({ send }) => {
-				send({ data: "x" });
+				void send({ data: "x" });
 			},
 			{ heartbeatMs },
 		);
@@ -279,16 +279,14 @@ describe("eventStream", () => {
 
 		await expect(send({ data })).resolves.toBeUndefined();
 		const full = send({ data });
-		let resolved = false;
-		void full.then(() => {
-			resolved = true;
-		});
-		await nextTurn();
-		const waited = resolved;
+		const before = await Promise.race([
+			full.then(() => "resolved"),
+			nextTurn().then(() => "waiting"),
+		]);
 		await reader.read();
-		await full;
 
-		expect(waited).toBe(false);
+		await expect(full).resolves.toBeUndefined();
+		expect(before).toBe("waiting");
 		await reader.cancel();
 	});
 
@@ -353,7 +351,7 @@ describe("eventStream", () => {
 			});
 		const response = eventStream(async ({ send }) => {
 			for (let count = 0; count < 8; count += 1) {
-				send({ data });
+				void send({ data });
 				await clientRead();
 			}
 		});
