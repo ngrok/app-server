@@ -3,22 +3,20 @@ import { createContext, createRequestHandler, RouterContextProvider } from "reac
 import type { MiddlewareFunction, ServerBuild } from "react-router";
 import { outsideLogger, requestContextValues } from "../core/request-context.js";
 import type { AppServerEnv, FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
-
-/** What the server puts in React Router's context for each request. */
-export type AppServerContext = RequestContext;
+import { CONTENT_TYPES } from "./content-types.js";
 
 /**
- * The React Router context key for {@link AppServerContext}. Outside a server
- * request, such as in React Router's prerender pass, it holds no request ID
- * and the logger that `logger()` gives there. `requestContext()` from
- * `@ngrok/app-server` gives the same values.
+ * The React Router context key for the `RequestContext` that the server sets
+ * for each request. Outside a server request, such as in React Router's
+ * prerender pass, it holds no request ID and the logger that `logger()` gives
+ * there. `requestContext()` from `@ngrok/app-server` gives the same values.
  *
  * @example
  * export async function loader({ context }: Route.LoaderArgs) {
  * 	context.get(appServerContext).logger.info("loading the dashboard");
  * }
  */
-export const appServerContext = createContext<AppServerContext>({
+export const appServerContext = createContext<RequestContext>({
 	requestId: undefined,
 	logger: outsideLogger,
 	cspNonce: undefined,
@@ -62,13 +60,8 @@ function withRoutePattern(build: ServerBuild): ServerBuild {
 	return { ...build, routes };
 }
 
-/**
- * Whether a module is a React Router server build.
- *
- * @example
- * isServerBuild(await import("./build/server/index.js")); // => true
- */
-export function isServerBuild(value: unknown): value is ServerBuild {
+/** Whether a module is a React Router server build. */
+function isServerBuild(value: unknown): value is ServerBuild {
 	return (
 		typeof value === "object" &&
 		value != null &&
@@ -110,7 +103,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 		clientDirectory: build.assetsBuildDirectory,
 		prerenderedPaths: build.prerender,
 		isDataRequest: (path) => path.endsWith(".data") || path === manifestPath,
-		contentTypes: { ".data": "text/x-script" },
+		contentTypes: CONTENT_TYPES,
 		fetch: async (request, context) => {
 			const routerContext = new RouterContextProvider();
 			routerContext.set(appServerContext, requestContextValues(context));

@@ -1,9 +1,14 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
+import { checkHeaderName, optionPlugin, perRequestHeaders } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 
 /** Options for {@link requestId}. */
 export type RequestIdOptions = {
-	/** @default "X-Request-Id" */
+	/**
+	 * The request header that the ID comes from, and the response header that
+	 * carries it. A name that is not an HTTP header name stops startup.
+	 * @default "X-Request-Id"
+	 */
 	headerName?: string;
 	/**
 	 * Also log the trace IDs as `dd.trace_id` and `dd.span_id`, the lower 64
@@ -72,7 +77,7 @@ function traceAttributes(
  * line of the request.
  *
  * @example
- * const app = createServer({ plugins: [requestId()] });
+ * const app = createServer({ plugins: [requestId(), assets()] });
  * const response = await app.request("/", { headers: { "X-Request-Id": "abc-123" } });
  * response.headers.get("X-Request-Id"); // => "abc-123"
  */
@@ -80,9 +85,11 @@ export function requestId({
 	headerName = "X-Request-Id",
 	datadogTraceIds = false,
 }: RequestIdOptions = {}): Plugin {
-	return {
+	checkHeaderName({ plugin: "requestId", option: "headerName", name: headerName });
+	const plugin = optionPlugin("requestId", {
 		name: "request-id",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const trace = parseTraceparent(context.req.header("traceparent"));
 			if (trace != null) {
 				context.set("logAttributes", {
@@ -94,9 +101,14 @@ export function requestId({
 			const id = incoming != null && VALID_ID.test(incoming) ? incoming : crypto.randomUUID();
 			context.set("requestId", id);
 			// Why a header hook: a dev server middleware sends its own response, and runs the hooks first.
-			await withHeaderHook(context, next, (headers) => {
-				headers.set(headerName, id);
+			return withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					headers.set(headerName, id);
+				},
 			});
 		},
-	};
+	});
+	return perRequestHeaders([headerName], plugin);
 }

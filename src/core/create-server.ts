@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, Handler, Next } from "hono";
 import type { ErrorHandler, HTTPResponseError } from "hono/types";
-import { asError, hookSink, jsonSink, requestLogger } from "./log.js";
+import { asError, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
@@ -27,10 +27,11 @@ import type { PrerenderedOptions } from "./plugins/static.js";
 import { streamingCompress } from "./plugins/streaming-compress.js";
 import { trailingSlash } from "./plugins/trailing-slash.js";
 import type { TrailingSlash } from "./plugins/trailing-slash.js";
-import { checkOptionPlugins, presenceHeadersOf } from "./plugin-options.js";
-import { setProcessSink, withRequestContext } from "./request-context.js";
+import { checkOptionPlugins, perRequestHeadersOf, presenceHeadersOf } from "./plugin-options.js";
+import { checkCount, MAX_TIMER_MS } from "./check-count.js";
+import { releaseContext, setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
-import { abortShutdownSignal, markStopping, renewShutdownSignal } from "./shutdown.js";
+import { createShutdownState } from "./shutdown.js";
 import type {
 	AppServerEnv,
 	FetchHandler,
@@ -40,8 +41,10 @@ import type {
 	LogOptions,
 	LogSink,
 	Plugin,
+	RequestScope,
 	RequestStore,
 	SentResponse,
+	ServerEnv,
 	SetupInfo,
 } from "./types.js";
 
@@ -58,6 +61,76 @@ function answerError(error: Error | HTTPResponseError, context: Context<AppServe
 	return context.text("Internal Server Error", 500);
 }
 
+/**
+ * The app's `onError` handler, with a 500 for an error that `handler` returns
+ * no `Response` for. Why: Hono turns a falsy response into an empty 200, so
+ * such a handler would answer each of those errors with a 200.
+ */
+function checkedOnError(handler: ErrorHandler<AppServerEnv>): ErrorHandler<AppServerEnv> {
+	return async (error, context) => {
+		// Why the cast: the type says `Response`, but a handler in JavaScript can return each value.
+		const answer = (await handler(error, context)) as Response | undefined;
+		if (answer) {
+			return answer;
+		}
+		return answerError(
+			new TypeError(
+				"The app's onError returned no Response. It must return a Response for each error.",
+				{ cause: error },
+			),
+			context,
+		);
+	};
+}
+
+/**
+ * Throws for a `plugins` value that is not a list, and for an entry of it that
+ * is a function, a list, a promise, or not an object, so a wrong plugin list
+ * stops startup. Why: such an entry has no `middleware`, so the server would
+ * start and never run it. Why `unknown`: the `Plugin` type rejects these
+ * values, but a build can skip the type check, as Vite's does.
+ */
+function checkPluginObjects(plugins: unknown): void {
+	if (!Array.isArray(plugins)) {
+		throw new TypeError(
+			"plugins is not a list of plugins. Give a list, such as defaultPlugins() or [requestId()].",
+		);
+	}
+	// Why the type: `Array.isArray` gives each entry the type `any`.
+	const entries: readonly unknown[] = plugins;
+	for (const [index, plugin] of entries.entries()) {
+		if (typeof plugin === "function") {
+			const value = plugin.name === "" ? "a function" : `the function ${plugin.name}`;
+			throw new TypeError(
+				`plugins[${index}] is ${value}, not a plugin. Call a plugin factory, such as requestId(). Put a Hono middleware in a plugin, such as { name: "auth", middleware: basicAuth() }.`,
+			);
+		}
+		if (typeof plugin !== "object" || plugin == null) {
+			throw new TypeError(
+				`plugins[${index}] is ${String(plugin)}, not a plugin. Remove it. To add a plugin on a condition, spread a list: ...(condition ? [plugin] : []).`,
+			);
+		}
+		if (Array.isArray(plugin)) {
+			throw new TypeError(
+				`plugins[${index}] is a list, not a plugin. Spread the list, such as ...defaultPlugins().`,
+			);
+		}
+		if ("then" in plugin && typeof plugin.then === "function") {
+			throw new TypeError(
+				`plugins[${index}] is a promise, not a plugin. Wait for the plugin with await, such as await auth().`,
+			);
+		}
+	}
+}
+
+/**
+ * Answers a request that no plugin or route answers. Why at module scope: a
+ * function made in `prepare` keeps the `SetupInfo`, and so the script hashes
+ * of each page, for the life of the server.
+ */
+const frameworkRoute: Handler<AppServerEnv> = async (context) =>
+	context.env.framework.fetch(context.req.raw, context);
+
 // Why a WeakMap: only this copy of the package reads an app's internals, through `createEntry`.
 const appInternals = new WeakMap<AppServer, ServerInternals>();
 
@@ -65,7 +138,7 @@ const appInternals = new WeakMap<AppServer, ServerInternals>();
 export type AppServer = Hono<AppServerEnv>;
 
 /** A server that listens. */
-export type RunningServer = {
+type RunningServer = {
 	/** The URL of each listener. */
 	urls: readonly string[];
 	/**
@@ -81,6 +154,8 @@ export type ServerInternals = {
 	logger: LogSink;
 	/** The request headers whose presence alone changes the answer of a plugin. See `presenceHeaders`. */
 	presenceHeaders: readonly string[];
+	/** The response headers that a plugin gives a new value for each request. See `perRequestHeaders`. */
+	perRequestHeaders: readonly string[];
 	/** Runs each plugin's `setup` once and adds the framework handler after the app's routes. */
 	prepare: (info: SetupInfo) => Promise<void>;
 	/**
@@ -108,8 +183,21 @@ export type DefaultPluginsOptions = {
 	 * @default {}
 	 */
 	health?: HealthOptions | false;
+	/**
+	 * The options of the request ID of each request. See {@link requestId}.
+	 * @default {}
+	 */
 	requestId?: RequestIdOptions;
+	/**
+	 * The options of the log line of each request. See {@link accessLog}.
+	 * @default {}
+	 */
 	accessLog?: AccessLogOptions;
+	/**
+	 * The options of the files of the client build, such as `headers`, `skip`,
+	 * and `markdownTwins`. See {@link prerendered}.
+	 * @default {}
+	 */
 	prerendered?: PrerenderedOptions;
 	/**
 	 * Redirects from old URL paths to new URLs. They run before
@@ -131,6 +219,7 @@ export type DefaultPluginsOptions = {
 	/**
 	 * The options of the security headers. `false` turns them off. See
 	 * {@link securityHeaders}.
+	 * @default {}
 	 */
 	securityHeaders?: SecurityHeadersOptions | false;
 	/**
@@ -169,11 +258,19 @@ export type DefaultPluginsOptions = {
  * set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
  * `beforeStatic` plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
- * array, so an app can filter it or splice into it.
+ * array, so an app can filter it or splice into it. To find a plugin in the
+ * array, compare its `name`: the name of its function in kebab-case, such as
+ * `streaming-compress`. A filter on a name that no plugin has removes nothing.
  *
  * @example
  * createServer({
  * 	plugins: defaultPlugins({ env, noindex: process.env.PREVIEW === "1", health: { ready: async () => db.ping() } }),
+ * });
+ *
+ * @example
+ * // Behind a proxy that compresses each response.
+ * createServer({
+ * 	plugins: defaultPlugins().filter((plugin) => plugin.name !== "streaming-compress"),
  * });
  */
 export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
@@ -215,7 +312,10 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 export type CreateServerOptions = {
 	/** @default defaultPlugins() */
 	plugins?: readonly Plugin[];
-	/** @default jsonSink() */
+	/**
+	 * @default jsonSink(). In `app-server start`, the default writes the text format of the CLI's
+	 * lines, because a person reads those lines.
+	 */
 	logger?: LogSink;
 	/**
 	 * Hooks that change each log line of the server and of `logger()`, such
@@ -266,17 +366,6 @@ function forwardedClient(header: string | undefined, hops: number): string | und
 	return addresses[Math.max(0, addresses.length - hops)];
 }
 
-/** Why: `setTimeout` turns a longer delay into 1 ms. */
-const MAX_TIMER_MS = 2_147_483_647;
-
-/** Throws for a value that is not an integer from 0 to `max`, so a bad option stops startup. */
-function checkCount(name: string, value: number, max = Number.MAX_SAFE_INTEGER): void {
-	if (!Number.isInteger(value) || value < 0 || value > max) {
-		const range = max === Number.MAX_SAFE_INTEGER ? "of 0 or more" : `from 0 to ${max}`;
-		throw new Error(`${name} must be an integer ${range}, not ${value}.`);
-	}
-}
-
 /**
  * The request with the scheme from `X-Forwarded-Proto`, when that header holds one.
  *
@@ -321,8 +410,9 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  * the app's own routes, then the framework. It does not listen; the
  * `app-server` CLI starts it.
  *
- * Two plugins of one option of `defaultPlugins()`, such as two `buildId()`,
- * stop startup.
+ * A plugin list with an entry that is not a plugin, a second plugin of one
+ * option, or a plugin that the prerendered pages need after `prerendered()`
+ * stops startup. The README section "The pipeline" gives each rule.
  *
  * @example
  * // server.ts
@@ -332,7 +422,7 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  */
 export function createServer({
 	plugins = defaultPlugins(),
-	logger: sink = jsonSink(),
+	logger: appSink,
 	log,
 	listeners,
 	trustForwardedProto = false,
@@ -340,21 +430,26 @@ export function createServer({
 	shutdownDelayMs = 0,
 	shutdownDeadlineMs = 10_000,
 }: CreateServerOptions = {}): AppServer {
+	checkPluginObjects(plugins);
 	checkOptionPlugins(plugins);
 	checkCount("trustedProxyHops", trustedProxyHops);
 	checkCount("shutdownDelayMs", shutdownDelayMs, MAX_TIMER_MS);
 	checkCount("shutdownDeadlineMs", shutdownDeadlineMs, MAX_TIMER_MS);
+	const sink = appSink ?? jsonSink();
 	const logger = hookSink(sink, log);
 	setProcessSink(logger);
-	const app = new Hono<AppServerEnv>();
+	// Why here and not in `listen`: each app server has its own stop state, and a request with no
+	// listener, such as on a serverless host, reads it too.
+	const shutdown = createShutdownState();
+	const app = new Hono<ServerEnv>();
 	// Why keep the handler: a header hook that throws gets the app's `onError` answer, as a stage does.
 	let onError: ErrorHandler<AppServerEnv> = answerError;
 	const setOnError = app.onError.bind(app);
+	setOnError(answerError);
 	app.onError = (handler) => {
-		onError = handler;
-		return setOnError(handler);
+		onError = checkedOnError(handler);
+		return setOnError(onError);
 	};
-	app.onError(answerError);
 	const answerThrown = async (thrown: unknown, context: Context<AppServerEnv>) =>
 		onError(asError(thrown), context);
 	let requestStore: RequestStore | undefined;
@@ -363,9 +458,61 @@ export function createServer({
 		const dispatch = app.fetch;
 		app.fetch = async (request, ...rest) => dispatch(withForwardedProto(request), ...rest);
 	}
+	// Why not each plugin: one with only `setup` or `onShutdown` has no work in a request.
+	// Why copies: the server reads the `middleware` and the `etagPart` of each plugin one time, here.
+	const stages = plugins.flatMap(({ middleware, etagPart }) =>
+		middleware == null && etagPart == null ? [] : [{ middleware, etagPart }],
+	);
+	/**
+	 * Runs the stage at `index` for the request of `run`. The stage runs each
+	 * later stage through its `next`. After the last stage, `run.rest` runs the
+	 * app's routes and the framework. `run.reached` is the last stage that
+	 * started, so a second `next()` in one stage throws, as in Hono.
+	 *
+	 * Why not one Hono middleware for each plugin: Hono runs an async function
+	 * for each one, and a second one must turn a thrown value that is not an
+	 * `Error` into one. This function does both jobs. As Hono does for an
+	 * `Error`, it answers each thrown value with `onError` at the stage that
+	 * threw, so each earlier plugin sees that answer after its `next()`.
+	 */
+	const runStage = async (
+		run: { context: Context<ServerEnv, string>; rest: Next; reached: number },
+		index: number,
+	): Promise<void> => {
+		if (index <= run.reached) {
+			throw new Error("next() called multiple times");
+		}
+		run.reached = index;
+		const { context } = run;
+		const stage = stages[index];
+		try {
+			if (stage == null) {
+				await run.rest();
+				return;
+			}
+			// Why locals: a call through `stage` makes this copy the `this` of the plugin's function.
+			const { middleware, etagPart } = stage;
+			const part = etagPart?.();
+			if (part != null) {
+				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
+			}
+			// oxlint-disable-next-line typescript/promise-function-async -- `runStage` is async, and a second async function costs each stage a promise.
+			const next = () => runStage(run, index + 1);
+			const answer = await (middleware == null ? next() : middleware(context, next));
+			// Why a truthy test: as in Hono, a value such as `false` from `allowed && next()` is no answer.
+			// Why `finalized`: a response that a stage returns after its `next()` does not replace the answer.
+			if (answer && !context.finalized) {
+				context.res = answer;
+			}
+		} catch (error) {
+			context.error = asError(error);
+			context.res = await onError(context.error, context);
+		}
+	};
 	app.use(async (context, next) => {
 		const requestLog = requestLogger(logger, context);
 		context.set("logger", requestLog);
+		context.set("shutdown", shutdown);
 		const remoteAddress = context.env?.remoteAddress;
 		context.set(
 			"clientAddress",
@@ -384,9 +531,27 @@ export function createServer({
 		// Why claim before the stages: a request that the app sends through itself again with `c.env`
 		// gets the same edge, and must change its own response.
 		const edge = given?.claim(requestLog) === true ? given : undefined;
+		const scope: RequestScope = { context, values: undefined };
 		// Why finish in the request context: a header hook can read `requestContext()`.
-		await withRequestContext(requestStore, context, async () => {
-			await next();
+		await withRequestContext(requestStore, scope, async () => {
+			await runStage({ context, rest: next, reached: -1 }, 0);
+			// Why here: Hono makes this check after this stage returns. By then, with no edge, the
+			// header hooks have made an empty 200 the response of the request.
+			if (!context.finalized) {
+				context.res = await answerThrown(
+					new Error(
+						"The request has no answer. A middleware must return a Response or call `await next()`.",
+					),
+					context,
+				);
+			}
+			// Why not for each request: with no edge, a report makes the server put a stream around the
+			// body, and a request with no report has none.
+			if (requestStore != null && (edge != null || reports.length > 0)) {
+				reports.push(() => {
+					releaseContext(scope, logger, requestLog);
+				});
+			}
 			const finishing = finishResponse(context, { hooks, reports, edge, fail: answerThrown });
 			if (finishing != null) {
 				await finishing;
@@ -397,28 +562,6 @@ export function createServer({
 			await context.res.body?.cancel();
 		}
 	});
-	// Why `asError` at each step: a value that is not an `Error` becomes one where it is thrown,
-	// so `onError` answers at once and each earlier plugin still sees the 500 after its `next`.
-	for (const { middleware, etagPart } of plugins) {
-		app.use(async (context, next) => {
-			const part = etagPart?.();
-			if (part != null) {
-				context.set("etagParts", [...(context.get("etagParts") ?? []), part]);
-			}
-			try {
-				return await (middleware == null ? next() : middleware(context, next));
-			} catch (error) {
-				throw asError(error);
-			}
-		});
-	}
-	app.use(async (_, next) => {
-		try {
-			await next();
-		} catch (error) {
-			throw asError(error);
-		}
-	});
 
 	let prepared: Promise<void> | undefined;
 	let running: RunningServer | undefined;
@@ -426,15 +569,39 @@ export function createServer({
 	const internals: ServerInternals = {
 		logger,
 		presenceHeaders: presenceHeadersOf(plugins),
+		perRequestHeaders: perRequestHeadersOf(plugins),
 		setRequestStore: (store) => {
 			requestStore = store;
 		},
 		prepare: async (info) => {
 			prepared ??= (async () => {
-				for (const plugin of plugins) {
-					await plugin.setup?.(info);
+				// Why: a person reads the lines of `app-server start`, so the default sink writes text
+				// there, as the CLI's own lines do. An app's own sink does not change.
+				if (appSink == null && info.mode === "development") {
+					sink.log = textSink().log;
 				}
-				app.all("*", async (context) => context.env.framework.fetch(context.req.raw, context));
+				let devServerTaken = info.mode !== "development";
+				// Why a getter: an app plugin that runs the dev server itself must pass, so the check
+				// cannot look for the name `assets`.
+				const seen: SetupInfo =
+					info.mode === "development"
+						? {
+								...info,
+								get devServer() {
+									devServerTaken = true;
+									return info.devServer;
+								},
+							}
+						: info;
+				for (const plugin of plugins) {
+					await plugin.setup?.(seen);
+				}
+				if (!devServerTaken) {
+					throw new Error(
+						"No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.",
+					);
+				}
+				app.all("*", frameworkRoute);
 			})().catch((error: unknown) => {
 				// Why: the next request on a serverless host runs each `setup` again.
 				prepared = undefined;
@@ -452,7 +619,6 @@ export function createServer({
 					"This app server has no listener: the app sets none, and the host has none. A serverless host calls the entry's `fetch`.",
 				);
 			}
-			renewShutdownSignal();
 			let deadlinePassed = false;
 			const fetch: FetchHandler = async (request, bindings) => {
 				const response = await app.fetch(request, { ...bindings, framework });
@@ -482,7 +648,7 @@ export function createServer({
 				urls,
 				shutdown: async () => {
 					stopping ??= (async () => {
-						markStopping();
+						shutdown.stopping = true;
 						if (shutdownDelayMs > 0) {
 							logger.log({
 								level: "info",
@@ -500,16 +666,31 @@ export function createServer({
 							message: "draining",
 							attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
 						});
-						abortShutdownSignal();
+						shutdown.controller.abort();
+						let openListeners = started.length;
 						const deadline = setTimeout(() => {
 							deadlinePassed = true;
+							// Why only with an open listener: a plugin that hangs gets its own line.
+							if (openListeners > 0) {
+								logger.log({
+									level: "warn",
+									message: "the drain deadline passed with open requests",
+									attributes: { "app_server.deadline_ms": shutdownDeadlineMs },
+								});
+							}
 						}, shutdownDeadlineMs);
 						// Why at the same time: a plugin that hangs must not keep the listeners open.
 						// Why settle all: the process exits after shutdown, so one failed stop must not cut
 						// the other stops short.
 						const results = await Promise.allSettled([
 							internals.stopPlugins(),
-							...started.map(async (listener) => listener.stop({ deadlineMs: shutdownDeadlineMs })),
+							...started.map(async (listener) => {
+								try {
+									await listener.stop({ deadlineMs: shutdownDeadlineMs });
+								} finally {
+									openListeners -= 1;
+								}
+							}),
 						]);
 						clearTimeout(deadline);
 						const rejected = results.find((result) => result.status === "rejected");
@@ -525,19 +706,28 @@ export function createServer({
 		},
 		stopPlugins: async () => {
 			stoppingPlugins ??= (async () => {
+				// Why positions: a list can hold one plugin object two times.
+				const open = new Set<number>();
 				const hooks = (async () => {
-					const results = await Promise.allSettled(
-						plugins.map(async (plugin) => plugin.onShutdown?.()),
+					await Promise.all(
+						plugins.map(async (plugin, index) => {
+							if (plugin.onShutdown == null) {
+								return;
+							}
+							open.add(index);
+							try {
+								await plugin.onShutdown();
+							} catch (error) {
+								// Why here: a hook that hangs must not hold back the error of another hook.
+								logger.log({
+									level: "error",
+									message: "plugin shutdown failed",
+									attributes: { "app_server.plugin": plugin.name, error: asError(error) },
+								});
+							}
+							open.delete(index);
+						}),
 					);
-					for (const result of results) {
-						if (result.status === "rejected") {
-							logger.log({
-								level: "error",
-								message: "plugin shutdown failed",
-								attributes: { error: asError(result.reason) },
-							});
-						}
-					}
 				})();
 				if (!(await settlesWithin(hooks, shutdownDeadlineMs))) {
 					logger.log({
@@ -545,6 +735,7 @@ export function createServer({
 						message: "plugin shutdown passed the deadline",
 						attributes: {
 							"app_server.deadline_ms": shutdownDeadlineMs,
+							"app_server.plugins": [...open].map((index) => plugins[index]?.name),
 						},
 					});
 				}

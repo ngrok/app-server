@@ -16,13 +16,21 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { createLogger, build as viteBuild, preview, resolveConfig } from "vite";
+import {
+	createLogger,
+	createServer as createViteServer,
+	build as viteBuild,
+	preview,
+	resolveConfig,
+} from "vite";
 import type { InlineConfig, Plugin, ViteBuilder } from "vite";
 import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { DEFAULT_BUILD_PATHS } from "../cli/serve.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { node } from "../node/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
-import { SERVER_ENTRY_ID, appServer, serverEntrySource } from "./index.js";
+import { SERVER_ENTRY_ID, serverEntrySource } from "./entry-source.js";
+import { appServer } from "./index.js";
 import type { AppServerOptions } from "./index.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vite-"));
@@ -154,7 +162,7 @@ describe("appServer with no options", () => {
 		const entry = await serverEntry(
 			{
 				framework: tanstackStartAdapter(),
-				host: { name: "edge", runtimeModule: "edge-host", entryFileName: "edge.js" },
+				host: { runtimeModule: "edge-host" },
 				app: "./src/app.ts",
 			},
 			{ plugins: [frameworkPlugin("react-router:virtual-modules")], projectRoot: project },
@@ -165,9 +173,37 @@ describe("appServer with no options", () => {
 		expect(entry).toContain(`import(${JSON.stringify(join(project, "src/app.ts"))}),`);
 		rmSync(project, { recursive: true, force: true });
 	});
+
+	it("stops the dev server at startup for an `app` path with no module, and takes a path with no extension", async () => {
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "app-server-vite-missing-")));
+		onTestFinished(() => {
+			rmSync(project, { recursive: true, force: true });
+		});
+		writeFileSync(join(project, "server.ts"), "");
+		const devServer = async (app: string) =>
+			createViteServer({
+				root: project,
+				configFile: false,
+				logLevel: "silent",
+				appType: "custom",
+				// Why no WebSocket server: the test then opens no HMR port.
+				server: { middlewareMode: true, ws: false },
+				plugins: [frameworkPlugin("react-router:virtual-modules"), ...appServer({ app })],
+			});
+
+		await expect(devServer("srever.ts")).rejects.toThrow(
+			`@ngrok/app-server found no module at ${join(project, "srever.ts")} for the \`app\` option. Give a path from the Vite root, ${project}.`,
+		);
+		const started = await devServer("server");
+		await started.close();
+	});
 });
 
 describe("appServer", () => {
+	it("is the one export of the entry, so no internal of the plugin is API", async () => {
+		expect(Object.keys(await import("./index.js"))).toStrictEqual(["appServer"]);
+	});
+
 	it("records each 2xx path, and the headers of each that is not a document, with no cookie or length", async () => {
 		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
 		mkdirSync(join(root, "build/client/page"), { recursive: true });
@@ -317,19 +353,20 @@ describe("appServer", () => {
 		// Why after the start: the framework writes each file while the pass runs. TanStack Start with
 		// `autoSubfolderIndex: false` writes `/flat` to `flat.html`.
 		writeFileSync(join(client, "agents.txt"), text);
+		writeFileSync(join(client, "page.data"), text);
 		mkdirSync(join(client, "page"), { recursive: true });
 		writeFileSync(join(client, "page/index.html"), `<p>${text}</p>`);
 		writeFileSync(join(client, "flat.html"), `<p>${text}</p>`);
 
-		for (const path of ["/agents.txt", "/page", "/flat"]) {
+		for (const path of ["/agents.txt", "/page.data", "/page", "/flat"]) {
 			await (await fetch(new URL(path, server.resolvedUrls?.local[0]))).text();
 		}
 		await server.close();
 
-		expect(gunzipSync(readFileSync(join(client, ".agents.txt.gz"))).toString()).toBe(text);
-		expect(brotliDecompressSync(readFileSync(join(client, ".agents.txt.br"))).toString()).toBe(
-			text,
-		);
+		for (const file of [".agents.txt", ".page.data"]) {
+			expect(gunzipSync(readFileSync(join(client, `${file}.gz`))).toString()).toBe(text);
+			expect(brotliDecompressSync(readFileSync(join(client, `${file}.br`))).toString()).toBe(text);
+		}
 		for (const page of ["page/.index.html", ".flat.html"]) {
 			expect(brotliDecompressSync(readFileSync(join(client, `${page}.br`))).toString()).toBe(
 				`<p>${text}</p>`,
@@ -338,6 +375,76 @@ describe("appServer", () => {
 				`<p>${text}</p>`,
 			);
 		}
+	});
+
+	it("writes each copy and the host's output one time when the prerender pass runs before the post step", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-pass-first-"));
+		const client = join(directory, "build/client");
+		const page = `<p>${"Prerendered text for an agent.\n".repeat(50)}</p><script>go();</script>`;
+		const copy = join(client, "page/.index.html.br");
+		const outputs: unknown[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: ({ clientDirectory }) => {
+					outputs.push(JSON.parse(readFileSync(join(clientDirectory, ".app-server.json"), "utf8")));
+				},
+			},
+		};
+		const [main, copies] = appServer(options);
+		const writeBundle = main?.writeBundle;
+		await (typeof writeBundle === "object" ? writeBundle.handler : writeBundle)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+			{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+			{ dir: client } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+			{ "assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code: "go()" } } as never,
+		);
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			// Why a new instance: the framework starts the preview from the config file again.
+			plugins: [appServer(options), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+		mkdirSync(join(client, "page"), { recursive: true });
+		writeFileSync(join(client, "page/index.html"), page);
+		await (await fetch(new URL("/page", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+		const afterPass = { outputs: outputs.length, copy: existsSync(copy) };
+
+		const buildApp = copies?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: {},
+				},
+			} as never,
+		);
+
+		expect(afterPass).toStrictEqual({ outputs: 0, copy: false });
+		expect(outputs).toStrictEqual([
+			{
+				buildId: expect.stringMatching(/^[0-9a-f]{16}$/u),
+				assetsPath: "/assets/",
+				prerendered: ["/page"],
+				headers: {},
+				scriptHashes: { "/page/index.html": [sha256("go();")] },
+			},
+		]);
+		expect(brotliDecompressSync(readFileSync(copy)).toString()).toBe(page);
+		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it("writes the host's output again after a prerender pass that runs after the build", async () => {
@@ -354,7 +461,17 @@ describe("appServer", () => {
 				},
 			},
 		};
-		const hook = appServer(options)[1]?.buildApp;
+		const [main, copies] = appServer(options);
+		const writeBundle = main?.writeBundle;
+		await (typeof writeBundle === "object" ? writeBundle.handler : writeBundle)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment's name and assets directory.
+			{ environment: { name: "client", config: { build: { assetsDir: "assets" } } } } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `dir`.
+			{ dir: join(root, outDir) } as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields.
+			{ "assets/entry.js": { type: "chunk", fileName: "assets/entry.js", code: "go()" } } as never,
+		);
+		const hook = copies?.buildApp;
 		await (typeof hook === "object" ? hook.handler : hook)?.call(
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
 			{} as never,
@@ -534,6 +651,145 @@ describe("appServer", () => {
 		);
 	});
 
+	it("writes the server entry as `app-server.js` on each host, where `app-server serve` looks for it", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-entry-file-"));
+		const emitted: unknown[] = [];
+		const entryFiles: string[] = [];
+		// Why a field that `HostBuild` does not have: a host in plain JavaScript can set one.
+		const host = {
+			runtimeModule: "edge-host",
+			entryFileName: "edge.js",
+			output: ({ entryFile }: { entryFile: string }) => {
+				entryFiles.push(entryFile);
+			},
+		};
+		const [main, postStep] = appServer({ framework: reactRouterAdapter(), host });
+
+		const buildStart = main?.buildStart;
+		await (typeof buildStart === "object" ? buildStart.handler : buildStart)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only the environment and `emitFile`.
+			{
+				environment: { name: "ssr", mode: "build" },
+				emitFile: (file: unknown) => emitted.push(file),
+			} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads no option.
+			{} as never,
+		);
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: { ssr: { build: { outDir: "build/server" } } },
+				},
+			} as never,
+		);
+
+		expect(emitted).toMatchObject([{ type: "chunk", fileName: "app-server.js" }]);
+		expect(entryFiles).toStrictEqual([join(directory, "build/server/app-server.js")]);
+		expect(DEFAULT_BUILD_PATHS.map((path) => join(directory, path))).toContain(entryFiles[0]);
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it("gives the host's `output` Vite's logger, so `logLevel` applies to what the host prints", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-host-logger-"));
+		const logger = createLogger("silent");
+		const given: unknown[] = [];
+		const [, postStep] = appServer({
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: (build) => {
+					given.push(build.logger);
+				},
+			},
+		});
+
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only these fields of `config`.
+			{
+				config: {
+					root: directory,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: {},
+					logger,
+				},
+			} as never,
+		);
+
+		expect(given).toHaveLength(1);
+		expect(given[0]).toBe(logger);
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it("gives the host's `output` the logger of the build after a late prerender pass, when the framework's preview is silent", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-pass-logger-"));
+		mkdirSync(join(directory, "build/client"), { recursive: true });
+		const reports: string[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				output: ({ clientDirectory, logger }) => {
+					const manifest: unknown = JSON.parse(
+						readFileSync(join(clientDirectory, ".app-server.json"), "utf8"),
+					);
+					logger.info(`report ${JSON.stringify(manifest)}`);
+				},
+			},
+		};
+		const plugins = appServer(options);
+		const config = await resolveConfig(
+			{
+				root: directory,
+				configFile: false,
+				build: { outDir: "build/client" },
+				customLogger: {
+					...createLogger("silent"),
+					info: (message) => {
+						reports.push(message);
+					},
+				},
+				plugins,
+			},
+			"build",
+		);
+		const buildApp = plugins[1]?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{ config } as never,
+		);
+		// Why `silent` and a new instance: React Router starts its prerender preview from the config
+		// file again, with that log level.
+		const server = await preview({
+			root: directory,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer(options), responder()],
+			build: { outDir: "build/client" },
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(reports).toHaveLength(2);
+		expect(reports[0]).toContain('"prerendered":[]');
+		expect(reports[1]).toContain('"prerendered":["/agents.txt"]');
+		rmSync(directory, { recursive: true, force: true });
+	});
+
 	it("passes the framework's runtime options to its runtime", () => {
 		expect(
 			serverEntrySource({
@@ -594,14 +850,20 @@ describe("appServer", () => {
 		}).toThrow('needs an ES module server build, and this build has the format "cjs"');
 	});
 
-	it("fails the build for a base other than /", async () => {
+	it("fails the build for a base other than /, with each framework adapter", async () => {
+		const framework = {
+			serverModule: "virtual:custom/server-build",
+			runtimeModule: "custom-framework",
+			isPrerenderPass: () => false,
+		};
+
 		await expect(
 			preview({
 				root,
 				configFile: false,
 				base: "/docs/",
 				logLevel: "silent",
-				plugins: [appServer({ framework: reactRouterAdapter(), host: node() })],
+				plugins: [appServer({ framework, host: node() })],
 				preview: { port: 0, host: "127.0.0.1" },
 			}),
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');
@@ -613,6 +875,8 @@ describe("appServer", () => {
 		const files: Record<string, string | Uint8Array> = {
 			"assets/app-abc.js": text,
 			"docs/llms.txt": text,
+			// Why: the server sends a React Router data file as `text/x-script`, which it compresses.
+			"docs/button.data": text,
 			"index.html": `<p>${text}</p>`,
 			"small.txt": "small",
 			// Why: copies from an earlier build of a file that is now too small.
@@ -630,8 +894,10 @@ describe("appServer", () => {
 			mkdirSync(dirname(join(client, path)), { recursive: true });
 			writeFileSync(join(client, path), content);
 		}
-		const [, copies] = appServer({ framework: reactRouterAdapter(), host: node() });
-		const hook = copies?.buildApp;
+		const plugins = appServer({ framework: reactRouterAdapter(), host: node() });
+		// Why: Vite gives each plugin the config before the build, and the plugin reads the framework from it.
+		await resolveConfig({ root, configFile: false, logLevel: "silent", plugins }, "build");
+		const hook = plugins[1]?.buildApp;
 		const builder = {
 			config: {
 				root,
@@ -649,7 +915,7 @@ describe("appServer", () => {
 
 		const copy = (path: string, extension: string) =>
 			join(client, dirname(path), `.${basename(path)}.${extension}`);
-		for (const path of ["assets/app-abc.js", "docs/llms.txt", "index.html"]) {
+		for (const path of ["assets/app-abc.js", "docs/llms.txt", "docs/button.data", "index.html"]) {
 			const content = files[path]?.toString();
 			expect(gunzipSync(readFileSync(copy(path, "gz"))).toString()).toBe(content);
 			expect(brotliDecompressSync(readFileSync(copy(path, "br"))).toString()).toBe(content);
@@ -663,6 +929,77 @@ describe("appServer", () => {
 		expect(readFileSync(join(client, "release.tar.gz"), "utf8")).toBe("archive");
 		expect(readFileSync(join(client, "data.json.gz"), "utf8")).toBe("app data");
 		expect(readFileSync(join(client, "data.json.br"), "utf8")).toBe("app data");
+	});
+
+	it("writes only the copies that the host reads, after the build and after a late prerender pass", async () => {
+		vi.stubEnv("IS_RR_BUILD_REQUEST", "yes");
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vite-host-copies-"));
+		const client = join(directory, "build/client");
+		const text = "export const value = 1;\n".repeat(100);
+		const files = {
+			"static/app-abc.js": text,
+			"docs/llms.txt": text,
+			// Why: copies from an earlier build with another host.
+			"static/.app-abc.js.gz": "stale",
+			"static/.app-abc.js.br": "stale",
+			"docs/.llms.txt.gz": "stale",
+		};
+		for (const [path, content] of Object.entries(files)) {
+			mkdirSync(dirname(join(client, path)), { recursive: true });
+			writeFileSync(join(client, path), content);
+		}
+		const asked: unknown[] = [];
+		const options: AppServerOptions = {
+			framework: reactRouterAdapter(),
+			host: {
+				...node(),
+				// Why: as a host whose CDN serves the hashed files and whose function reads brotli only.
+				copies: (file) => {
+					asked.push(file);
+					return file.path.startsWith(file.assetsPath) ? [] : ["br"];
+				},
+			},
+		};
+		const config = { root: directory, build: { outDir: "build/client", assetsDir: "static" } };
+
+		const buildApp = appServer(options)[1]?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config`.
+			{} as never,
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the hook reads only `config.root` and the output directories.
+			{ config: { ...config, environments: {} } } as never,
+		);
+		const afterBuild = {
+			static: readdirSync(join(client, "static")),
+			docs: readdirSync(join(client, "docs")).toSorted(),
+		};
+		const server = await preview({
+			...config,
+			configFile: false,
+			appType: "custom",
+			logLevel: "silent",
+			plugins: [appServer(options), responder()],
+			preview: { port: 0, host: "127.0.0.1" },
+		});
+		writeFileSync(join(client, "agents.txt"), text);
+		await (await fetch(new URL("/agents.txt", server.resolvedUrls?.local[0]))).text();
+		await server.close();
+
+		expect(afterBuild).toStrictEqual({
+			static: ["app-abc.js"],
+			docs: [".llms.txt.br", "llms.txt"],
+		});
+		expect(brotliDecompressSync(readFileSync(join(client, "docs/.llms.txt.br"))).toString()).toBe(
+			text,
+		);
+		expect(asked).toContainEqual({ path: "/docs/llms.txt", assetsPath: "/static/" });
+		expect(asked).toContainEqual({ path: "/static/app-abc.js", assetsPath: "/static/" });
+		expect(
+			readdirSync(client)
+				.filter((name) => name.includes("agents"))
+				.toSorted(),
+		).toStrictEqual([".agents.txt.br", "agents.txt"]);
+		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it("writes no copy through a linked directory, so each copy stays in the client build", async () => {

@@ -1,5 +1,5 @@
-import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin } from "../plugin-options.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
+import { checkHeaderName, checkHeaderValue, optionPlugin } from "../plugin-options.js";
 import type { Plugin, ResponseHeaders, SetupInfo } from "../types.js";
 
 /** The header that {@link buildId} sets by default. */
@@ -14,12 +14,18 @@ export const BUILD_ID_METRIC = "build";
 
 /** Options for {@link buildId}. */
 export type BuildIdOptions = {
-	/** @default "X-Build-Id" */
-	header?: string;
+	/**
+	 * The response header that carries the build. Give the same name to
+	 * `staleBuildReactRouter()` or `staleBuildTanStack()`. A name that is not
+	 * an HTTP header name stops startup.
+	 * @default "X-Build-Id"
+	 */
+	headerName?: string;
 	/**
 	 * The deployed build, such as the image tag. With no value or `""`, the
 	 * plugin sends the ID that the `appServer` Vite plugin derives from the
-	 * client build. In development, it then sends no build.
+	 * client build. In development, it then sends no build. A value that a
+	 * header cannot hold, such as one with a line break, stops startup.
 	 * @default the `buildId` of `.app-server.json` in the client build
 	 */
 	value?: string | undefined;
@@ -110,12 +116,16 @@ function buildMetric(value: string | undefined): string | undefined {
  * buildId({ value: process.env.IMAGE_TAG });
  */
 export function buildId({
-	header = BUILD_ID_HEADER,
+	headerName = BUILD_ID_HEADER,
 	value: given,
 	paths,
 }: BuildIdOptions = {}): Plugin {
 	// Why `""` too: a deploy can set the variable with no value, such as `IMAGE_TAG=`.
 	const explicit = given === "" ? undefined : given;
+	checkHeaderName({ plugin: "buildId", option: "headerName", name: headerName });
+	if (explicit != null) {
+		checkHeaderValue({ plugin: "buildId", option: "value", value: explicit });
+	}
 	let value = explicit;
 	let timing = buildMetric(value);
 	let isDataRequest: SetupInfo["isDataRequest"] = noDataRequests;
@@ -129,28 +139,35 @@ export function buildId({
 		// Why: a 304 has no `Content-Type`, so a document that did not change on disk must still
 		// answer 200 when the build ID changes.
 		etagPart: () => value,
-		middleware: async (context, next) =>
-			withHeaderHook(context, next, (response) => {
-				const { path } = context.req;
-				const isRouter =
-					(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
-				const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
-				// Why remove the build of an upstream API: the client must read only this app's build.
-				const before = response.get("Server-Timing");
-				const metrics = [
-					...otherMetrics(before),
-					...(isStamped && timing != null ? [timing] : []),
-				].join(", ");
-				if (metrics === "") {
-					response.delete("Server-Timing");
-				} else if (metrics !== before) {
-					response.set("Server-Timing", metrics);
-				}
-				if (isRouter && value != null) {
-					response.set(header, value);
-				} else {
-					response.delete(header);
-				}
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) =>
+			withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (response) => {
+					const { path } = context.req;
+					const isRouter =
+						(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
+					const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
+					// Why remove the build of an upstream API: the client must read only this app's build.
+					const before = response.get("Server-Timing");
+					const stamp = isStamped && timing != null ? timing : "";
+					// Why no parse with no header: most responses have none, so they have no metric to keep.
+					const metrics =
+						before == null
+							? stamp
+							: [...otherMetrics(before), ...(stamp === "" ? [] : [stamp])].join(", ");
+					if (metrics === "") {
+						response.delete("Server-Timing");
+					} else if (metrics !== before) {
+						response.set("Server-Timing", metrics);
+					}
+					if (isRouter && value != null) {
+						response.set(headerName, value);
+					} else {
+						response.delete(headerName);
+					}
+				},
 			}),
 	});
 }

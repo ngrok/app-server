@@ -6,8 +6,14 @@ import {
 	readIfQueued,
 } from "../compression.js";
 import type { Encoding, ReadResult } from "../compression.js";
-import { hookedHeaders, replaceResponse, withHeaderHook } from "../header-hook.js";
-import type { Plugin } from "../types.js";
+import {
+	bodyHooks,
+	headerList,
+	hookedView,
+	replaceResponse,
+	withBuiltInHeaderHook,
+} from "../header-hook.js";
+import type { CompressStream, Plugin, ResponseHeaders } from "../types.js";
 import { withVary } from "../vary.js";
 
 /** The chunks that a body has queued, and the read that is still open, if any. */
@@ -126,9 +132,6 @@ function replay(
 	);
 }
 
-/** A host stream that compresses a byte stream. */
-type Compress = (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
-
 /**
  * `response` with the compressed `body` and its headers. Why not in a header
  * hook: the body and its headers go together, also to the code that an outer
@@ -151,6 +154,19 @@ function compressed(
 }
 
 /**
+ * Whether `headers` keep the body as it is: the body has an encoding, it is
+ * a part of a file, or it is marked `no-transform`.
+ */
+function keepsBody(headers: Pick<ResponseHeaders, "get" | "has">): boolean {
+	return (
+		headers.has("Content-Encoding") ||
+		// Why: compression changes the bytes, so a `Content-Range` would no longer match them.
+		headers.has("Content-Range") ||
+		forbidsTransform(headers.get("Cache-Control"))
+	);
+}
+
+/**
  * Compresses text responses with brotli or gzip, and flushes after each
  * chunk, so a streamed page shell or a server-sent event reaches the client
  * at once. A client gets brotli when its `Accept-Encoding` ranks `br` at
@@ -162,11 +178,11 @@ function compressed(
  * host gives the streams. On a host with none, the plugin does nothing.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog(), streamingCompress()] });
+ * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets()] });
  */
 export function streamingCompress(): Plugin {
 	/** The host's streams, in the order that the plugin prefers them. */
-	let streams = new Map<Encoding, Compress>();
+	let streams = new Map<Encoding, CompressStream>();
 	let offered: readonly Encoding[] = [];
 	/** The encoding that an `Accept-Encoding` header prefers, with its stream. */
 	const choose = (header: string | undefined) => {
@@ -194,21 +210,25 @@ export function streamingCompress(): Plugin {
 			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
 			// not compress then needs no copy for it.
 			let compressing = false;
-			await withHeaderHook(context, next, (headers) => {
-				// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
-				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
-				const type = headers.get("Content-Type");
-				const vary =
-					type == null || isCompressible(type)
-						? withVary(headers.get("Vary"), "Accept-Encoding")
-						: undefined;
-				if (vary != null) {
-					headers.set("Vary", vary);
-				}
-				// Why: the hook of an inner stage can set the length of the body before compression.
-				if (compressing) {
-					headers.delete("Content-Length");
-				}
+			await withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
+					// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
+					const type = headers.get("Content-Type");
+					const vary =
+						type == null || isCompressible(type)
+							? withVary(headers.get("Vary"), "Accept-Encoding")
+							: undefined;
+					if (vary != null) {
+						headers.set("Vary", vary);
+					}
+					// Why: the hook of an inner stage can set the length of the body before compression.
+					if (compressing) {
+						headers.delete("Content-Length");
+					}
+				},
 			});
 			const response = context.res;
 			const type = response.headers.get("Content-Type");
@@ -217,18 +237,21 @@ export function streamingCompress(): Plugin {
 			}
 			const length = response.headers.get("Content-Length");
 			const { body } = response;
-			const chosen = choose(context.req.header("Accept-Encoding"));
+			const accept = context.req.header("Accept-Encoding");
 			if (
+				accept == null ||
 				type == null ||
 				body == null ||
 				context.req.method === "HEAD" ||
 				(length != null && Number(length) < MIN_COMPRESS_BYTES) ||
-				chosen == null ||
-				response.headers.has("Content-Encoding") ||
-				// Why: compression changes the bytes, so a `Content-Range` would no longer match them.
-				response.headers.has("Content-Range") ||
-				forbidsTransform(response.headers.get("Cache-Control"))
+				keepsBody(response.headers)
 			) {
+				return;
+			}
+			// Why after the checks: most responses stop there, such as a static file with a compressed copy
+			// and a 304, and they need no parse. A request with no header needs no other check.
+			const chosen = choose(accept);
+			if (chosen == null) {
 				return;
 			}
 			let source: ReadableStream<Uint8Array> = body;
@@ -241,14 +264,11 @@ export function streamingCompress(): Plugin {
 				compress = !queued.done || size >= MIN_COMPRESS_BYTES;
 				source = replay(reader, queued);
 			}
-			// Why the hooks: a header hook of a later stage can set these headers, and it runs only where
-			// the response leaves.
-			if (compress) {
-				const hooked = hookedHeaders(context, response.headers);
-				compress =
-					!hooked.has("Content-Encoding") &&
-					!hooked.has("Content-Range") &&
-					!forbidsTransform(hooked.get("Cache-Control"));
+			// Why the hooks: a header hook can set these headers, and it runs only where the response
+			// leaves. With no such hook, the check before the parse is the answer.
+			const hooks = compress ? bodyHooks(context) : undefined;
+			if (hooks != null) {
+				compress = !keepsBody(hookedView(hooks, headerList(response.headers)));
 			}
 			if (compress) {
 				compressing = true;

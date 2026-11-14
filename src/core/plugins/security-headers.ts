@@ -1,6 +1,6 @@
 import type { Context } from "hono";
-import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin } from "../plugin-options.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
+import { checkHeaderValue, optionPlugin } from "../plugin-options.js";
 import type { AppServerEnv, Plugin } from "../types.js";
 
 /** The headers that {@link securityHeaders} sets, by name. */
@@ -33,7 +33,10 @@ const DEFAULT_SECURITY_HEADERS: SecurityHeaderValues = {
 
 /** Options for {@link securityHeaders}. */
 export type SecurityHeadersOptions = {
-	/** Values that replace the defaults. `false` turns a header off. */
+	/**
+	 * Values that replace the defaults. `false` turns a header off. A value
+	 * that a header cannot hold, such as one with a curly quote, stops startup.
+	 */
 	headers?: SecurityHeaderValues;
 };
 
@@ -67,21 +70,29 @@ export function securityHeaders({ headers = {} }: SecurityHeadersOptions = {}): 
 	const values = Object.entries({ ...DEFAULT_SECURITY_HEADERS, ...headers })
 		.filter((entry): entry is [string, string] => typeof entry[1] === "string")
 		.map(([name, value]) => [name, oneLine(value)] as const);
-	return {
+	for (const [name, value] of values) {
+		checkHeaderValue({ plugin: "securityHeaders", option: name, value });
+	}
+	return optionPlugin("securityHeaders", {
 		name: "security-headers",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const isHttps = context.req.url.startsWith("https:");
-			await withHeaderHook(context, next, (response) => {
-				for (const [name, value] of values) {
-					if (name === "Content-Security-Policy") {
-						response.append(name, value);
-					} else if (!response.has(name) && (name !== "Strict-Transport-Security" || isHttps)) {
-						response.set(name, value);
+			return withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (response) => {
+					for (const [name, value] of values) {
+						if (name === "Content-Security-Policy") {
+							response.append(name, value);
+						} else if (!response.has(name) && (name !== "Strict-Transport-Security" || isHttps)) {
+							response.set(name, value);
+						}
 					}
-				}
+				},
 			});
 		},
-	};
+	});
 }
 
 /**
@@ -103,9 +114,43 @@ export type ContentSecurityPolicyOptions = {
 	policy: (document: { scriptSrc: string; context: Context<AppServerEnv> }) => string;
 };
 
+/** The `script-src` source list that trusts `'self'` and each inline script with one of `hashes`. */
+function hashSources(hashes: readonly string[]): string {
+	return ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
+}
+
+/** The bytes of one nonce. Why 16: a nonce must have 128 bits or more. */
+const NONCE_BYTES = 16;
+
+/**
+ * Random bytes for 64 nonces. Why a pool: on Node.js, one
+ * `crypto.getRandomValues` call costs more than the rest of a nonce. Each
+ * nonce takes its own 16 bytes, so no two nonces share a byte. The bytes
+ * that no nonce took yet stay in memory. So each process that starts from a
+ * copy of that memory, such as an image of a virtual machine or a Node.js
+ * startup snapshot, gives the same next nonces, 63 at most.
+ */
+const noncePool = new Uint8Array(NONCE_BYTES * 64);
+
+/**
+ * How many bytes of {@link noncePool} the nonces took. Why all of them at
+ * the start: the first nonce fills the pool, so a process holds no random
+ * bytes before its first request.
+ */
+let takenBytes = noncePool.length;
+
 /** A new random nonce: 16 bytes in base64. */
 function randomNonce(): string {
-	return btoa(String.fromCodePoint(...crypto.getRandomValues(new Uint8Array(16))));
+	if (takenBytes === noncePool.length) {
+		crypto.getRandomValues(noncePool);
+		takenBytes = 0;
+	}
+	let bytes = "";
+	for (const byte of noncePool.subarray(takenBytes, takenBytes + NONCE_BYTES)) {
+		bytes += String.fromCodePoint(byte);
+	}
+	takenBytes += NONCE_BYTES;
+	return btoa(bytes);
 }
 
 /**
@@ -113,8 +158,9 @@ function randomNonce(): string {
  * policy trusts the document's scripts, and only them:
  *
  * - A rendered document gets `'nonce-…' 'strict-dynamic'` with a new nonce
- *   for each request. The app reads the nonce from `requestContext()` and
- *   gives it to the framework's render, so each inline script gets it.
+ *   for each request. The app gives `cspNonce()` from
+ *   `@ngrok/app-server/client` to the framework's render, so each inline
+ *   script gets the nonce.
  * - A prerendered document gets `'self'` and the hash of each of its inline
  *   scripts, which the Vite plugin records. Its file has one nonce for every
  *   visitor, so a nonce protects nothing. Why no `'strict-dynamic'`: a hash,
@@ -133,35 +179,40 @@ function randomNonce(): string {
  * });
  */
 export function contentSecurityPolicy({ policy }: ContentSecurityPolicyOptions): Plugin {
-	let scriptHashes: ReadonlyMap<string, readonly string[]> = new Map();
+	/** The source list of each HTML file of the client build that has hashes, by the file's URL path. */
+	let fileSources: ReadonlyMap<string, string> = new Map();
 	return optionPlugin("contentSecurityPolicy", {
 		name: "content-security-policy",
 		setup: (info) => {
-			({ scriptHashes } = info);
+			fileSources = new Map(
+				Array.from(info.scriptHashes, ([file, hashes]) => [file, hashSources(hashes)]),
+			);
 		},
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const nonce = randomNonce();
 			context.set("cspNonce", nonce);
 			// Why a header hook: in development, the dev server sends its own response, such as a file of
 			// Vite's public directory, and runs the hooks before it sends the head.
-			await withHeaderHook(context, next, (headers) => {
-				// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
-				const file = context.get("staticDocument");
-				const hashes =
-					context.get("documentScriptHashes") ??
-					(file == null ? undefined : (scriptHashes.get(file) ?? []));
-				if (
-					headers.has("Content-Security-Policy") ||
-					(hashes == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
-				) {
-					return;
-				}
-				// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
-				const scriptSrc =
-					hashes == null
-						? `'nonce-${nonce}' 'strict-dynamic'`
-						: ["'self'", ...hashes.map((hash) => `'sha256-${hash}'`)].join(" ");
-				headers.set("Content-Security-Policy", oneLine(policy({ scriptSrc, context })));
+			return withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					// Why `staticDocument` too: a 304 has no `Content-Type`, and a browser replaces the cached policy with its policy.
+					const file = context.get("staticDocument");
+					const devHashes = context.get("documentScriptHashes");
+					// Why `'self'` only for a file with no hashes: the policy fails closed, so a missed script shows in a test.
+					const fileSource = file == null ? undefined : (fileSources.get(file) ?? "'self'");
+					const hashSource = devHashes == null ? fileSource : hashSources(devHashes);
+					if (
+						headers.has("Content-Security-Policy") ||
+						(hashSource == null && !(headers.get("Content-Type")?.startsWith("text/html") ?? false))
+					) {
+						return;
+					}
+					const scriptSrc = hashSource ?? `'nonce-${nonce}' 'strict-dynamic'`;
+					headers.set("Content-Security-Policy", oneLine(policy({ scriptSrc, context })));
+				},
 			});
 		},
 	});

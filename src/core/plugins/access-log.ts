@@ -1,6 +1,7 @@
 import type { Context } from "hono";
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import { asError } from "../log.js";
+import { optionPlugin } from "../plugin-options.js";
 import { onResponseSent } from "../response-edge.js";
 import type { AppServerEnv, Plugin, SentResponse } from "../types.js";
 import { answeredByDevServer } from "./static.js";
@@ -30,6 +31,17 @@ export type AccessLogOptions = {
 	 */
 	serverTiming?: boolean;
 };
+
+/**
+ * A query in which each part is a key, an `=`, and a value, and each key has
+ * only characters that a URL parse and `encodeURIComponent` keep. Why:
+ * {@link loggedUrl} gives such a key as it is, so the redacted query needs no
+ * parse.
+ */
+const PLAIN_QUERY = /^[\w!'()*\-.~]+=[^&]*(?:&[\w!'()*\-.~]+=[^&]*)*$/u;
+
+/** The `=` and the value of each part of a {@link PLAIN_QUERY}. */
+const QUERY_VALUE = /[=][^&]*/gu;
 
 /**
  * A URL's path and query, with each query value replaced when `redact` is set.
@@ -68,12 +80,14 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  *   `499` and the level `info`.
  * - A line has `http.route` when the framework adapter gives the route
  *   pattern that it matched, such as `/domains/:domainId`.
+ * - A line has `http.aborted: true` when the body stopped before its end: the
+ *   client left, the body failed, or the server closed the connection.
  * - In development, a request that Vite answers, such as a source module,
  *   gets no line.
  * - A request of the build's check of the CDN pages gets no line.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog({ redactQuery: false })] });
+ * createServer({ plugins: [requestId(), accessLog({ redactQuery: false }), assets()] });
  * // {"level":"info","message":"request","http.status_code":200,"network.bytes_written":5120,"duration":1830000,...}
  */
 export function accessLog({
@@ -81,7 +95,7 @@ export function accessLog({
 	attributes,
 	serverTiming = false,
 }: AccessLogOptions = {}): Plugin {
-	return {
+	return optionPlugin("accessLog", {
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
@@ -89,11 +103,15 @@ export function accessLog({
 			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
 			// There it reads the time for the header, and whether the client left before the answer. Why
 			// not later: the Node.js listener also aborts the signal when a body fails after the head.
-			await withHeaderHook(context, next, (headers) => {
-				clientLeft = context.req.raw.signal.aborted;
-				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
-					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
-				}
+			await withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					clientLeft = context.req.raw.signal.aborted;
+					if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
+						headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
+					}
+				},
 			});
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
@@ -126,15 +144,23 @@ export function accessLog({
 				}
 			});
 		},
-	};
+	});
 
 	/** `href` as {@link loggedUrl} logs it. */
 	function requestUrl(href: string): string {
 		const start = href.indexOf("/", href.indexOf("//") + 2);
-		// Why no parse for a path alone: a request URL is the `href` of a parsed URL, or one that the
-		// Node.js listener checked holds no character that a parse changes. So its path is the `pathname`.
-		if (start !== -1 && !href.includes("?", start) && !href.includes("#", start)) {
-			return href.slice(start);
+		if (start !== -1 && !href.includes("#", start)) {
+			const query = href.indexOf("?", start);
+			// Why no parse for a path alone: on Node.js and Bun, a parse does not change the path of a
+			// request URL that parses, so that path is the `pathname`. Deno gives each URL as the client
+			// sent it, as Node.js and Bun do for a URL that does not parse, and the line shows that path.
+			if (query === -1) {
+				return href.slice(start);
+			}
+			const search = href.slice(query + 1);
+			if (redactQuery && PLAIN_QUERY.test(search)) {
+				return `${href.slice(start, query)}?${search.replaceAll(QUERY_VALUE, "=REDACTED")}`;
+			}
 		}
 		return loggedUrl(new URL(href), { redact: redactQuery });
 	}
@@ -159,7 +185,7 @@ export function accessLog({
 			line["http.route"] = route;
 		}
 		if (aborted) {
-			line["http.client_aborted"] = true;
+			line["http.aborted"] = true;
 		}
 		return line;
 	}

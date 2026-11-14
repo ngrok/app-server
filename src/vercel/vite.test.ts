@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { reactRouterAdapter } from "../react-router/vite.js";
+import { appServer } from "../vite/index.js";
 import { vercel } from "./vite.js";
 
 const root = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
@@ -22,6 +24,9 @@ const functionDirectory = join(output, "functions/index.func");
 afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
+
+/** A logger for a test that does not read the build log. */
+const quiet = { info: () => {}, warn: () => {} };
 
 function write(path: string, text: string): void {
 	mkdirSync(dirname(path), { recursive: true });
@@ -80,11 +85,12 @@ describe("vercel", () => {
 			regions: ["iad1"],
 		});
 
-		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/" });
+		host.output?.({ root, clientDirectory, entryFile, assetsPath: "/assets/", logger: quiet });
 
 		expect(filesUnder(output)).toStrictEqual([
 			"config.json",
 			"functions/index.func/.vc-config.json",
+			"functions/index.func/build/client/.app-server-files.json",
 			"functions/index.func/build/client/.app-server.json",
 			"functions/index.func/build/client/about/index.html",
 			"functions/index.func/build/client/robots.txt",
@@ -108,7 +114,6 @@ describe("vercel", () => {
 			handler: "build/server/vercel-function.js",
 			launcherType: "Nodejs",
 			supportsResponseStreaming: true,
-			environment: { APP_SERVER_BUILT_AT: expect.stringMatching(/^\d+$/u) },
 			regions: ["iad1"],
 		});
 		expect(json(join(output, "config.json"))).toStrictEqual({
@@ -148,16 +153,18 @@ describe("vercel", () => {
 			clientDirectory: join(nested, "dist/client"),
 			entryFile: join(nested, "dist/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		expect(filesUnder(join(nested, ".vercel/output/functions/index.func/dist"))).toStrictEqual([
 			"app-server.js",
+			"client/.app-server-files.json",
 			"client/robots.txt",
 			"vercel-function.js",
 		]);
 	});
 
-	it("keeps only the brotli copy of a file that has one in the function, with the size of the file", () => {
+	it("keeps only the brotli copy of a file that has one in the function, and lists the size of each file and the time of the build", () => {
 		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-brotli-only-"));
 		onTestFinished(() => {
 			rmSync(site, { recursive: true, force: true });
@@ -169,23 +176,36 @@ describe("vercel", () => {
 		write(join(site, "build/client/feed.xml"), "<rss/>");
 		write(join(site, "build/client/.feed.xml.gz"), "gzip");
 
+		write(join(site, "build/client/assets/app-abc.js"), "app();");
+		const before = Date.now();
+
 		vercel().output?.({
 			root: site,
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const client = join(site, ".vercel/output/functions/index.func/build/client");
 		expect(filesUnder(client)).toStrictEqual([
-			".app-server-brotli.json",
+			".app-server-files.json",
 			".feed.xml.gz",
 			"blog/.index.html.br",
 			"feed.xml",
 		]);
-		expect(json(join(client, ".app-server-brotli.json"))).toStrictEqual({
-			"/blog/index.html": "<h1>Blog</h1>".length,
+		const list = json(join(client, ".app-server-files.json")) as { builtAt: number };
+		expect(list).toStrictEqual({
+			builtAt: expect.any(Number),
+			files: {
+				"/.feed.xml.gz": "gzip".length,
+				"/blog/.index.html.br": "br".length,
+				"/feed.xml": "<rss/>".length,
+			},
+			brotliOnly: { "/blog/index.html": "<h1>Blog</h1>".length },
 		});
+		expect(list.builtAt).toBeGreaterThanOrEqual(before);
+		expect(list.builtAt).toBeLessThanOrEqual(Date.now());
 	});
 
 	it("keeps each prerendered page in the function by default, with no start of the server build", () => {
@@ -202,11 +222,13 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const siteOutput = join(site, ".vercel/output");
 		expect(existsSync(join(siteOutput, "static"))).toBe(false);
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
+			".app-server-files.json",
 			"about/index.html",
 		]);
 	});
@@ -226,6 +248,7 @@ describe("vercel", () => {
 				clientDirectory: join(custom, "build/client"),
 				entryFile: join(custom, "build/server/app-server.js"),
 				assetsPath: "/blog-assets/build/",
+				logger: quiet,
 			},
 		);
 
@@ -290,6 +313,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const siteOutput = join(site, ".vercel/output");
@@ -303,7 +327,7 @@ describe("vercel", () => {
 		);
 		// Why each file: a request that no page route matches, such as `/about/`, reaches the function.
 		expect(filesUnder(join(siteOutput, "functions/index.func/build/client"))).toStrictEqual([
-			".app-server-brotli.json",
+			".app-server-files.json",
 			"about/.index.html.br",
 			"app/index.html",
 			"docs.md",
@@ -366,6 +390,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const pages = join(site, ".vercel/output/static/_app-server/pages");
@@ -397,6 +422,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const { routes } = json(join(site, ".vercel/output/config.json")) as {
@@ -428,6 +454,7 @@ describe("vercel", () => {
 			clientDirectory: join(site, "build/client"),
 			entryFile: join(site, "build/server/app-server.js"),
 			assetsPath: "/assets/",
+			logger: quiet,
 		});
 
 		const { routes } = json(join(site, ".vercel/output/config.json")) as {
@@ -442,6 +469,84 @@ describe("vercel", () => {
 		expect(filesUnder(join(site, ".vercel/output/static/_app-server/pages"))).toHaveLength(
 			served.size,
 		);
+	});
+
+	it("reports each path that the function serves, with its reason, through Vite's logger", () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-report-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const kept = Array.from({ length: 25 }, (_, index) => ({
+			path: `/account/${index}`,
+			reason: "the status is 302",
+		}));
+		write(join(site, "build/server/app-server.js"), entrySource(kept));
+		const logged: string[] = [];
+
+		vercel({ cdnPages: true }).output?.({
+			root: site,
+			clientDirectory: join(site, "build/client"),
+			entryFile: join(site, "build/server/app-server.js"),
+			assetsPath: "/assets/",
+			logger: {
+				info: (message) => {
+					logged.push(message);
+				},
+				warn: () => {},
+			},
+		});
+
+		expect(logged).toStrictEqual([
+			[
+				"@ngrok/app-server/vercel: the CDN serves 0 prerendered paths, and the function serves 25.",
+				...kept.map(({ path, reason }) => `  ${path}: ${reason}`),
+			].join("\n"),
+		]);
+	});
+
+	it("makes the build write only the copies that the output holds: brotli, and none for a CDN file", async () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-copies-"));
+		onTestFinished(() => {
+			rmSync(site, { recursive: true, force: true });
+		});
+		const text = "Prerendered text for an agent.\n".repeat(50);
+		write(join(site, "build/server/app-server.js"), entrySource());
+		for (const file of ["assets/app-abc.js", "blog-assets/post.css", "about/index.html"]) {
+			write(join(site, "build/client", file), text);
+		}
+		const [, postStep] = appServer({
+			framework: reactRouterAdapter(),
+			host: vercel({ cdnPaths: ["/blog-assets/"] }),
+		});
+
+		const buildApp = postStep?.buildApp;
+		await (typeof buildApp === "object" ? buildApp.handler : buildApp)?.call(
+			// Why the casts: the hook reads only these fields of `config`.
+			{} as never,
+			{
+				config: {
+					root: site,
+					build: { outDir: "build/client", assetsDir: "assets" },
+					environments: { ssr: { build: { outDir: "build/server" } } },
+					logger: quiet,
+				},
+			} as never,
+		);
+
+		expect(filesUnder(join(site, "build/client"))).toStrictEqual([
+			".app-server.json",
+			"about/.index.html.br",
+			"about/index.html",
+			"assets/app-abc.js",
+			"blog-assets/post.css",
+		]);
+		expect(
+			filesUnder(join(site, ".vercel/output/functions/index.func/build/client")),
+		).toStrictEqual([".app-server-files.json", ".app-server.json", "about/.index.html.br"]);
+		expect(filesUnder(join(site, ".vercel/output/static"))).toStrictEqual([
+			"assets/app-abc.js",
+			"blog-assets/post.css",
+		]);
 	});
 
 	it("fails the config for a CDN path that is not a URL path prefix", () => {

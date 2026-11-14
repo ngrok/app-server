@@ -29,6 +29,43 @@ describe("buildId", () => {
 		expect((await request("/api.json")).headers.get("X-Build-Id")).toBeNull();
 	});
 
+	it("sends the build in the header of the headerName option, and no X-Build-Id", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42", headerName: "X-App-Build" })],
+			render: async () => new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/page");
+
+		expect(response.headers.get("X-App-Build")).toBe("v42");
+		expect(response.headers.get("X-Build-Id")).toBeNull();
+	});
+
+	it("stops startup for a headerName that is not an HTTP header name", () => {
+		expect(() => buildId({ headerName: "" })).toThrow(
+			'The headerName of buildId must be an HTTP header name, not "".',
+		);
+		expect(() => buildId({ headerName: "X Build" })).toThrow('not "X Build"');
+	});
+
+	it.each(["v42\n", "v\u00004", "build ✓"])(
+		"stops startup for the value %j, which a header cannot hold",
+		(value) => {
+			expect(() => buildId({ value })).toThrow(
+				`The value of buildId must be a value that a header can hold, not ${JSON.stringify(value)}.`,
+			);
+		},
+	);
+
+	it("takes a value with a character up to U+00FF, which a header can hold", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "café" })],
+			render: async () => new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		expect((await request("/page")).headers.get("X-Build-Id")).toBe("café");
+	});
+
 	it("puts the build in the Server-Timing of documents and data responses", async () => {
 		const { request } = await testServer({
 			plugins: [buildId({ value: 'v"42' })],
@@ -110,6 +147,16 @@ describe("buildId", () => {
 			null,
 			null,
 		]);
+	});
+
+	it("removes a Server-Timing that holds only the build of an upstream API", async () => {
+		const { request } = await testServer({
+			plugins: [buildId({ value: "v42" })],
+			render: async () =>
+				Response.json({}, { headers: { "Server-Timing": 'build;desc="api-v7"' } }),
+		});
+
+		expect((await request("/status.json")).headers.get("Server-Timing")).toBeNull();
 	});
 
 	it("answers 200 with the new ID when a prerendered page did not change but the build ID did", async () => {

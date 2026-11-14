@@ -1,5 +1,7 @@
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
+import { connect } from "node:net";
+import { buffer } from "node:stream/consumers";
 import { constants, gunzipSync } from "node:zlib";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { defaultPlugins } from "../core/create-server.js";
@@ -8,6 +10,7 @@ import { eventStream } from "../core/event-stream.js";
 import { withHeaderHook } from "../core/header-hook.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
+import { onResponseSent } from "../core/response-edge.js";
 import { streamingCompress } from "../core/plugins/streaming-compress.js";
 import type { FrameworkRuntime, Plugin } from "../core/types.js";
 import { testServer } from "../test-server.js";
@@ -75,8 +78,12 @@ async function bodyOf(response: IncomingMessage): Promise<Buffer> {
 const throwsInHook: Plugin = {
 	name: "throws-in-hook",
 	middleware: async (context, next) =>
-		withHeaderHook(context, next, () => {
-			throw new Error("hook failed");
+		withHeaderHook({
+			context,
+			next,
+			hook: () => {
+				throw new Error("hook failed");
+			},
 		}),
 };
 
@@ -85,8 +92,12 @@ function setsHeader(name: string, value: string): Plugin {
 	return {
 		name: `sets-${name}-${value}`,
 		middleware: async (context, next) =>
-			withHeaderHook(context, next, (headers) => {
-				headers.set(name, value);
+			withHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					headers.set(name, value);
+				},
 			}),
 	};
 }
@@ -115,6 +126,37 @@ describe("the node response writer", () => {
 		expect(response.headers["content-length"]).toBe(String(body.byteLength));
 		expect(gunzipSync(body).toString()).toBe(page);
 	});
+
+	it.each([
+		{ request: "GET /308", framing: ["content-length: 0"] },
+		{ request: "GET /200", framing: ["content-length: 0"] },
+		{ request: "GET /200?Content-Length=0", framing: ["content-length: 0"] },
+		{ request: "GET /200?Transfer-Encoding=chunked", framing: ["transfer-encoding: chunked"] },
+		{ request: "HEAD /200", framing: [] },
+		{ request: "GET /204", framing: [] },
+		{ request: "GET /304", framing: [] },
+	])(
+		"sends the framing headers $framing for a response with no body to `$request`",
+		async ({ request, framing }) => {
+			const url = await listening(async (incoming) => {
+				const { pathname, searchParams } = new URL(incoming.url);
+				return new Response(null, {
+					status: Number(pathname.slice(1)),
+					headers: [...searchParams],
+				});
+			}, []);
+			// Why a raw socket: the HTTP client of Node.js refuses a head with two framing headers.
+			const socket = connect(Number(new URL(url).port), "127.0.0.1");
+			socket.write(`${request} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
+			const [head = ""] = String(await buffer(socket))
+				.toLowerCase()
+				.split("\r\n\r\n");
+
+			expect(
+				head.split("\r\n").filter((line) => /^(?:content-length|transfer-encoding):/u.test(line)),
+			).toStrictEqual(framing);
+		},
+	);
 
 	it("sends the shell of a streamed page at once, with no timer, before the rest exists", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout"] });
@@ -152,9 +194,9 @@ describe("the node response writer", () => {
 	it("sends the head of an event stream through gzip before its first event", async () => {
 		const opened = Promise.withResolvers<undefined>();
 		const url = await listening(async () =>
-			eventStream({}, async ({ send }) => {
+			eventStream(async ({ send }) => {
 				await opened.promise;
-				send({ data: "hello" });
+				void send({ data: "hello" });
 				return new Promise(() => {});
 			}),
 		);
@@ -236,7 +278,7 @@ describe("the node response writer", () => {
 		expect([
 			attributes["http.request_id"],
 			attributes["http.status_code"],
-			attributes["http.client_aborted"],
+			attributes["http.aborted"],
 		]).toStrictEqual(["abc-123", 500, undefined]);
 		expect(linesOf("unhandled error")[0]?.attributes).toMatchObject({
 			"http.request_id": "abc-123",
@@ -311,13 +353,24 @@ describe("the node response writer", () => {
 		expect(linesOf("unhandled error")).toHaveLength(2);
 	});
 
-	it("logs a line for each access log on the request", async () => {
-		const { url, linesOf } = await serving({ plugins: [accessLog(), accessLog()] });
+	it("runs each report of a request", async () => {
+		const statuses: number[] = [];
+		const reports: Plugin = {
+			name: "reports",
+			middleware: async (context, next) => {
+				await next();
+				onResponseSent(context, ({ status }) => {
+					statuses.push(status);
+				});
+			},
+		};
+		const { url, linesOf } = await serving({ plugins: [accessLog(), reports] });
 
 		await (await fetch(url)).text();
 
 		await vi.waitFor(() => {
-			expect(linesOf("request")).toHaveLength(2);
+			expect(linesOf("request")).toHaveLength(1);
+			expect(statuses).toStrictEqual([200]);
 		});
 	});
 
@@ -411,6 +464,45 @@ describe("the node response writer", () => {
 
 		expect(seen).toStrictEqual([new URL("/page", plain.url).href]);
 		expect(odd.statusCode).toBe(400);
+	});
+
+	it("answers an HTTP/1.0 request with no Host header, and a request with an empty Host, with the host localhost", async () => {
+		const { url } = await serving({
+			routes: (app) => {
+				app.get("/url", (c) => c.text(c.req.url));
+			},
+		});
+		const { port, hostname } = new URL(url);
+		/** The status line and the body of the answer to the request `head`. Why a socket: `node:http` always sends `Host`. */
+		const probe = async (head: string) =>
+			new Promise<(string | undefined)[]>((resolve, reject) => {
+				let answer = "";
+				const socket = connect(Number(port), hostname, () => {
+					socket.write(`${head}\r\n\r\n`);
+				});
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk: string) => {
+					answer += chunk;
+				});
+				socket.once("error", reject);
+				socket.once("end", () => {
+					resolve([answer.split("\r\n")[0], answer.split("\r\n\r\n")[1]]);
+				});
+			});
+
+		// An HTTP/1.0 health probe, as HAProxy sends by default.
+		await expect(probe("GET /livez HTTP/1.0")).resolves.toStrictEqual(["HTTP/1.1 200 OK", "ok"]);
+		await expect(probe("GET /url HTTP/1.0")).resolves.toStrictEqual([
+			"HTTP/1.1 200 OK",
+			"http://localhost/url",
+		]);
+		await expect(probe("GET /url HTTP/1.1\r\nHost:\r\nConnection: close")).resolves.toStrictEqual([
+			"HTTP/1.1 200 OK",
+			"http://localhost/url",
+		]);
+		// Why: Node.js answers an HTTP/1.1 request with no `Host` itself, before the listener.
+		const [status] = await probe("GET /url HTTP/1.1\r\nConnection: close");
+		expect(status).toBe("HTTP/1.1 400 Bad Request");
 	});
 
 	it("sends the headers of the header hooks with a HEAD response, and with a copy that a wrapper returns", async () => {

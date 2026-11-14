@@ -1,6 +1,8 @@
+import type { MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { replaceResponse } from "../header-hook.js";
-import type { Plugin } from "../types.js";
+import { optionPlugin } from "../plugin-options.js";
+import type { AppServerEnv, Plugin } from "../types.js";
 
 // Why: GET and HEAD have no body, and the Fetch `Request` constructor rejects the other three.
 const NO_BODY_METHODS = new Set(["GET", "HEAD", "CONNECT", "TRACE", "TRACK"]);
@@ -29,78 +31,79 @@ function tooLarge(): Response {
  * next stage runs, so an upload cannot stream.
  *
  * @example
- * createServer({ plugins: [requestId(), accessLog(), bodyLimit({ maxBytes: 1_048_576 })] });
+ * createServer({ plugins: [requestId(), accessLog(), bodyLimit({ maxBytes: 1_048_576 }), assets()] });
  */
 export function bodyLimit({ maxBytes }: BodyLimitOptions): Plugin {
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
 		throw new RangeError(`bodyLimit needs a maxBytes of 0 or more whole bytes, not ${maxBytes}.`);
 	}
-	return {
-		name: "body-limit",
-		middleware: async (context, next) => {
-			const { raw } = context.req;
-			if (NO_BODY_METHODS.has(raw.method)) {
-				return next();
-			}
-			const length = context.req.header("Content-Length");
-			// Why no stream count: the host's HTTP parser ends the body at its `Content-Length`. The
-			// original request also keeps the fast body reads of `@hono/node-server`.
-			if (
-				length != null &&
-				/^\d+$/u.test(length) &&
-				context.req.header("Transfer-Encoding") == null
-			) {
-				return Number(length) > maxBytes ? tooLarge() : next();
-			}
-			let bytes = 0;
-			let exceeded = false;
-			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-			const limited = new ReadableStream<Uint8Array>(
-				{
-					async pull(controller) {
-						// Why on the first read: on Node, `raw.body` starts to read the socket, and a dev
-						// server middleware that answers the request reads it there.
-						reader ??= raw.body?.getReader();
-						const chunk = await reader?.read();
-						if (chunk == null || chunk.done) {
-							controller.close();
-							return;
-						}
-						bytes += chunk.value.byteLength;
-						if (bytes > maxBytes) {
-							exceeded = true;
-							// Why an `HTTPException`: `onError` sends its 413 and logs no error.
-							controller.error(
-								new HTTPException(413, {
-									message: "The request body is larger than the body limit.",
-								}),
-							);
-							await reader?.cancel();
-							return;
-						}
-						controller.enqueue(chunk.value);
-					},
-					// Why `raw.body`: if the app cancels before its first read, no reader exists yet.
-					cancel: async (reason) => (reader ?? raw.body)?.cancel(reason),
+	/** The stage for a method that can have a body. */
+	const limit: MiddlewareHandler<AppServerEnv> = async (context, next) => {
+		const { raw } = context.req;
+		const length = context.req.header("Content-Length");
+		// Why no stream count: the host's HTTP parser ends the body at its `Content-Length`. The
+		// original request also keeps the fast body reads of `@hono/node-server`.
+		if (
+			length != null &&
+			/^\d+$/u.test(length) &&
+			context.req.header("Transfer-Encoding") == null
+		) {
+			return Number(length) > maxBytes ? tooLarge() : next();
+		}
+		let bytes = 0;
+		let exceeded = false;
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		const limited = new ReadableStream<Uint8Array>(
+			{
+				async pull(controller) {
+					// Why on the first read: on Node, `raw.body` starts to read the socket, and a dev
+					// server middleware that answers the request reads it there.
+					reader ??= raw.body?.getReader();
+					const chunk = await reader?.read();
+					if (chunk == null || chunk.done) {
+						controller.close();
+						return;
+					}
+					bytes += chunk.value.byteLength;
+					if (bytes > maxBytes) {
+						exceeded = true;
+						// Why an `HTTPException`: `onError` sends its 413 and logs no error.
+						controller.error(
+							new HTTPException(413, {
+								message: "The request body is larger than the body limit.",
+							}),
+						);
+						await reader?.cancel();
+						return;
+					}
+					controller.enqueue(chunk.value);
 				},
-				// Why 0: the stream reads nothing until the app reads it.
-				{ highWaterMark: 0 },
-			);
-			// Why a new request from its parts: `new Request(raw)` reads `raw.body` on Node. `duplex`: a
-			// request with a stream body needs it, and the DOM types lack it.
-			const init: RequestInit & { duplex: "half" } = {
-				method: raw.method,
-				headers: raw.headers,
-				signal: raw.signal,
-				body: limited,
-				duplex: "half",
-			};
-			context.req.raw = new Request(raw.url, init);
-			await next();
-			if (exceeded) {
-				await context.res.body?.cancel();
-				replaceResponse(context, tooLarge());
-			}
-		},
+				// Why `raw.body`: if the app cancels before its first read, no reader exists yet.
+				cancel: async (reason) => (reader ?? raw.body)?.cancel(reason),
+			},
+			// Why 0: the stream reads nothing until the app reads it.
+			{ highWaterMark: 0 },
+		);
+		// Why a new request from its parts: `new Request(raw)` reads `raw.body` on Node. `duplex`: a
+		// request with a stream body needs it, and the DOM types lack it.
+		const init: RequestInit & { duplex: "half" } = {
+			method: raw.method,
+			headers: raw.headers,
+			signal: raw.signal,
+			body: limited,
+			duplex: "half",
+		};
+		context.req.raw = new Request(raw.url, init);
+		await next();
+		if (exceeded) {
+			await context.res.body?.cancel();
+			replaceResponse(context, tooLarge());
+		}
 	};
+	return optionPlugin("bodyLimit", {
+		name: "body-limit",
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) =>
+			NO_BODY_METHODS.has(context.req.raw.method) ? next() : limit(context, next),
+	});
 }

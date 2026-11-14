@@ -44,6 +44,19 @@ async function answer(
 	return { status: response.status, location: response.headers.get("Location") };
 }
 
+/**
+ * The status and `Location` of the answer to a request whose URL is `url` as
+ * it is, with no URL parse. Why: Deno gives the request target as the client
+ * sent it, and `new Request` parses it.
+ */
+async function answerAsSent({ app, framework }: Awaited<ReturnType<typeof serve>>, url: string) {
+	const request = Object.defineProperty(new Request("http://localhost/"), "url", { value: url });
+	const response = await app.fetch(request, { framework });
+	return { status: response.status, location: response.headers.get("Location") };
+}
+
+const page = { status: 200, location: null };
+
 describe("trailingSlash", () => {
 	describe("never", () => {
 		it("redirects a prerendered and a rendered page to the URL with no slash, and keeps the query", async () => {
@@ -169,6 +182,93 @@ describe("trailingSlash", () => {
 			status: 308,
 			location: "/livez",
 		});
+	});
+
+	it("reads an encoded slash and an encoded backslash as no slash", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+
+		for (const path of ["/a%2F", "/a%2f", "/a%5C", "/a%252F"]) {
+			await expect(answer(never.request, path)).resolves.toStrictEqual(page);
+			await expect(answer(always.request, path)).resolves.toStrictEqual({
+				status: 308,
+				location: `${path}/`,
+			});
+			await expect(answer(never.request, `${path}/`)).resolves.toStrictEqual({
+				status: 308,
+				location: path,
+			});
+			await expect(answer(always.request, `${path}/`)).resolves.toStrictEqual(page);
+		}
+	});
+
+	it("keeps a bad escape in the redirect", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+
+		for (const path of ["/%E0%A4%A", "/a%", "/%zz"]) {
+			await expect(answer(never.request, path)).resolves.toStrictEqual(page);
+			await expect(answer(never.request, `${path}/`)).resolves.toStrictEqual({
+				status: 308,
+				location: path,
+			});
+			await expect(answer(always.request, path)).resolves.toStrictEqual({
+				status: 308,
+				location: `${path}/`,
+			});
+		}
+	});
+
+	it("reads a backslash and a dot segment as the URL parse does, also in a URL that no parse changed", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+		const toNoSlash = { status: 308, location: "/a" };
+
+		// Each path is `/a/` after the URL parse.
+		for (const path of ["/a\\", "/a/.", "/a/%2e", "/a/%2E", "/a/b/..", "/a/b/%2e%2E"]) {
+			await expect(answer(never.request, path)).resolves.toStrictEqual(toNoSlash);
+			await expect(answer(always.request, path)).resolves.toStrictEqual(page);
+			await expect(answerAsSent(never, `http://localhost${path}`)).resolves.toStrictEqual(
+				toNoSlash,
+			);
+			await expect(answerAsSent(always, `http://localhost${path}`)).resolves.toStrictEqual(page);
+		}
+		// Each path is `/` after the URL parse.
+		for (const path of ["/.", "/a/..", "/a/../"]) {
+			await expect(answerAsSent(never, `http://localhost${path}`)).resolves.toStrictEqual(page);
+			await expect(answerAsSent(always, `http://localhost${path}`)).resolves.toStrictEqual(page);
+		}
+		// Each path ends with `//` after the URL parse.
+		await expect(answerAsSent(always, String.raw`http://localhost/a\/`)).resolves.toStrictEqual({
+			status: 308,
+			location: "/a/",
+		});
+		await expect(answerAsSent(always, "http://localhost//./")).resolves.toStrictEqual({
+			status: 308,
+			location: "/",
+		});
+	});
+
+	it("serves a path in the mode's form when the request URL does not parse", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+
+		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header, and a request
+		// that needs no redirect must not fail on it.
+		await expect(answerAsSent(never, "http://1.2.3.4.5/docs/button")).resolves.toStrictEqual(page);
+		await expect(answerAsSent(always, "http://1.2.3.4.5/docs/button/")).resolves.toStrictEqual(
+			page,
+		);
+	});
+
+	it("serves a path in the mode's form when a URL parse takes a different path from the Host header", async () => {
+		const never = await serve("never");
+		const always = await serve("always");
+
+		// Why: Deno gives the `Host` header as the client sent it. A URL parse takes the path `/b/`
+		// from `http://a\b/`, and the path `/b` from `http://a\b?c/x/`.
+		await expect(answerAsSent(never, String.raw`http://a\b/`)).resolves.toStrictEqual(page);
+		await expect(answerAsSent(always, String.raw`http://a\b?c/x/`)).resolves.toStrictEqual(page);
 	});
 
 	it("trims a long run of slashes in linear time", async () => {

@@ -5,13 +5,16 @@
 //
 // Why a child process: the step starts the built server, and the build output must stay sync. A
 // plugin's `setup` can also leave a socket or a timer, so the process exits when the step ends.
-// Why no relative import: the build runs this file from `src` in the tests of this package.
+// Why no relative import of a value: the build runs this file from `src` in the tests of this
+// package, and Node.js removes only a type import.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { AppServerEntry } from "../core/entry.js";
+import type { CdnPage } from "../core/static-pages.js";
 
 /** A prerendered path that the CDN serves, as `vercel()` writes it. */
-export type CdnPageReport = {
+export type CdnPageReport = Omit<CdnPage, "body" | "file"> & {
 	path: string;
 	/**
 	 * The URL path of the page's body under the static directory, such as
@@ -19,8 +22,6 @@ export type CdnPageReport = {
 	 * such as with `prerendered({ rewrite })`, and different bodies.
 	 */
 	file: string;
-	answers: { present: readonly string[]; headers: Readonly<Record<string, string>> }[];
-	twin?: string;
 };
 
 /** What the step found: the paths that the CDN serves, and why the function serves each other path. */
@@ -30,17 +31,7 @@ export type PagesReport = {
 };
 
 /** The part of the server entry that this step calls. */
-type Entry = {
-	staticPages: () => AsyncIterable<
-		{ path: string } & (
-			| {
-					cdn: { file: string; body: Uint8Array; answers: CdnPageReport["answers"]; twin?: string };
-			  }
-			| { reason: string }
-		)
-	>;
-	stopPlugins: () => Promise<void>;
-};
+type Entry = Pick<AppServerEntry, "staticPages" | "stopPlugins">;
 
 function isEntry(value: unknown): value is Entry {
 	return (
@@ -60,7 +51,7 @@ function isEntry(value: unknown): value is Entry {
  * @example
  * await writePages("build/server/app-server.js", ".vercel/output/static/_app-server/pages", "pages.json");
  */
-export async function writePages(
+async function writePages(
 	entryFile: string,
 	staticDirectory: string,
 	reportFile: string,

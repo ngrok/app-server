@@ -1,13 +1,20 @@
+import type { Context } from "hono";
 import { asError } from "../log.js";
 import { optionPlugin } from "../plugin-options.js";
-import { isStopping } from "../shutdown.js";
-import type { Plugin, RequestLogger } from "../types.js";
+import type { Plugin, RequestLogger, ServerEnv } from "../types.js";
 
 /** Options for {@link health}. */
 export type HealthOptions = {
-	/** @default "/livez" */
+	/**
+	 * The path of the liveness probe. It must start with `/`.
+	 * @default "/livez"
+	 */
 	livePath?: string;
-	/** @default "/readyz" */
+	/**
+	 * The path of the readiness probe. It must start with `/`, and it must not
+	 * be `livePath`.
+	 * @default "/readyz"
+	 */
 	readyPath?: string;
 	/**
 	 * An app check for readiness, such as a database ping. A `false` or a
@@ -35,6 +42,10 @@ function probe(text: string, status: 200 | 503): Response {
  * `defaultPlugins()` runs it first, so a probe skips the access log. Its
  * `health` option takes these options, and `false` turns it off.
  *
+ * A path that does not start with `/`, a path with `?` or `#`, or one path
+ * for both probes stops startup. For a platform with one health URL, set only
+ * `readyPath`.
+ *
  * @example
  * createServer({
  * 	plugins: defaultPlugins({ health: { ready: async () => db.ping() } }),
@@ -46,6 +57,25 @@ export function health({
 	readyPath = "/readyz",
 	ready,
 }: HealthOptions = {}): Plugin {
+	for (const [option, path] of Object.entries({ livePath, readyPath })) {
+		if (!path.startsWith("/")) {
+			throw new Error(
+				`health needs a ${option} that starts with "/", not ${JSON.stringify(path)}.`,
+			);
+		}
+		// Why: the request path has no query and no fragment, so no probe could match.
+		if (/[?#]/u.test(path)) {
+			throw new Error(
+				`health needs a ${option} with no "?" and no "#", not ${JSON.stringify(path)}. A probe path matches the path of the request only.`,
+			);
+		}
+	}
+	// Why: the liveness answer comes first, so one path for both probes always answers 200.
+	if (livePath === readyPath) {
+		throw new Error(
+			`health needs a livePath and a readyPath that differ. Both are ${JSON.stringify(livePath)}, so the readiness check would never run. For one health URL, set only readyPath.`,
+		);
+	}
 	// Why log on a change only: a probe comes every few seconds.
 	let appFailing = false;
 	const appCheck = async (logger: RequestLogger): Promise<boolean> => {
@@ -67,28 +97,27 @@ export function health({
 		appFailing = !passed;
 		return passed;
 	};
-	const isReady = async (logger: RequestLogger) => {
-		if (isStopping()) {
+	const isReady = async (context: Context<ServerEnv>) => {
+		// Why the state of the request: another app server of the process can stop first.
+		const stopping = () => context.get("shutdown")?.stopping === true;
+		if (stopping()) {
 			return false;
 		}
-		const appReady = await appCheck(logger);
+		const appReady = await appCheck(context.get("logger"));
 		// Why check again: a stop signal can come while the app check runs.
-		return appReady && !isStopping();
+		return appReady && !stopping();
 	};
+	/** The answer to the probe at `path`, which is `livePath` or `readyPath`. */
+	const answer = async (path: string, context: Context<ServerEnv>) =>
+		path === livePath || (await isReady(context)) ? probe("ok", 200) : probe("not ready", 503);
 	return optionPlugin("health", {
 		name: "health",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const { method, path } = context.req;
-			if (method !== "GET" && method !== "HEAD") {
-				return next();
-			}
-			if (path === livePath) {
-				return probe("ok", 200);
-			}
-			if (path === readyPath) {
-				return (await isReady(context.get("logger"))) ? probe("ok", 200) : probe("not ready", 503);
-			}
-			return next();
+			return (method === "GET" || method === "HEAD") && (path === livePath || path === readyPath)
+				? answer(path, context)
+				: next();
 		},
 	});
 }

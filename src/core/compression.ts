@@ -46,6 +46,17 @@ export function copyName(name: string, encoding: Encoding): string {
 }
 
 /**
+ * The URL path of the `encoding` copy of the file at the URL path `path`.
+ *
+ * @example
+ * copyPath("/assets/app-abc.js", "br"); // => "/assets/.app-abc.js.br"
+ */
+export function copyPath(path: string, encoding: Encoding): string {
+	const name = path.lastIndexOf("/") + 1;
+	return `${path.slice(0, name)}${copyName(path.slice(name), encoding)}`;
+}
+
+/**
  * Whether the server compresses a body of the content type `type`.
  *
  * @example
@@ -105,9 +116,27 @@ export function forbidsTransform(cacheControl: string | null): boolean {
 /** The result of one read of a byte stream. */
 export type ReadResult = ReadableStreamReadResult<Uint8Array>;
 
+/** What a read settled with: its result, or its failure. Empty while the read is open. */
+type Settled = { result?: ReadResult; failure?: { error: unknown } };
+
+/**
+ * Puts what `pending` settles with in `settled`. Why it never rejects: a
+ * client that leaves before the body is read must not cause an unhandled
+ * rejection.
+ */
+async function watch(pending: Promise<ReadResult>, settled: Settled): Promise<void> {
+	try {
+		settled.result = await pending;
+	} catch (error) {
+		settled.failure = { error };
+	}
+}
+
 /**
  * The next result if `reader` has it queued, or the read that is still open.
- * It never waits for the source.
+ * It never waits for the source. It gives the read a fixed count of turns of
+ * the microtask queue: a read that settles within three turns is a result,
+ * or it throws when the read fails.
  *
  * @example
  * const next = await readIfQueued(reader); // => { result: { done: false, value } } or { pending }
@@ -116,8 +145,20 @@ export async function readIfQueued(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 ): Promise<{ result: ReadResult } | { pending: Promise<ReadResult> }> {
 	const pending = reader.read();
-	// Why: a client that leaves before the body is read must not cause an unhandled rejection.
-	pending.catch(() => {});
-	const result = await Promise.race([pending, Promise.resolve().then(async () => undefined)]);
+	const settled: Settled = {};
+	void watch(pending, settled);
+	// Why turns and not a race with a second promise chain: the race costs about 140 ns more for each call.
+	for (let turn = 0; turn < 4 && settled.result == null && settled.failure == null; turn += 1) {
+		// oxlint-disable-next-line no-await-in-loop -- each await is one turn of the microtask queue.
+		await Promise.resolve();
+	}
+	const { result, failure } = settled;
+	// Why one more turn: a stream that calls this in its pull, as `replay` of `streamingCompress`
+	// does, is read with this function too. With one turn less, that read gets the chunk within its
+	// own wait, and the node listener then sends another head for such a body.
+	await Promise.resolve();
+	if (failure != null) {
+		throw failure.error;
+	}
 	return result == null ? { pending } : { result };
 }

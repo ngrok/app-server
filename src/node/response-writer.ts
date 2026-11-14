@@ -134,6 +134,26 @@ function sentHead(outgoing: ServerResponse): string[] {
 	return head;
 }
 
+/**
+ * Writes a response with no body, with a `Content-Length` of 0. Why: with no
+ * length, Node sends `Transfer-Encoding: chunked` and an empty chunk. Why not
+ * for a 204, a 304, or a HEAD response: a 204 takes no length, and the others
+ * keep the length of the body that they do not send.
+ */
+function writeEmpty(status: number, outgoing: ServerResponse, head: string[]): void {
+	if (
+		status !== 204 &&
+		status !== 304 &&
+		outgoing.req.method !== "HEAD" &&
+		headerIndex(head, "content-length") === -1 &&
+		headerIndex(head, "transfer-encoding") === -1
+	) {
+		head.push("content-length", "0");
+	}
+	outgoing.writeHead(status, head);
+	outgoing.end();
+}
+
 /** Writes the head and the body of `response`, with `head` in place of its headers. */
 async function writeBody(
 	response: Response,
@@ -142,8 +162,7 @@ async function writeBody(
 ): Promise<void> {
 	const { body, status } = response;
 	if (body == null || reader == null) {
-		outgoing.writeHead(status, head);
-		outgoing.end();
+		writeEmpty(status, outgoing, head);
 		return;
 	}
 	if (headerIndex(head, "content-type") === -1) {
@@ -160,19 +179,29 @@ async function writeBody(
 		} else if (index !== -1 && Number(head[index + 1]) !== ahead.size) {
 			throw new Error("The body does not match its Content-Length.");
 		}
-		outgoing.writeHead(status, head);
-		outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
-		edge.bytes += ahead.size;
-		return;
+		// Why `end(body)` for a small body: it usually goes to the kernel in one write, and a write
+		// under the high-water mark gives no `drain` event to wait for.
+		// Why not for a large body: Node counts a response as done from `end()`, and a server that
+		// stops closes the connection of a done response, with the bytes that its socket still holds.
+		if (ahead.size < outgoing.writableHighWaterMark) {
+			outgoing.writeHead(status, head);
+			outgoing.end(ahead.chunks.length === 1 ? ahead.chunks[0] : Buffer.concat(ahead.chunks));
+			edge.bytes += ahead.size;
+			return;
+		}
 	}
 	outgoing.writeHead(status, head);
+	let flowing = true;
 	for (const chunk of ahead.chunks) {
-		outgoing.write(chunk);
+		flowing = outgoing.write(chunk);
 		edge.bytes += chunk.byteLength;
 	}
 	if (ahead.chunks.length === 0) {
 		// Why: the client gets the head at once, such as the open of an event stream.
 		outgoing.flushHeaders();
+	}
+	if (!flowing) {
+		await drained(outgoing);
 	}
 	await pump(reader, ahead.pending ?? reader.read(), { outgoing, edge });
 }
@@ -188,6 +217,9 @@ async function writeBody(
  *   is the exception: zlib finishes it soon, so the head waits for it.
  * - It reads the next chunk only when Node takes the last one, and it cancels
  *   the body when the socket closes.
+ * - It ends the response only after the socket takes each write that was at
+ *   or over its high-water mark, so a server that stops does not cut a large
+ *   body that still goes out.
  * - When a step fails before the head goes out, such as a body that fails or
  *   a header that Node rejects, a 500 goes out. After the head, a failure or
  *   a body that does not match its `Content-Length` destroys the socket, so
@@ -205,13 +237,13 @@ async function writeResponse(
 		// Why: the dev server stage answered through Node's response, and gave its status and length.
 		// Node sends no body for HEAD.
 		edge.bytes = sendsBody ? Number(response.headers.get("content-length") ?? 0) : 0;
-		edge.close(status, false, sentHead(outgoing));
+		edge.close({ status, aborted: false, head: sentHead(outgoing) });
 		return;
 	}
 	// Why one list: `writeBody` adds the headers that it sets, so the report gets the head that went out.
 	let head = edge.headersFor(response) ?? headerList(response.headers);
 	if (outgoing.destroyed) {
-		edge.close(status, true, head);
+		edge.close({ status, aborted: true, head });
 		await body?.cancel().catch(() => {});
 		return;
 	}
@@ -219,7 +251,7 @@ async function writeResponse(
 	// Why one listener: it reports what went out and stops the body that the client no longer reads.
 	// Why `on`: a response emits `close` once, and `once` adds a wrapper for each request.
 	outgoing.on("close", () => {
-		edge.close(status, !outgoing.writableFinished, head);
+		edge.close({ status, aborted: !outgoing.writableFinished, head });
 		reader?.cancel().catch(() => {});
 	});
 	try {
@@ -316,15 +348,20 @@ const writesResponses = !("Bun" in globalThis) && !("Deno" in globalThis);
  * the listener.
  * With `trustForwardedProto`, each request takes its scheme from
  * `X-Forwarded-Proto`, as the server option does.
+ * While `isDraining` gives `true`, each response that the listener writes
+ * says `Connection: close`, and Node closes its connection after it.
  *
  * @example
  * http.createServer(requestListener(async (request, bindings) => app.fetch(request, bindings)));
  */
 export function requestListener(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
-	{ trustForwardedProto = false }: { trustForwardedProto?: boolean } = {},
+	{
+		trustForwardedProto = false,
+		isDraining,
+	}: { trustForwardedProto?: boolean; isDraining?: () => boolean } = {},
 ): ReturnType<typeof getRequestListener> {
-	const listener = listenerOf(answer);
+	const listener = listenerOf(answer, isDraining);
 	return trustForwardedProto
 		? async (incoming, outgoing) => {
 				if (incoming instanceof IncomingMessage) {
@@ -338,7 +375,11 @@ export function requestListener(
 /** The listener of {@link requestListener}, with no scheme from `X-Forwarded-Proto`. */
 function listenerOf(
 	answer: (request: Request, bindings: NodeBindings) => Response | Promise<Response>,
+	isDraining: (() => boolean) | undefined,
 ): ReturnType<typeof getRequestListener> {
+	// Why a default host: a request with no `Host`, such as an HTTP/1.0 health probe, then gets a URL
+	// and runs each stage. With no default, `@hono/node-server` answers it 400 before the first stage.
+	const options = { hostname: "localhost" };
 	return keepGlobalResponse(() =>
 		getRequestListener(async (request, { incoming, outgoing }) => {
 			const { remoteAddress } = incoming.socket;
@@ -366,11 +407,17 @@ function listenerOf(
 				response = await answer(request, { remoteAddress, incoming, outgoing, edge });
 			} catch (error) {
 				// Why 500 with no headers: `@hono/node-server` answers a failed request with one.
-				edge.close(500, false, []);
+				edge.close({ status: 500, aborted: false, head: [] });
 				throw error;
+			}
+			// Why here and not when the request comes: the head of a request that was in flight
+			// when the drain began goes out now. The client then sends no next request on a
+			// connection that the drain closes.
+			if (isDraining?.() === true) {
+				outgoing.shouldKeepAlive = false;
 			}
 			await writeResponse(response, outgoing, edge);
 			return ALREADY_SENT;
-		}),
+		}, options),
 	);
 }

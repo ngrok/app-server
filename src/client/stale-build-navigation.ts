@@ -8,10 +8,11 @@ import {
 /** Options for {@link staleBuildReactRouter} and {@link staleBuildTanStack}. */
 export type StaleBuildOptions = {
 	/**
-	 * The header that `buildId()` sets on data responses.
+	 * The header that `buildId()` sets on data responses: the `headerName` of
+	 * `buildId()`.
 	 * @default "X-Build-Id"
 	 */
-	header?: string;
+	headerName?: string;
 	/**
 	 * The build that this document runs. Set it only when the server does not
 	 * send it.
@@ -155,7 +156,7 @@ function onAbort(signal: AbortSignal, clear: () => void): void {
 }
 
 /** Reads the build of each response, and tells when the server runs a new build. */
-function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildOptions) {
+function watchBuild({ headerName = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildOptions) {
 	// Why: on the server, such as in a router factory that runs for each request, there is no tab to move.
 	if (typeof document === "undefined") {
 		return null;
@@ -197,7 +198,7 @@ function watchBuild({ header = BUILD_ID_HEADER, build, onNewBuild }: StaleBuildO
 			// Why the final URL: a redirect can end on another origin. Why `Server-Timing`: a proxy
 			// route of `buildId({ paths })` sends no build header.
 			const served = isOwn(response.url === "" ? url : response.url)
-				? (response.headers.get(header) ?? headerBuild(response.headers.get("Server-Timing")))
+				? (response.headers.get(headerName) ?? headerBuild(response.headers.get("Server-Timing")))
 				: null;
 			see(served);
 			return served != null && served !== current;

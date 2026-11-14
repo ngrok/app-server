@@ -20,10 +20,10 @@ Each response is right on each host (Node, Bun, Deno, and Vercel), with each fra
 
 ## Least surprising
 
-The server does what an app developer expects from the name of an option and from the README. A safe default is on, and a feature that can change who sees which response is off until the app turns it on. One job has one way to do it. An upgrade never changes the behavior of an app with no word in the changeset, and a breaking change gets a `minor` bump.
+The server does what an app developer expects from the name of an option and from the README. A safe default is on, and a feature that can change who sees which response is off until the app turns it on. One job has one way to do it. An upgrade never changes the behavior of an app with no word in the changeset, and a breaking change gets a `minor` bump. A change is breaking when an app that worked must change its code, its config, or a saved log query to work as before. A new startup error for a value that started before, a renamed log attribute, and a removed export are breaking. A fix of a wrong answer is not, but its changeset says what changes.
 
 - **Served by:** [experience first](./principles/experience-first.md), [one pipeline](./principles/one-pipeline.md), [stay close to Vite](./principles/stay-close-to-vite.md), [migrate callers, then delete](./principles/migrate-callers-then-delete.md), and [derive, don't sync](./principles/derive-dont-sync.md).
-- **Signs you missed it:** two options that do the same job but act differently, a default that changes what a visitor gets, or a changeset that a developer must read twice.
+- **Signs you missed it:** two options that do the same job but act differently, a default that changes what a visitor gets, a new startup error with a `patch` bump, or a changeset that a developer must read twice.
 
 ## Fast
 

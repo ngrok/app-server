@@ -25,7 +25,7 @@ Read the files for your task before the first edit. Work is incomplete until you
 - **`src/core`:** it runs on each host and with each framework. Apply [pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md), [stream, don't buffer](./docs/principles/stream-dont-buffer.md), and [keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md).
 - **A host or framework adapter:** `HostRuntime` and `FrameworkRuntime` in `src/core/types.ts`, and `HostBuild` and `FrameworkBuild` in `src/vite/index.ts`, are the contract.
 - **A listener, shutdown, a stream, the CLI, or the build:** also run `pnpm run build` and `pnpm run test:runtimes`.
-- **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md).
+- **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md). `test/docs.test.ts` checks the README against the code: each `ts` example, the log table, the plugin names, and the install line.
 - **A custom lint rule:** `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
 - **A performance change or claim:** apply [explain the number](./docs/principles/explain-the-number.md) and [redesign before you cache](./docs/principles/redesign-before-you-cache.md).
 - **Comments, JSDoc, changesets, commits, PR descriptions, and repo markdown:** load the [`simplified-technical-english`](./.claude/skills/simplified-technical-english/SKILL.md) skill.
@@ -40,7 +40,7 @@ Short, named rules for how to work. They are the methods that meet the [north st
 - [Minimize reader load](./docs/principles/minimize-reader-load.md) (code, prose): code and prose that read in one pass.
 - [Experience first](./docs/principles/experience-first.md) (code, prose): judge a change by the visitor, the app developer, and the operator.
 - [Make illegal states unrepresentable](./docs/principles/make-illegal-states-unrepresentable.md) (code): contracts in types.
-- [Name the arguments](./docs/principles/name-the-arguments.md) (code): a public function, option, or hook takes one named object.
+- [Name the arguments](./docs/principles/name-the-arguments.md) (code): a public function, option, or hook takes one named object, or a subject and then one options object.
 - [Pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md) (code): pure functions in the core, I/O in the adapters.
 - [Derive, don't sync](./docs/principles/derive-dont-sync.md) (code): compute ETags, cache keys, and lists from their source.
 - [Validate at the boundary](./docs/principles/validate-at-the-boundary.md) (code): parse input once, where it enters. Check config at startup.
@@ -61,7 +61,7 @@ Short, named rules for how to work. They are the methods that meet the [north st
 
 ## Rules
 
-- Every published change needs a changeset (`pnpm changeset`). The package is `0.x`: a breaking change is a `minor`, any other change a `patch`.
+- Every published change needs a changeset (`pnpm changeset`). The package is `0.x`: a breaking change is a `minor`, any other change a `patch`. A new startup error, a renamed log attribute, and a removed export are breaking ([Least surprising](./docs/north-star.md#least-surprising)).
 - A comment says why, not what. Start it with `Why:` when it explains a choice.
 - Lint turns on every oxlint category. A rule goes off only in `.oxlintrc.json`, with a reason. A suppression comment also gives a reason: `// oxlint-disable-next-line <rule> -- <reason>`.
 - Check for no value with `== null` and `!= null`. `eqeqeq` and `app-server/prefer-null-check` reject `=== null`, `=== undefined`, and `== undefined`.
@@ -81,7 +81,7 @@ Run checks when a coherent unit of work is done and again before the final respo
 1. Read `git diff` for your files. Check them against the files that [Route by task](#route-by-task) names, and fix the drift.
 2. Run `pnpm run fmt`, `pnpm run lint`, `pnpm run typecheck`, and `pnpm run test`, and make them pass.
 3. Stop each process you start: a dev server, a built server, or a test watcher.
-4. A published change has a changeset with the bump from [Rules](#rules).
+4. A published change has a changeset with the bump from [Rules](#rules). Read each changeset of the branch again against the final code: a later commit can make an earlier changeset false.
 5. Do the [north-star pass](#north-star), and put it in the PR description. Name the principles you applied and the decision each one changed. End with a `Conventions pass:` note that says what you checked. If you did not run a check, say why.
 
 ## Commands

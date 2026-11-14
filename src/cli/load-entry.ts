@@ -1,7 +1,5 @@
-import { createServer } from "../core/create-server.js";
-import { createEntry, ENTRY_PROTOCOL, isAppServerEntry } from "../core/entry.js";
+import { ENTRY_PROTOCOL, isAppServerEntry } from "../core/entry-protocol.js";
 import type { AppServerEntry } from "../core/entry.js";
-import { host } from "../node/index.js";
 
 /** Entries that this copy made for plain React Router builds, by build module. */
 const plainEntries = new WeakMap<object, AppServerEntry>();
@@ -28,15 +26,18 @@ export async function loadEntry(build: unknown): Promise<AppServerEntry> {
 	if (known != null) {
 		return known;
 	}
-	const { isServerBuild, runtime } = await import("../react-router/index.js");
-	if (!isServerBuild(build)) {
-		throw new Error("The server build entry is not a React Router server build.");
-	}
+	// Why dynamic imports: a build from the `appServer` plugin runs on its own copy of this package,
+	// so only a plain build needs the server of this copy.
+	const [{ createServer }, { createEntry }, { host }, { runtime }, { environmentOptions }] =
+		await Promise.all([
+			import("../core/create-server.js"),
+			import("../core/entry.js"),
+			import("../node/index.js"),
+			import("../react-router/index.js"),
+			import("../vite/entry-source.js"),
+		]);
 	const entry = createEntry({
-		app: createServer({
-			trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1",
-			trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0),
-		}),
+		app: createServer(environmentOptions(process.env)),
 		host,
 		framework: (mode) => runtime(build, { mode }),
 	});

@@ -11,7 +11,8 @@ Write parsing, path checks, header logic, and other transforms as small pure fun
 - A transform that a test reaches only through a running server.
 - A core function that reads `process.env`, `Date.now()`, or the file system instead of taking the value as an argument.
 - Node.js or framework code in `src/core`.
+- A core module that runs code at import, such as a `process.on` listener. The lint rule checks imports, not globals.
 
-**In this repo:** `src/core` imports Hono and nothing else. A host adapter (`src/node`) owns I/O, and a framework adapter owns the framework. `findStaticFile` reads files only through the `StaticFiles` argument that the host gives it.
+**In this repo:** `src/core` imports Hono and nothing else. A host adapter (`src/node`) owns I/O, and a framework adapter owns the framework. `findStaticFile` reads files only through the `StaticFiles` argument that the host gives it. The node host owns the standard output writer of the logs, and the core takes it as `HostRuntime.logWriter`.
 
 **Enforced by:** the `eslint/no-restricted-imports` override for `src/core/**` in `.oxlintrc.json`; review for the rest.

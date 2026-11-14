@@ -3,9 +3,10 @@
  * named function. A call such as `flagRow("Spot", true)` does not say what
  * `true` means, so pass a named options object:
  * `flagRow({ label: "Spot", enabled: true })`. The rule checks function
- * declarations and functions bound to a variable. It skips a lone `boolean`
- * parameter and a `handle*` or `on*` function, because an event handler keeps
- * the signature that its caller imposes, such as `onOpenChange(open)`.
+ * declarations, functions bound to a variable, and class methods. It skips a
+ * lone `boolean` parameter and a `handle*` or `on*` function, because an event
+ * handler keeps the signature that its caller imposes, such as
+ * `onOpenChange(open)`.
  *
  * @example
  * // ❌ Incorrect
@@ -75,6 +76,9 @@ const noBooleanPositionalParam = {
 				if (isFunction(node.init)) {
 					check(node.init, node.id.type === "Identifier" ? node.id.name : null);
 				}
+			},
+			MethodDefinition(node) {
+				check(node.value, node.key.type === "Identifier" ? node.key.name : null);
 			},
 		};
 	},

@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { headerIndex, headerList, listView, replaceResponse } from "./header-hook.js";
 import { asError } from "./log.js";
-import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse } from "./types.js";
+import type { AppServerEnv, HeaderHook, RequestLogger, SentResponse, ServerEnv } from "./types.js";
 
 function ignore(): void {}
 
@@ -119,7 +119,7 @@ export class ResponseEdge {
 	 * Keeps `headers`, the headers of the response after each header hook, and
 	 * `base`, its headers before the hooks. The server calls it.
 	 */
-	public useHeaders(base: readonly string[], headers: string[]): void {
+	public useHeaders({ base, headers }: { base: readonly string[]; headers: string[] }): void {
 		this.#base = base;
 		this.#headers = headers;
 	}
@@ -170,11 +170,20 @@ export class ResponseEdge {
 	}
 
 	/**
-	 * Reports what went out, once: the status and the headers that the
-	 * listener sent, the bytes, and whether the body stopped before its end.
-	 * `head` is the flat list that the listener gave `writeHead`.
+	 * Reports what went out, once: `status`, the headers that the listener
+	 * sent, the bytes, and `aborted`, which says whether the body stopped
+	 * before its end. `head` is the flat list that the listener gave
+	 * `writeHead`.
 	 */
-	public close(status: number, aborted: boolean, head: string[]): void {
+	public close({
+		status,
+		aborted,
+		head,
+	}: {
+		status: number;
+		aborted: boolean;
+		head: string[];
+	}): void {
 		if (this.#sent != null) {
 			return;
 		}
@@ -273,7 +282,8 @@ export function onResponseSent(
 	context: Context<AppServerEnv>,
 	report: (sent: SentResponse) => void,
 ): void {
-	const reports = context.get("sentReports");
+	const server: Context<ServerEnv> = context;
+	const reports = server.get("sentReports");
 	if (reports != null) {
 		reports.push(report);
 		return;
@@ -388,7 +398,7 @@ function finishFrom(
 		}
 	}
 	if (edge != null) {
-		edge.useHeaders(base, head);
+		edge.useHeaders({ base, headers: head });
 		for (const report of reports) {
 			edge.onSent(report);
 		}

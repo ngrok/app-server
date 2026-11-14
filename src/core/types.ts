@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import type { ResponseEdge } from "./response-edge.js";
+import type { ShutdownState } from "./shutdown.js";
 
 /** A log level the server writes. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -92,19 +93,19 @@ export type FrameworkRuntime = {
 	contentTypes?: Readonly<Record<string, string>>;
 };
 
-/** Makes the run side of a framework adapter from the framework's server module. */
-export type FrameworkRuntimeFactory = (
-	serverModule: unknown,
-	info: { mode: Mode },
-) => FrameworkRuntime;
-
-/** What a host knows about a file under the client build. */
-export type FileInfo = {
-	kind: "file" | "directory";
-	/** The size in bytes. */
-	size: number;
-	mtimeMs: number;
-};
+/**
+ * What a host knows about a file or a directory under the client build. Why
+ * a union: no code reads a size or a time of a directory, so a host gives
+ * none.
+ */
+export type FileInfo =
+	| {
+			kind: "file";
+			/** The size in bytes. */
+			size: number;
+			mtimeMs: number;
+	  }
+	| { kind: "directory" };
 
 /** A range of bytes in a file. `start` and `end` are both inclusive. */
 export type ByteRange = { start: number; end: number };
@@ -115,7 +116,11 @@ export type ByteRange = { start: number; end: number };
  * `\`.
  */
 export type StaticFiles = {
-	/** What is at `path`, or `undefined` when nothing is there. */
+	/**
+	 * What is at `path`, or `undefined` when nothing is there. `/` gives the
+	 * directory of the client build. If `/` gives `undefined`, the production
+	 * server warns at start that it found no client build.
+	 */
 	stat: (path: string) => Promise<FileInfo | undefined>;
 	/**
 	 * The bytes of the file at `path`. With `range`, only the bytes from
@@ -123,7 +128,10 @@ export type StaticFiles = {
 	 * static stages answer a `Range` request with these bytes. Open the file on
 	 * the first read. Why: a stage can drop a response that no one reads.
 	 */
-	open: (path: string, range?: ByteRange) => Promise<ReadableStream<Uint8Array>>;
+	open: (
+		path: string,
+		options?: { range?: ByteRange | undefined },
+	) => Promise<ReadableStream<Uint8Array>>;
 	/**
 	 * A copy whose `stat` answers from a list of the files that it reads once.
 	 * The production server uses it, because the client build does not change
@@ -132,12 +140,23 @@ export type StaticFiles = {
 	snapshot?: () => Promise<StaticFiles>;
 };
 
+/**
+ * What a {@link RequestStore} holds for one request. A host passes it through
+ * and reads no field of it.
+ */
+export type RequestScope = {
+	/** The Hono context of the request, until its response is sent. */
+	context: Context<AppServerEnv> | undefined;
+	/** The values of the request, when the scope has no `context`. */
+	values: RequestContext | undefined;
+};
+
 /** Request-scoped storage, such as `AsyncLocalStorage`. */
 export type RequestStore = {
 	/** Runs `work` with `value` as the stored value. */
-	run: <Result>(value: Context<AppServerEnv>, work: () => Result) => Result;
+	run: <Result>(value: RequestScope, work: () => Result) => Result;
 	/** The stored value of the request that runs, else `undefined`. */
-	get: () => Context<AppServerEnv> | undefined;
+	get: () => RequestScope | undefined;
 };
 
 /** What went out for a response, when it ends or its client goes away. */
@@ -173,29 +192,53 @@ export type Lifecycle = {
 	onStop: (stop: () => Promise<void>) => void;
 };
 
+/** A host stream that compresses a byte stream. */
+export type CompressStream = (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+
 /** The run side of a host adapter: where the server runs. */
 export type HostRuntime = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The files of the client build at `clientDirectory`, a file path or a `file:` URL. */
 	files: (clientDirectory: string) => StaticFiles;
 	/**
 	 * The listeners when the app sets none. A serverless host has none: it
 	 * calls the entry's `fetch` for each request.
 	 */
-	listeners?: () => readonly Listener[];
+	listeners?: readonly Listener[];
 	/** The storage for {@link requestContext}. Without it, `requestContext()` gives `undefined`. */
 	storage?: RequestStore;
 	/**
 	 * Gzips a byte stream and flushes after each chunk. Without it and
 	 * `brotli`, `streamingCompress` sends each response as it is.
 	 */
-	gzip?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	gzip?: CompressStream;
 	/**
 	 * Compresses a byte stream with brotli and flushes after each chunk.
 	 * `streamingCompress` uses it for a client that prefers brotli to gzip.
 	 */
-	brotli?: (source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
+	brotli?: CompressStream;
+	/**
+	 * Where `jsonSink()` and the text sink of development write a line when
+	 * they get no `write`, such as the standard output of the process. Without
+	 * it, `console.log` writes each line.
+	 */
+	logWriter?: {
+		/**
+		 * Takes one line, with the `\n` at its end. It can keep the line, such
+		 * as until the end of the turn of the event loop.
+		 */
+		write: (line: string) => void;
+		/**
+		 * Writes each line that `write` keeps, at once. The server calls it
+		 * after each text line of development, and before a failed `start`
+		 * rejects.
+		 */
+		flush: () => void;
+	};
+	/**
+	 * How the host stops the server that the entry's `start` starts. A host
+	 * with `listeners` must give it. Without it, no code can shut the server
+	 * down: a stop signal ends the process with no drain and no `onShutdown`.
+	 */
 	lifecycle?: Lifecycle;
 };
 
@@ -256,21 +299,36 @@ export type AppServerEnv = {
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
 		logAttributes?: Readonly<Record<string, unknown>>;
 		/**
-		 * The `etagPart` of each plugin that the request passed, in order. The
-		 * static stages add them to each file's ETag. The server sets this list.
-		 */
-		etagParts?: readonly string[];
-		/**
 		 * Whether a stage that the request passed changes the bytes of an HTML
-		 * body, as `runtimeEnv` does. The stage sets it before its `next()`.
-		 * The static stages then send an HTML file as it is on disk, not its
-		 * compressed copy, so the stage can change it.
+		 * body. The stage sets it before its `next()`. The static stages then
+		 * send an HTML file as it is on disk: not its compressed copy, and with
+		 * no `Content-Length`, no ETag, and no 304. `runtimeEnv` does not set
+		 * it: its pages keep their ETag.
 		 */
 		rewritesHtml?: boolean;
+	};
+};
+
+/**
+ * The Hono environment that the server reads: {@link AppServerEnv} and the
+ * values of a request that the server owns. Why not in `AppServerEnv`: an app
+ * that sets one of the lists loses the header hooks or the reports of its
+ * response, such as `Cache-Control: private` and the access log line.
+ */
+export type ServerEnv = {
+	Bindings: ServerBindings;
+	Variables: AppServerEnv["Variables"] & {
+		/**
+		 * The `etagPart` of each plugin that the request passed, in order. The
+		 * static stages add them to each file's ETag.
+		 */
+		etagParts?: readonly string[];
 		/** The header hook of each stage that the request passed, in order. See {@link HeaderHook}. */
 		headerHooks?: HeaderHook[];
-		/** The reports of `onResponseSent` for the request. The server sets this list. */
+		/** The reports of `onResponseSent` for the request. */
 		sentReports?: ((sent: SentResponse) => void)[];
+		/** The stop state of the app server that serves the request. */
+		shutdown?: ShutdownState;
 	};
 };
 
@@ -288,8 +346,9 @@ export type ResponseHeaders = {
  * response. In an app server, it changes the head once, where the response
  * leaves, after the code that each stage runs after its `next()`: the hook of
  * an inner stage runs first, so an outer stage has the last word. A hook that
- * throws gives a 500, as a stage that throws does. A dev server middleware
- * that sends its own response runs the hooks before it sends the head.
+ * throws gets the answer of the app's `onError`, as a stage that throws does.
+ * A dev server middleware that sends its own response runs the hooks before
+ * it sends the head.
  *
  * The static stages and `streamingCompress` also run the hooks on a view of
  * the headers, to read the `Cache-Control` that leaves. So a hook can run two
@@ -328,10 +387,11 @@ export type SetupInfo = {
 	/** Content types of the framework's files that `mime` does not know, by file extension. */
 	contentTypes: Readonly<Record<string, string>>;
 	/** The host's gzip stream, when it has one. */
-	gzip: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
+	gzip: CompressStream | undefined;
 	/** The host's brotli stream, when it has one. */
-	brotli?: ((source: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>) | undefined;
-	logger: LogSink;
+	brotli?: CompressStream | undefined;
+	/** The server's logger. Its lines carry no request fields. */
+	logger: RequestLogger;
 } & (
 	| {
 			mode: "production";
@@ -342,7 +402,10 @@ export type SetupInfo = {
 	  }
 	| {
 			mode: "development";
-			/** The dev server as a pipeline stage. It serves source modules, HMR, and CSS. */
+			/**
+			 * The dev server as a pipeline stage. It serves source modules, HMR, and CSS. One plugin
+			 * must take it, as `assets()` does. The setup throws when no plugin reads it.
+			 */
 			devServer: MiddlewareHandler<AppServerEnv>;
 			/**
 			 * The URL paths that the build will prerender, or `undefined` when the
@@ -363,18 +426,20 @@ export type SetupInfo = {
  * };
  */
 export type Plugin = {
-	/** A name for logs and errors. */
+	/** A name for logs and errors. An app finds the plugin in a list by it, such as in `defaultPlugins()`. */
 	name: string;
 	/** The Hono middleware for this step. */
 	middleware?: MiddlewareHandler<AppServerEnv>;
 	/**
 	 * Runs once before the server takes requests. A thrown error stops startup.
 	 * On a serverless host, a thrown error fails the request, and the next
-	 * request runs each `setup` again.
+	 * request runs each `setup` again. Take the values that you need from
+	 * `info`: a function that keeps `info` keeps each field of it in memory,
+	 * such as the script hashes of each page.
 	 */
 	setup?: (info: SetupInfo) => void | Promise<void>;
 	/** Runs at shutdown while the listeners drain. The server stops waiting for it at the drain deadline. */
-	onShutdown?: () => Promise<void>;
+	onShutdown?: () => void | Promise<void>;
 	/**
 	 * A value that this plugin's changes to a response depend on, such as the
 	 * env values it writes into each document. The server adds it to the ETag
@@ -383,6 +448,12 @@ export type Plugin = {
 	 * the plugin changes nothing.
 	 */
 	etagPart?: () => string | undefined;
+	/**
+	 * Never set it. Why: each function has a `name`, so without this field the
+	 * compiler takes a Hono middleware, or a plugin factory that the app did
+	 * not call, as a plugin.
+	 */
+	call?: never;
 };
 
 /** A running listener. */
@@ -400,11 +471,9 @@ export type StartedListener = {
  * How the server receives connections, separate from the request pipeline.
  *
  * @example
- * createServer({ listeners: [tcp({ port: 8080 })] });
+ * createServer({ listeners: [tcp({ idleTimeoutMs: 120_000 })] });
  */
 export type Listener = {
-	/** A name for logs. */
-	name: string;
 	start: (fetch: FetchHandler, options?: ListenerStartOptions) => Promise<StartedListener>;
 };
 

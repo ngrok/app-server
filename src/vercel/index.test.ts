@@ -1,12 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { brotliCompressSync } from "node:zlib";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
+import type { AppServerEntry } from "../core/entry.js";
 import { withHeaderHook } from "../core/header-hook.js";
 import { accessLog } from "../core/plugins/access-log.js";
 import { requestId } from "../core/plugins/request-id.js";
@@ -14,10 +15,14 @@ import { securityHeaders } from "../core/plugins/security-headers.js";
 import { requestContext } from "../core/request-context.js";
 import type { Plugin } from "../core/types.js";
 import { heldStream, stubFramework } from "../test-server.js";
-import { brotliOnlyFiles } from "./brotli-only.js";
+import { brotliOnlyOpen } from "./brotli-only.js";
 import { handler, host } from "./index.js";
+import { vercel } from "./vite.js";
 
 let close: (() => Promise<void>) | undefined;
+
+/** A client build with no files. Why not a path to nothing: the server then warns on stdout, and a function always holds its client build. */
+const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
 
 /** The access log line in the stdout `output`, or `undefined` when there is none. */
 function requestLine(output: string): unknown {
@@ -36,6 +41,10 @@ afterEach(async () => {
 	close = undefined;
 });
 
+afterAll(() => {
+	rmSync(clientDirectory, { recursive: true, force: true });
+});
+
 /** Serves `handler` for an app on `node:http`, as a Vercel Function does, and gives its URL. */
 async function serve(plugins: Plugin[] = []): Promise<string> {
 	const app = createServer({ plugins });
@@ -45,7 +54,7 @@ async function serve(plugins: Plugin[] = []): Promise<string> {
 	const entry = createEntry({
 		app,
 		host,
-		clientDirectory: "/nonexistent",
+		clientDirectory,
 		framework: () => stubFramework(),
 	});
 	const listener = handler(entry);
@@ -78,8 +87,12 @@ describe("handler", () => {
 		const echoesId: Plugin = {
 			name: "echoes-id",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+					},
 				}),
 		};
 		const url = await serve([requestId(), echoesId]);
@@ -114,7 +127,7 @@ describe("handler", () => {
 			return context.text("hi");
 		});
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		const written = Promise.withResolvers<string>();
 		const server = createHttpServer((incoming, outgoing) => {
@@ -145,7 +158,7 @@ describe("handler", () => {
 		});
 		const app = createServer({ plugins: [accessLog()] });
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		const written = Promise.withResolvers<string>();
 		const server = createHttpServer((incoming, outgoing) => {
@@ -180,7 +193,7 @@ describe("handler", () => {
 			createEntry({
 				app,
 				host,
-				clientDirectory: "/nonexistent",
+				clientDirectory,
 				framework: () => stubFramework(async () => heldStream("shell").response),
 			}),
 		);
@@ -208,7 +221,7 @@ describe("handler", () => {
 
 		expect(requestLine(await written.promise)).toMatchObject({
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -231,7 +244,7 @@ describe("handler", () => {
 			return context.text("hi");
 		});
 		const listener = handler(
-			createEntry({ app, host, clientDirectory: "/nonexistent", framework: () => stubFramework() }),
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
 		);
 		let returned = false;
 		const finished = Promise.withResolvers<undefined>();
@@ -270,91 +283,152 @@ describe("handler", () => {
 	});
 });
 
+/**
+ * Builds the client build `files` with `vercel()`, and gives the client build
+ * of the function. Each file of the function gets one fixed time, as in a
+ * deploy.
+ */
+function deploy(site: string, files: Readonly<Record<string, string | Uint8Array>>): string {
+	const client = join(site, "build/client");
+	for (const [file, body] of Object.entries(files)) {
+		mkdirSync(dirname(join(client, file)), { recursive: true });
+		writeFileSync(join(client, file), body);
+	}
+	mkdirSync(join(site, "build/server"), { recursive: true });
+	writeFileSync(join(site, "build/server/app-server.js"), "export {};\n");
+	vercel().output?.({
+		root: site,
+		clientDirectory: client,
+		entryFile: join(site, "build/server/app-server.js"),
+		assetsPath: "/assets/",
+		logger: { info: () => {}, warn: () => {} },
+	});
+	const deployed = join(site, ".vercel/output/functions/index.func/build/client");
+	const time = new Date(1_540_000_000_000);
+	for (const entry of readdirSync(deployed, { recursive: true, withFileTypes: true })) {
+		utimesSync(join(entry.parentPath, entry.name), time, time);
+	}
+	return deployed;
+}
+
+/** The entry of a function whose client build is `directory`. */
+function functionEntry(directory: string): AppServerEntry {
+	return createEntry({
+		app: createServer(),
+		host,
+		clientDirectory: directory,
+		framework: () => stubFramework(),
+	});
+}
+
 describe("host", () => {
-	it("gives a file a new ETag for each build, also with the same size and time", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "app-server-vercel-files-"));
+	it("gives a file a new ETag for each build, also with the same bytes and the same time on disk", async () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-files-"));
+		vi.useFakeTimers({ toFake: ["Date"], now: 1_762_000_000_000 });
 		onTestFinished(() => {
-			rmSync(directory, { recursive: true, force: true });
+			vi.useRealTimers();
+			rmSync(site, { recursive: true, force: true });
 		});
-		// Why one time: the deploy gives each file of the function one fixed time.
-		const deployed = new Date(1_540_000_000_000);
-		const etag = async (text: string, builtAt: string): Promise<string | null> => {
-			writeFileSync(join(directory, "robots.txt"), text);
-			utimesSync(join(directory, "robots.txt"), deployed, deployed);
-			vi.stubEnv("APP_SERVER_BUILT_AT", builtAt);
-			const entry = createEntry({
-				app: createServer(),
-				host,
-				clientDirectory: directory,
-				framework: () => stubFramework(),
-			});
+		const etag = async (): Promise<string | null> => {
+			const entry = functionEntry(deploy(site, { "robots.txt": "Disallow: /a" }));
 			const response = await entry.fetch(new Request("http://localhost/robots.txt"), {});
 			await response.text();
 			return response.headers.get("ETag");
 		};
 
-		const first = await etag("Disallow: /a", "1762000000000");
-		const second = await etag("Disallow: /b", "1762000100000");
+		const first = await etag();
+		vi.setSystemTime(1_762_000_100_000);
+		const second = await etag();
 
 		expect(first).toMatch(/^W\//u);
 		expect(second).not.toBe(first);
 	});
 
-	it("serves a file that the function keeps only as a brotli copy, also to a client with no brotli and for a range", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "app-server-vercel-brotli-only-"));
+	it("serves the files that the build listed: a file, a directory index, and a file that the function keeps only as a brotli copy", async () => {
+		const site = mkdtempSync(join(tmpdir(), "app-server-vercel-listed-"));
 		onTestFinished(() => {
-			rmSync(directory, { recursive: true, force: true });
+			rmSync(site, { recursive: true, force: true });
 		});
 		const page = `<h1>Blog</h1>${"<p>post</p>".repeat(200)}`;
 		const text = "0123456789".repeat(200);
-		mkdirSync(join(directory, "blog"));
-		writeFileSync(join(directory, "blog/.index.html.br"), brotliCompressSync(page));
-		writeFileSync(join(directory, ".notes.txt.br"), brotliCompressSync(text));
-		writeFileSync(
-			join(directory, ".app-server-brotli.json"),
-			JSON.stringify({ "/blog/index.html": page.length, "/notes.txt": text.length }),
-		);
-		const entry = createEntry({
-			app: createServer(),
-			host,
-			clientDirectory: directory,
-			framework: () => stubFramework(),
+		const directory = deploy(site, {
+			"robots.txt": "Disallow: /a",
+			"about/index.html": "<h1>About</h1>",
+			"blog/index.html": page,
+			"blog/.index.html.br": brotliCompressSync(page),
+			"notes.txt": text,
+			".notes.txt.br": brotliCompressSync(text),
 		});
-		const request = async (path: string, headers: Record<string, string>) =>
+		// Why: the function serves the files of the list, so it does not find a later file.
+		writeFileSync(join(directory, "late.txt"), "late");
+		const entry = functionEntry(directory);
+		const listed = await host.files(directory).snapshot?.();
+		const request = async (path: string, headers: Record<string, string> = {}) =>
 			entry.fetch(new Request(`http://localhost${path}`, { headers }), {});
 
+		const file = await request("/robots.txt");
+		const index = await request("/about");
 		const brotli = await request("/blog", { "Accept-Encoding": "br" });
 		const plain = await request("/blog", { "Accept-Encoding": "identity" });
 		const range = await request("/notes.txt", {
 			"Accept-Encoding": "identity",
 			Range: "bytes=3-6",
 		});
-		const list = await request("/.app-server-brotli.json", {});
+		const list = await request("/.app-server-files.json");
+		const missing = await request("/missing.txt");
+		const late = await request("/late.txt");
 
 		expect({
+			file: [file.headers.get("Content-Length"), await file.text()],
+			index: await index.text(),
 			brotli: [brotli.headers.get("Content-Encoding"), Buffer.from(await brotli.arrayBuffer())],
 			plain: [plain.headers.get("Content-Length"), await plain.text()],
 			range: [range.status, await range.text()],
 			list: await list.text(),
+			missing: await missing.text(),
+			late: await late.text(),
 		}).toStrictEqual({
+			file: ["12", "Disallow: /a"],
+			index: "<h1>About</h1>",
 			brotli: ["br", brotliCompressSync(page)],
 			plain: [String(page.length), page],
 			range: [206, "3456"],
 			list: "rendered",
+			missing: "rendered",
+			late: "rendered",
 		});
+		await expect(listed?.stat("/about")).resolves.toStrictEqual({ kind: "directory" });
+		await expect(listed?.stat("/about/")).resolves.toStrictEqual({ kind: "directory" });
+		await expect(listed?.stat("/robots.txt/")).resolves.toBeUndefined();
+	});
+
+	it("reads a client build with no list from the file system, as the build step and development do", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-vercel-no-list-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		mkdirSync(join(directory, "about"));
+		writeFileSync(join(directory, "about/index.html"), "<h1>About</h1>");
+		const files = host.files(directory);
+
+		const before = await files.stat("/robots.txt");
+		writeFileSync(join(directory, "robots.txt"), "Disallow: /a");
+		const response = await functionEntry(directory).fetch(
+			new Request("http://localhost/about"),
+			{},
+		);
+
+		expect(before).toBeUndefined();
+		await expect(files.stat("/robots.txt")).resolves.toMatchObject({ kind: "file", size: 12 });
+		await expect(response.text()).resolves.toBe("<h1>About</h1>");
 	});
 
 	it("opens the brotli copy of a file only when the body is read, and cancels it with the body", async () => {
 		const compressed = brotliCompressSync("a".repeat(4096));
 		let opens = 0;
 		let cancels = 0;
-		const files = brotliOnlyFiles({
-			stat: async (path) =>
-				path === "/page.html" ? undefined : { kind: "file", size: 1, mtimeMs: 0 },
-			open: async (path) => {
-				if (path === "/.app-server-brotli.json") {
-					return Response.json({ "/page.html": 4096 }).body ?? new ReadableStream();
-				}
+		const open = brotliOnlyOpen(
+			async () => {
 				opens += 1;
 				return new ReadableStream<Uint8Array>({
 					pull(controller) {
@@ -365,9 +439,10 @@ describe("host", () => {
 					},
 				});
 			},
-		});
+			new Set(["/page.html"]),
+		);
 
-		const reader = (await files.open("/page.html")).getReader();
+		const reader = (await open("/page.html")).getReader();
 		const unread = opens;
 		const first = await reader.read();
 		await reader.cancel();

@@ -7,6 +7,7 @@ import {
 	defaultPlugins,
 	eventStream,
 	jsonSink,
+	logger,
 } from "../../dist/index.js";
 import { host, tcp } from "../../dist/node.js";
 
@@ -99,16 +100,39 @@ const routes = {
 		setTimeout(() => {}, 60_000);
 		return new Response("lingering", { headers: { "Content-Type": "text/plain" } });
 	},
+	// Leaves a rejected promise with no handler, as a call that the route does not await can.
+	"/reject": () => {
+		void Promise.reject(new Error("no handler"));
+		return new Response("rejected", { headers: { "Content-Type": "text/plain" } });
+	},
+	// Throws outside the request, as a callback of a timer or of an event emitter can.
+	"/throw": () => {
+		setTimeout(() => {
+			throw new Error("thrown in a timer");
+		}, 0);
+		return new Response("thrown", { headers: { "Content-Type": "text/plain" } });
+	},
 	// A page of one chunk, which a pooled zlib stream compresses.
 	"/page": () =>
 		new Response("<p>page</p>".repeat(200), { headers: { "Content-Type": "text/html" } }),
 	"/upload": async (request) => new Response(String((await request.arrayBuffer()).byteLength)),
 	"/events": (request) =>
-		eventStream({ signal: request.signal }, ({ send }) => {
-			send({ data: "hello" });
-			return new Promise(() => {});
-		}),
+		eventStream(
+			({ send }) => {
+				send({ data: "hello" });
+				return new Promise(() => {});
+			},
+			{ signal: request.signal },
+		),
 };
+
+// An app's own listener for a rejected promise, as an error tracker adds. Why `once` before
+// startup: on Bun, the listener removes itself before it runs, so the host must not count it then.
+if (process.env.OWN_REJECTION_LISTENER === "1") {
+	process.once("unhandledRejection", () => {
+		logger().warn("the app got the rejection");
+	});
+}
 
 // Why `createEntry`: the CLI calls this export, so this copy of the package runs the server.
 export const appServer = createEntry({

@@ -12,8 +12,17 @@ import type { HydratedRouterProps } from "react-router/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { staleBuildReactRouter, staleBuildTanStack } from "./stale-build-navigation.js";
 
-/** A server stand-in that answers each request with its build, and the document loads of the page. */
-function page({ serverBuild }: { serverBuild: string }) {
+/**
+ * A server stand-in that answers each request with its build in the
+ * `headerName` header, and the document loads of the page.
+ */
+function page({
+	serverBuild,
+	headerName = "X-Build-Id",
+}: {
+	serverBuild: string;
+	headerName?: string;
+}) {
 	const server = { build: serverBuild };
 	const requests: string[] = [];
 	vi.stubGlobal(
@@ -24,7 +33,7 @@ function page({ serverBuild }: { serverBuild: string }) {
 			// Why: a proxy route of `buildId({ paths })` sends the build only in `Server-Timing`.
 			const headers = url.includes("/api/")
 				? { "Server-Timing": `build;desc="${server.build}"` }
-				: { "X-Build-Id": server.build };
+				: { [headerName]: server.build };
 			return new Response("data", { headers });
 		}),
 	);
@@ -207,6 +216,16 @@ describe("staleBuildReactRouter", () => {
 
 		await expect(settles(data)).resolves.toBe(false);
 		expect(documentLoads).toStrictEqual(["http://localhost:3000/dashboard"]);
+	});
+
+	it("reads the build from the header of the headerName option", async () => {
+		const { documentLoads } = page({ serverBuild: "v2", headerName: "X-App-Build" });
+		const routerFetch = started({ build: "v1", headerName: "X-App-Build" }).fetch;
+
+		const data = routerFetch(dataRequest("/settings.data"), PUSH);
+
+		await expect(settles(data)).resolves.toBe(false);
+		expect(documentLoads).toStrictEqual(["http://localhost:3000/settings"]);
 	});
 
 	it("returns the data of a navigation with one request while the server runs the same build", async () => {

@@ -14,9 +14,6 @@ importers:
       '@vercel/nft':
         specifier: 1.11.0
         version: 1.11.0
-      hono:
-        specifier: 4.13.16
-        version: 4.13.16
     devDependencies:
       '@changesets/changelog-github':
         specifier: 1.0.1
@@ -48,6 +45,9 @@ importers:
       happy-dom:
         specifier: 20.14.6
         version: 20.14.6
+      hono:
+        specifier: 4.13.16
+        version: 4.13.16
       oxfmt:
         specifier: 0.75.0
         version: 0.75.0

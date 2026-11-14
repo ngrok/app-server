@@ -19,12 +19,33 @@ export function optionPlugin<P extends Plugin>(option: string, plugin: P): P {
 }
 
 /**
- * Stops startup when `plugins` has two plugins of one option of
- * `defaultPlugins()`, such as two `buildId()`. Why: two copies do not fail.
- * One sets its headers over the other, so a value that the app gave is lost.
+ * The options whose plugins must see the prerendered pages. Why a list
+ * here: `prerendered()` answers a page with no later stage, so a plugin of
+ * one of these options that comes after it changes only the rendered pages.
+ */
+const SEES_PRERENDERED_PAGES = new Set([
+	"securityHeaders",
+	"noindex",
+	"buildId",
+	"contentSecurityPolicy",
+	"env",
+]);
+
+/**
+ * Stops startup for a plugin list that puts a plugin of an option of
+ * `defaultPlugins()` where it does not do its job:
+ *
+ * - Two plugins of one option, such as two `bodyLimit()`. Why: two copies do
+ *   not fail, and they do not act as one. A value that the app gave is lost,
+ *   or both act, such as two trailing-slash redirects that loop.
+ * - A plugin of `securityHeaders`, `noindex`, `buildId`,
+ *   `contentSecurityPolicy`, or `env` after `prerendered()`. Why: the
+ *   prerendered pages then do not get it. Development serves no prerendered
+ *   page, so only production shows the failure.
  *
  * @example
- * checkOptionPlugins([...defaultPlugins(), buildId({ value: "v42" })]); // throws
+ * checkOptionPlugins([...defaultPlugins(), bodyLimit({ maxBytes: 1024 })]); // throws
+ * checkOptionPlugins([...defaultPlugins(), noindex()]); // throws
  */
 export function checkOptionPlugins(plugins: readonly Plugin[]): void {
 	const seen = new Set<string>();
@@ -32,7 +53,12 @@ export function checkOptionPlugins(plugins: readonly Plugin[]): void {
 		const option = options.get(plugin);
 		if (option != null && seen.has(option)) {
 			throw new Error(
-				`The plugin list has the ${plugin.name} plugin two times, so one replaces the other. Keep one: set the "${option}" option of defaultPlugins(), and do not also add the plugin.`,
+				`The plugin list has the ${plugin.name} plugin two times. Keep one: set the "${option}" option of defaultPlugins(), and do not also add the plugin. To put your own copy at another place, take the default out of the list first, such as with defaultPlugins().filter((plugin) => plugin.name !== "${plugin.name}").`,
+			);
+		}
+		if (option != null && seen.has("prerendered") && SEES_PRERENDERED_PAGES.has(option)) {
+			throw new Error(
+				`The ${plugin.name} plugin comes after prerendered(), so the prerendered pages do not get it. Set the "${option}" option of defaultPlugins(), or put the plugin before prerendered().`,
 			);
 		}
 		if (option != null) {
@@ -58,6 +84,18 @@ export function presenceHeaders<P extends Plugin>(headers: readonly string[], pl
 	return plugin;
 }
 
+/** The headers that `marks` holds for `plugins`, in lowercase, once each. */
+function markedHeaders(
+	marks: WeakMap<Plugin, readonly string[]>,
+	plugins: readonly Plugin[],
+): string[] {
+	return [
+		...new Set(
+			plugins.flatMap((plugin) => marks.get(plugin) ?? []).map((name) => name.toLowerCase()),
+		),
+	];
+}
+
 /**
  * The headers that {@link presenceHeaders} marked on `plugins`, in lowercase,
  * once each.
@@ -66,9 +104,91 @@ export function presenceHeaders<P extends Plugin>(headers: readonly string[], pl
  * presenceHeadersOf(defaultPlugins({ noindex: { unlessHeader: "X-Ngrok-Edge" } })); // => ["x-ngrok-edge"]
  */
 export function presenceHeadersOf(plugins: readonly Plugin[]): string[] {
-	return [
-		...new Set(
-			plugins.flatMap((plugin) => presence.get(plugin) ?? []).map((name) => name.toLowerCase()),
-		),
-	];
+	return markedHeaders(presence, plugins);
+}
+
+/** The response headers that each plugin gives a new value for each request, by plugin object. */
+const perRequest = new WeakMap<Plugin, readonly string[]>();
+
+/**
+ * Marks `plugin` as one that gives each of the response headers `headers` a
+ * new value for each request. Why: the build's check of the CDN pages drops
+ * these headers, so they do not keep a prerendered page off the CDN.
+ *
+ * @example
+ * return perRequestHeaders(["X-Request-Id"], { name: "request-id", middleware });
+ */
+export function perRequestHeaders<P extends Plugin>(headers: readonly string[], plugin: P): P {
+	perRequest.set(plugin, headers);
+	return plugin;
+}
+
+/**
+ * The headers that {@link perRequestHeaders} marked on `plugins`, in
+ * lowercase, once each.
+ *
+ * @example
+ * perRequestHeadersOf(defaultPlugins({ requestId: { headerName: "X-Correlation-Id" } })); // => ["x-correlation-id"]
+ */
+export function perRequestHeadersOf(plugins: readonly Plugin[]): string[] {
+	return markedHeaders(perRequest, plugins);
+}
+
+/** An HTTP header name: a token of RFC 9110. */
+const HEADER_NAME = /^[\w!#$%&'*+.^`|~-]+$/u;
+
+/**
+ * A character that a header value cannot hold: a control character other
+ * than a tab, or a character above U+00FF. Why this set: it is the rule of
+ * the HTTP writer of Node.js, which is the strictest of the hosts.
+ */
+const NOT_IN_HEADER_VALUE = /[^\t\u0020-\u007E\u0080-\u00FF]/u;
+
+/**
+ * Throws when `name`, the `option` of the plugin factory `plugin`, is not an
+ * HTTP header name, so a bad option stops startup. Why: such a name starts
+ * with no error, and each response that gets the header is then a 500.
+ *
+ * @example
+ * checkHeaderName({ plugin: "requestId", option: "headerName", name: "X Request Id" }); // throws
+ */
+export function checkHeaderName({
+	plugin,
+	option,
+	name,
+}: {
+	plugin: string;
+	option: string;
+	name: string;
+}): void {
+	if (!HEADER_NAME.test(name)) {
+		throw new TypeError(
+			`The ${option} of ${plugin} must be an HTTP header name, not ${JSON.stringify(name)}. Use only letters, digits, and "-".`,
+		);
+	}
+}
+
+/**
+ * Throws when `value`, the `option` of the plugin factory `plugin`, is not a
+ * value that a header can hold, so a bad option stops startup. Why: such a
+ * value starts with no error, and each response that gets the header is then
+ * a 500.
+ *
+ * @example
+ * checkHeaderValue({ plugin: "buildId", option: "value", value: "v42\n" }); // throws
+ */
+export function checkHeaderValue({
+	plugin,
+	option,
+	value,
+}: {
+	plugin: string;
+	option: string;
+	value: string;
+}): void {
+	if (NOT_IN_HEADER_VALUE.test(value)) {
+		throw new TypeError(
+			`The ${option} of ${plugin} must be a value that a header can hold, not ${JSON.stringify(value)}. Remove each control character, such as a line break, and each character above U+00FF.`,
+		);
+	}
 }

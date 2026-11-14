@@ -13,6 +13,7 @@ Assert what a caller sees: the status, the headers, the body, a log line, a retu
 - A constant asserted against a copy of itself.
 - A sleep that waits for a stream or a timer.
 - A test with no answer to "what one-line change turns this red?"
+- A guard, a branch, or a condition that you can delete with no failed test. Delete it in a scratch copy, then add the test that fails.
 
 **In this repo:** tests send requests through `app.request()` or a real listener, and read the response as a client does.
 

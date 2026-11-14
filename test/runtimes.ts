@@ -2,8 +2,16 @@
 // each: `node ./test/runtimes.ts [node|bun|deno ...]`. Build the package first. A runtime that is
 // not installed fails the run, so CI cannot pass by skipping one.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+	cpSync,
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+} from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { get } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -101,18 +109,50 @@ async function checkPort(runtime: string): Promise<void> {
 			stderr: "ignore",
 		});
 		busy.url.catch(() => {});
+		// Why: the `exit` event can come before the last stdout line.
+		const stdoutEnded = new Promise<void>((resolve) => {
+			busy.child.stdout.once("end", resolve);
+		});
 		assert.notEqual(
 			await exited(busy.child, 5_000),
 			0,
 			"`serve` stops at once when its port is in use",
+		);
+		await stdoutEnded;
+		assert.deepEqual(
+			busy.lines.filter((line) => line.level === "error").map((line) => line.message),
+			["startup failed"],
+			"a failed start writes one error line to the log",
 		);
 	} finally {
 		await close(held.server);
 	}
 }
 
+/** `serve` with no server build to load: a message and the usage on stderr, and no stack. */
+function checkMissingBuild(runtime: string): void {
+	const empty = mkdtempSync(join(tmpdir(), "app-server-empty-"));
+	try {
+		for (const [buildPath, message] of [
+			[["nope/app-server.js"], "No server build at nope/app-server.js. "],
+			[[], "No server build found. "],
+		] as const) {
+			const [command, args] = commands[runtime]?.([cliPath, "serve", ...buildPath]) ?? ["", []];
+			const { status, stderr } = spawnSync(command, args, { cwd: empty, encoding: "utf8" });
+			assert.equal(status, 1, "`serve` exits with code 1 when no file is at the build path");
+			const [first = "", usage = "", ...rest] = stderr.split("\n");
+			assert.ok(first.startsWith(message), `the first line names the fault: ${stderr}`);
+			assert.match(usage, /^Usage: /u, "the usage comes next");
+			assert.deepEqual(rest, [""], "no stack follows");
+		}
+	} finally {
+		rmSync(empty, { recursive: true, force: true });
+	}
+}
+
 async function check(runtime: string): Promise<void> {
 	await checkPort(runtime);
+	checkMissingBuild(runtime);
 	const { child, lines, url } = startServer(runtime, serveArgs);
 	try {
 		const base = await url;
@@ -266,10 +306,25 @@ async function check(runtime: string): Promise<void> {
 			"shutdown ends the event stream, closes stuck and late bodies at the deadline, and exits without waiting for the app's timers",
 		);
 		await Promise.all([eventsEnded, stuckEnded, stdoutEnded]);
-		assert.ok(
-			lines.some((line) => line.message === "stopped"),
-			"the exit waits for stdout, so the last log line arrives",
+		const stopped = lines.findIndex((line) => line.message === "stopped");
+		assert.notEqual(stopped, -1, "the exit waits for stdout, so the last log line arrives");
+		const warned = lines.findIndex(
+			(line) => line.message === "the drain deadline passed with open requests",
 		);
+		assert.ok(
+			warned !== -1 && warned < stopped && lines[warned]?.["app_server.deadline_ms"] === 3_000,
+			"a warn line names the drain deadline that cut open requests, before `stopped`",
+		);
+		// Why not on Bun: on Bun 1.3, `stop(true)` does not end an open body, so its access line never comes.
+		if (runtime !== "bun") {
+			const cut = lines.findIndex(
+				(line) => line.message === "request" && line["http.url"] === "/stuck",
+			);
+			assert.ok(
+				cut !== -1 && cut < stopped && lines[cut]?.["http.aborted"] === true,
+				"the access line of a response that the deadline cuts comes before `stopped`",
+			);
+		}
 		process.stdout.write(`ok ${runtime}\n`);
 	} finally {
 		child.kill("SIGKILL");
@@ -277,17 +332,140 @@ async function check(runtime: string): Promise<void> {
 }
 
 /**
- * `app-server start` on Node: a Vite plugin gets the HTTP server's events, and Ctrl+C stops the
- * server at once, though the app left a timer.
+ * An error with no handler: the server logs one line, drains, and exits with code 1. `path` is the
+ * fixture route that leaves the error, and `origin` is how the runtime reports it.
  */
-async function checkStart(): Promise<void> {
-	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
-		cwd: devDirectory,
-		env: { HOST: "127.0.0.1" },
+async function checkCrash(
+	runtime: string,
+	{ path, origin, message }: { path: string; origin: string; message: string },
+): Promise<void> {
+	const { child, lines, url } = startServer(runtime, serveArgs);
+	try {
+		const base = await url;
+		const events = await request(new URL("/events", base).href);
+		const eventsEnd = new Promise<string>((resolve) => {
+			events.once("end", () => {
+				resolve("end");
+			});
+			events.once("error", () => {
+				resolve("error");
+			});
+			events.resume();
+		});
+		const stdoutEnded = new Promise<void>((resolve) => {
+			child.stdout.once("end", resolve);
+		});
+		const exitCode = exited(child, 10_000);
+		await (await fetch(new URL(path, base), { headers: { "X-Request-Id": "crash-1" } })).text();
+		assert.equal(await eventsEnd, "end", "an error with no handler does not cut an open response");
+		assert.equal(await exitCode, 1, "the server drains, then exits with code 1");
+		await stdoutEnded;
+		const errors = lines.filter((line) => line.level === "error");
+		assert.deepEqual(
+			errors.map((line) => [line.message, line["error.message"], line["app_server.origin"]]),
+			[["uncaught exception", message, origin]],
+			"one log line has the error and its origin",
+		);
+		// Why Node only: Bun and Deno do not keep the request context for each origin.
+		if (runtime === "node") {
+			assert.equal(
+				errors[0]?.["http.request_id"],
+				"crash-1",
+				"the line has the fields of the request that the error came from",
+			);
+		}
+		assert.ok(
+			lines.some((line) => line.message === "stopped"),
+			"the drain ends before the exit",
+		);
+		process.stdout.write(`ok ${runtime} crash ${origin}\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/** An app with its own `unhandledRejection` listener handles a rejected promise, and the server stays up. */
+async function checkOwnRejectionListener(runtime: string): Promise<void> {
+	const { child, lines, url } = startServer(runtime, serveArgs, {
+		env: { OWN_REJECTION_LISTENER: "1" },
 	});
 	try {
-		const page = await fetch(new URL("/", await url));
+		const base = await url;
+		await (await fetch(new URL("/reject", base))).text();
+		await waitFor(
+			async () => lines.some((line) => line.message === "the app got the rejection"),
+			"the app's own listener gets the rejection",
+		);
+		assert.equal(
+			(await fetch(new URL("/readyz", base))).status,
+			200,
+			"the server does not drain when the app handles the rejection",
+		);
+		const exitCode = exited(child, 10_000);
+		child.kill("SIGTERM");
+		assert.equal(await exitCode, 0, "the exit code is that of a stop signal");
+		assert.deepEqual(
+			lines.filter((line) => line.level === "error"),
+			[],
+			"the server logs no error for a rejection that the app handles",
+		);
+		process.stdout.write(`ok ${runtime} own rejection listener\n`);
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/**
+ * `app-server start` on Node: it moves on from a port in use and opens the browser as `vite dev`
+ * does, a Vite plugin gets the HTTP server's events and URLs, and Ctrl+C stops the server at once,
+ * though the app left a timer.
+ */
+async function checkStart(): Promise<void> {
+	const held = await holdPort();
+	const { child, url, lines } = startServer(
+		"node",
+		[cliPath, "start", "--port", String(held.port)],
+		{ cwd: devDirectory, env: { HOST: "127.0.0.1", BROWSER: join(devDirectory, "open.js") } },
+	);
+	try {
+		const base = await url;
+		assert.notEqual(new URL(base).port, String(held.port), "`start` moves on from a port in use");
+		assert.ok(
+			lines.some(
+				(line) =>
+					line.message === "vite logger" &&
+					line.level === "info" &&
+					line.text === `Port ${held.port} is in use, trying another one...`,
+			),
+			"`start` reports a port in use through Vite's logger, in the words of `vite dev`",
+		);
+		const page = await fetch(new URL("/", base));
 		assert.equal(await page.text(), "rendered");
+		assert.ok(
+			lines.some(
+				(line) =>
+					line.message === "vite logger" &&
+					line.level === "warn" &&
+					String(line.text).includes("ignores `server.https`"),
+			),
+			"`start` warns that it ignores `server.https`",
+		);
+		const foreign = await request(new URL("/@vite/client", base).href, { Host: "evil.example" });
+		foreign.resume();
+		assert.equal(
+			foreign.statusCode,
+			403,
+			"Vite checks the `Host` header, though `server.https` is set",
+		);
+		await waitFor(
+			async () => lines.some((line) => line.message === "browser opened" && line.url === base),
+			"`start` opens the browser for `server.open`",
+		);
+		assert.deepEqual(
+			await (await fetch(new URL("/restart", base))).json(),
+			[base],
+			"a Vite plugin reads `server.resolvedUrls` after a Vite restart",
+		);
 		// Why: the `exit` event can come before the last stdout line.
 		const stdoutEnded = new Promise<void>((resolve) => {
 			child.stdout.once("end", resolve);
@@ -298,8 +476,13 @@ async function checkStart(): Promise<void> {
 		await stdoutEnded;
 		assert.deepEqual(
 			lines.map((line) => line.message).filter((message) => message.startsWith("vite plugin")),
-			["vite plugin saw listening", "vite plugin saw close"],
-			"a Vite plugin gets the HTTP server's events",
+			["vite plugin saw listening", "vite plugin saw close", "vite plugin saw close"],
+			"a Vite plugin gets the HTTP server's events, and its instance from the Vite restart gets `close` too",
+		);
+		assert.deepEqual(
+			lines.filter((line) => line.message === "resolved URLs").map((line) => line.urls),
+			[[base]],
+			"a Vite plugin reads `server.resolvedUrls` in its `listening` listener",
 		);
 		assert.deepEqual(
 			lines.filter((line) => line.message === "upgrade listeners").map((line) => line.upgrades),
@@ -307,6 +490,99 @@ async function checkStart(): Promise<void> {
 			"the HTTP server has only the HMR `upgrade` listener, because a Vite restart does not remove a proxy's",
 		);
 		process.stdout.write("ok node start\n");
+	} finally {
+		child.kill("SIGKILL");
+		await close(held.server);
+	}
+}
+
+/**
+ * `app-server start` with `server.https: false`: no warning, as in `vite dev`, and Vite's host
+ * check stays on.
+ */
+async function checkStartHttpsOff(): Promise<void> {
+	const { child, url, lines } = startServer("node", [cliPath, "start", "--port", "0"], {
+		cwd: devDirectory,
+		env: { HOST: "127.0.0.1", DEV_HTTPS: "false" },
+	});
+	try {
+		const base = await url;
+		const foreign = await request(new URL("/@vite/client", base).href, { Host: "evil.example" });
+		foreign.resume();
+		assert.equal(foreign.statusCode, 403, "Vite checks the `Host` header");
+		assert.deepEqual(
+			lines.filter((line) => line.message === "vite logger" && line.level === "warn"),
+			[],
+			"`start` writes no warning for a `server.https` that has HTTPS off",
+		);
+		process.stdout.write("ok node start with HTTPS off\n");
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+/**
+ * The source of a script that imports the module at the URL `module`. It then writes each module
+ * specifier that the process resolved, with `import` or `require`, as one log line.
+ */
+function resolveLogScript(module: string): string {
+	return [
+		'import { registerHooks } from "node:module";',
+		"const specifiers = [];",
+		"registerHooks({",
+		"\tresolve(specifier, context, nextResolve) {",
+		"\t\tspecifiers.push(specifier);",
+		"\t\treturn nextResolve(specifier, context);",
+		"\t},",
+		"});",
+		`await import(${JSON.stringify(module)});`,
+		'console.log(JSON.stringify({ level: "info", message: "resolved", specifiers }));',
+	].join("\n");
+}
+
+/** What a process loads on Node: no module that only another command or a rare build uses. */
+async function checkLoadedModules(): Promise<void> {
+	const plugin = pathToFileURL(join(import.meta.dirname, "../dist/vite.js")).href;
+	const { specifiers }: { specifiers: string[] } = JSON.parse(
+		execFileSync("node", ["--input-type=module", "-e", resolveLogScript(plugin)], {
+			encoding: "utf8",
+		}),
+	);
+	assert.ok(specifiers.includes(plugin), "the script records each specifier");
+	assert.deepEqual(
+		specifiers.filter((specifier) => specifier.startsWith("@vercel/nft")),
+		[],
+		"the import of the Vite plugin does not load the tracer, which only a build that removes files uses",
+	);
+
+	// Why the React Router app: its build holds its own copy of the server, as each build from the
+	// `appServer` plugin does.
+	const { child, lines, url } = startServer(
+		"node",
+		["--input-type=module", "-e", resolveLogScript(pathToFileURL(cliPath).href), "serve"],
+		{ cwd: reactRouterDirectory },
+	);
+	try {
+		await url;
+		const resolved = (): string[] | undefined => {
+			const logged = lines.find((line) => line.message === "resolved")?.specifiers;
+			return Array.isArray(logged) ? logged.map(String) : undefined;
+		};
+		await waitFor(async () => resolved() != null, "`serve` returns after the server listens");
+		const served = resolved() ?? [];
+		// Why: an empty list also passes the check for Hono. The import of the build shows that the
+		// script recorded what `serve` loads.
+		assert.ok(
+			served.some((specifier) => specifier.endsWith("/build/server/app-server.js")),
+			"the script records each specifier, to the import of the build",
+		);
+		assert.deepEqual(
+			served.filter((specifier) => /^@?hono(?:\/|$)/u.test(specifier)),
+			[],
+			"`serve` loads no server of the CLI's copy for a build that has its own",
+		);
+		await stopCleanly(child, "the React Router app under the script");
+		process.stdout.write("ok node loaded modules\n");
 	} finally {
 		child.kill("SIGKILL");
 	}
@@ -456,11 +732,17 @@ process.once("SIGTERM", () => server.close());
  * function.
  */
 async function checkVercel(): Promise<void> {
-	execFileSync(`${binDirectory}/react-router`, ["build"], {
+	const buildLog = execFileSync(`${binDirectory}/react-router`, ["build"], {
 		cwd: reactRouterDirectory,
 		env: { ...process.env, APP_SERVER_HOST: "vercel" },
-		stdio: ["ignore", "ignore", "inherit"],
+		stdio: ["ignore", "pipe", "inherit"],
+		encoding: "utf8",
 	});
+	assert.equal(
+		buildLog.match(/the CDN serves \d+ prerendered paths/gu)?.length,
+		1,
+		"the build writes the host's output one time, after the prerender pass",
+	);
 	const output = join(reactRouterDirectory, ".vercel/output");
 	const copy = mkdtempSync(join(tmpdir(), "app-server-vercel-"));
 	cpSync(join(output, "functions/index.func"), copy, { recursive: true, verbatimSymlinks: true });
@@ -679,12 +961,30 @@ async function checkTanstackStartDev(runtime: string): Promise<void> {
 	}
 }
 
+assert.deepEqual(
+	readdirSync(dirname(cliPath)).filter((name) => name.endsWith(".map")),
+	[],
+	"the package has no source maps, which would be more than half of its size",
+);
 buildFixtures();
 const selected = process.argv.slice(2);
 for (const runtime of selected.length > 0 ? selected : Object.keys(commands)) {
 	await check(runtime);
+	await checkCrash(runtime, {
+		path: "/reject",
+		origin: "unhandledRejection",
+		message: "no handler",
+	});
+	await checkCrash(runtime, {
+		path: "/throw",
+		origin: "uncaughtException",
+		message: "thrown in a timer",
+	});
+	await checkOwnRejectionListener(runtime);
 	if (runtime === "node") {
 		await checkStart();
+		await checkStartHttpsOff();
+		await checkLoadedModules();
 	}
 	await checkReactRouter(runtime);
 	await checkTanstackStart(runtime);

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { contentSecurityPolicy } from "../core/plugins/security-headers.js";
 import { host } from "../node/index.js";
 import { testServer } from "../test-server.js";
+import { withRequestContext } from "../testing/index.js";
 import { cspNonce as browserCspNonce } from "./browser.js";
 import { cspNonce } from "./csp-nonce.js";
 
@@ -49,6 +50,34 @@ describe("cspNonce", () => {
 		expect(response.headers.get("Content-Security-Policy")).toBe(
 			`script-src 'nonce-${nonce}' 'strict-dynamic'`,
 		);
+	});
+
+	it("gives the nonce of the request when a document global exists, as under happy-dom or jsdom", async () => {
+		vi.stubGlobal(
+			"document",
+			browserDocument('<!doctype html><script nonce="document-nonce"></script>'),
+		);
+		const request = await server();
+
+		const response = await request("/");
+
+		const [, nonce] =
+			/'nonce-(?<nonce>[^']+)'/u.exec(response.headers.get("Content-Security-Policy") ?? "") ?? [];
+		expect(nonce).toMatch(/^[\w+/]+=*$/u);
+		await expect(response.text()).resolves.toContain(`nonce="${nonce}"`);
+		await expect(withRequestContext({ cspNonce: "test-nonce" }, () => cspNonce())).resolves.toBe(
+			"test-nonce",
+		);
+		expect(browserCspNonce()).toBe("document-nonce");
+	});
+
+	it("gives no nonce for a request with no nonce, though the document has one", async () => {
+		vi.stubGlobal(
+			"document",
+			browserDocument('<!doctype html><script nonce="document-nonce"></script>'),
+		);
+
+		await expect(withRequestContext({}, () => cspNonce())).resolves.toBeUndefined();
 	});
 
 	it("exports the same names from the browser build", async () => {

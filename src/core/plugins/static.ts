@@ -1,7 +1,8 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { getPath } from "hono/utils/url";
-import { manifestKey } from "../build-manifest.js";
-import { writableHeaders } from "../header-hook.js";
+import { IMMUTABLE, manifestKey } from "../build-manifest.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
+import { optionPlugin } from "../plugin-options.js";
 import { prefersMarkdown } from "../prefers-markdown.js";
 import { contentType, findStaticFile, isFilePath, staticResponse } from "../static-files.js";
 import { withVary } from "../vary.js";
@@ -9,7 +10,8 @@ import type { StaticFile } from "../static-files.js";
 import type { AppServerEnv, Plugin, StaticFiles } from "../types.js";
 import { trimTrailingSlashes } from "./trailing-slash.js";
 
-const IMMUTABLE = "public, max-age=31536000, immutable";
+/** The headers of a hashed asset. Why one list for all responses: `staticResponse` only reads it. */
+const ASSET_HEADERS = [{ "Cache-Control": IMMUTABLE }];
 
 /** The requests that the dev server answered. */
 const devServerAnswers = new WeakSet<Context<AppServerEnv>>();
@@ -32,7 +34,8 @@ export function answeredByDevServer(context: Context<AppServerEnv>): boolean {
  * default, with a one-year immutable cache. The `appServer` Vite plugin
  * records the directory. A missing asset gets a plain 404 with
  * `Cache-Control: no-store`, not a rendered page. In development, the dev
- * server serves the source modules, the HMR client, and the CSS here instead.
+ * server serves the source modules, the HMR client, and the CSS here instead,
+ * so a development plugin list needs this plugin.
  *
  * @example
  * createServer({ plugins: [requestId(), accessLog(), streamingCompress(), assets(), prerendered()] });
@@ -68,12 +71,7 @@ export function assets(): Plugin {
 					// Why `no-store`: an old tab asks for the chunks of the build it runs, and a CDN must not keep the miss.
 					return context.text("Not Found", 404, { "Cache-Control": "no-store" });
 				}
-				return staticResponse(context, {
-					files,
-					file,
-					headers: { "Cache-Control": IMMUTABLE },
-					contentTypes,
-				});
+				return staticResponse(context, { files, file, headers: ASSET_HEADERS, contentTypes });
 			};
 		},
 		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
@@ -83,11 +81,15 @@ export function assets(): Plugin {
 /** Options for {@link prerendered}. */
 export type PrerenderedOptions = {
 	/**
-	 * Extra headers for a served file, by its URL path. They replace the
-	 * headers captured at build time.
+	 * Extra headers for a served file. They replace the headers captured at
+	 * build time. `path` is the URL path that names the file: the request path,
+	 * or the path that `rewrite` or a markdown twin gives, such as `/about`.
+	 * `file` is the URL path of the file in the client build, such as
+	 * `/about/index.html`, the same path that `cacheControl` gets.
 	 */
-	headers?: (file: {
+	headers?: (served: {
 		path: string;
+		file: string;
 		context: Context<AppServerEnv>;
 	}) => Readonly<Record<string, string>> | undefined;
 	/**
@@ -134,10 +136,10 @@ export type PrerenderedOptions = {
 	 */
 	markdownTwins?: boolean | { twinOf: TwinOf };
 	/**
-	 * Sends a request path to the next stage, with no file lookup. Use it for
-	 * private pages, so the auth check in the app or the framework runs for
-	 * them. A data request has its own path, such as `/app.data` in React
-	 * Router.
+	 * Sends a request path to the next stage, with no file lookup. It gets the
+	 * request path, before `rewrite`. Use it for private pages, so the auth
+	 * check in the app or the framework runs for them. A data request has its
+	 * own path, such as `/app.data` in React Router.
 	 *
 	 * @example
 	 * prerendered({ skip: (path) => path === "/app" || path.startsWith("/app/") || path.startsWith("/app.") });
@@ -145,8 +147,8 @@ export type PrerenderedOptions = {
 	skip?: (path: string) => boolean;
 	/**
 	 * The `Cache-Control` of a served file, by the file's URL path, such as
-	 * `/about/index.html`. `undefined` sends none. A header that the build
-	 * captured, and the `headers` option, win over it.
+	 * `/about/index.html`. `undefined` gives the default for the file. A
+	 * header that the build captured, and the `headers` option, win over it.
 	 *
 	 * The default gives an HTML page, a markdown file, and a data file of the
 	 * framework `public, max-age=0, must-revalidate`, so a visitor always sees
@@ -154,9 +156,9 @@ export type PrerenderedOptions = {
 	 * `public, max-age=3600, stale-while-revalidate=86400`.
 	 *
 	 * @example
-	 * prerendered({ cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined) });
+	 * prerendered({ cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined) });
 	 */
-	cacheControl?: (path: string) => string | undefined;
+	cacheControl?: (file: string) => string | undefined;
 };
 
 /** Maps a request to the URL path of its markdown twin, or `undefined` when it has none. */
@@ -196,14 +198,6 @@ async function findTwin(
 	return twinPath == null || file == null ? undefined : { path: twinPath, file };
 }
 
-/** Adds `Vary: Accept` to the answer for a path with a twin, so a shared cache keeps both answers. */
-function varyOnAccept(context: Context<AppServerEnv>): void {
-	const vary = withVary(context.res.headers.get("Vary"), "Accept");
-	if (vary != null) {
-		writableHeaders(context).set("Vary", vary);
-	}
-}
-
 /**
  * The percent-encoded URL path for a decoded path, so it holds no space,
  * `>`, or non-ASCII character. Why the replace: a URL removes a tab or a
@@ -216,12 +210,31 @@ function urlPath(path: string): string {
 	).pathname;
 }
 
-/** Adds a `Link` to the twin at `twinPath`, so a client that does not ask for markdown can find it. */
-function linkToTwin(context: Context<AppServerEnv>, twinPath: string): void {
-	writableHeaders(context).append(
-		"Link",
-		`<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`,
-	);
+/** The later stages of a stage that adds a header hook after its answer: none. */
+async function noLaterStage(): Promise<void> {}
+
+/**
+ * Adds `Vary: Accept` to the answer for a path with a twin, so a shared
+ * cache keeps both answers. With `twinPath`, it also adds a `Link` to the
+ * twin, so a client that does not ask for markdown can find it. Why a header
+ * hook: the answer then needs no copy for the two headers.
+ */
+async function negotiate(context: Context<AppServerEnv>, twinPath?: string): Promise<void> {
+	const link =
+		twinPath == null ? undefined : `<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`;
+	await withBuiltInHeaderHook({
+		context,
+		next: noLaterStage,
+		hook: (headers) => {
+			const vary = withVary(headers.get("Vary"), "Accept");
+			if (vary != null) {
+				headers.set("Vary", vary);
+			}
+			if (link != null) {
+				headers.append("Link", link);
+			}
+		},
+	});
 }
 
 /**
@@ -271,7 +284,7 @@ function developmentTwins(
 			return next();
 		}
 		context.res = response;
-		varyOnAccept(context);
+		await negotiate(context);
 	};
 }
 
@@ -308,7 +321,7 @@ function twinOfOption(
  */
 export function prerendered(options: PrerenderedOptions = {}): Plugin {
 	let stage: MiddlewareHandler<AppServerEnv> | undefined;
-	return {
+	return optionPlugin("prerendered", {
 		name: "prerendered",
 		setup: async (info) => {
 			const twinOf = twinOfOption(options.markdownTwins);
@@ -320,7 +333,9 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 						: developmentTwins(twinOf, options, paths == null ? undefined : new Set(paths));
 				return;
 			}
-			const { files, contentTypes, capturedHeaders } = info;
+			// Why not `info` in a stage: a stage that keeps it keeps each field of it, such as the
+			// script hashes of each page.
+			const { files, contentTypes, capturedHeaders, isDataRequest } = info;
 			const missing: string[] = [];
 			for (const path of info.prerenderedPaths) {
 				if ((await findStaticFile(files, path)) == null) {
@@ -329,41 +344,32 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 			}
 			if (missing.length > 0) {
 				// Why a warning: a path with no file falls through to the framework, which still answers.
-				info.logger.log({
-					level: "warn",
-					message: "prerendered paths with no file",
-					attributes: {
-						"app_server.missing_paths": missing,
-					},
+				// Why 20 paths: a server with no client build has each prerendered path here.
+				info.logger.warn("prerendered paths with no file", {
+					"app_server.missing_count": missing.length,
+					"app_server.missing_paths": missing.slice(0, 20),
 				});
 			}
-			const cacheControl =
-				options.cacheControl ??
-				((path: string) => {
-					const type = contentType(path, contentTypes);
-					return type.startsWith("text/html") ||
-						type.startsWith("text/markdown") ||
-						info.isDataRequest(path)
-						? REVALIDATE
-						: ONE_HOUR;
-				});
+			const defaultCacheControl = (file: string) => {
+				const type = contentType(file, contentTypes);
+				return type.startsWith("text/html") ||
+					type.startsWith("text/markdown") ||
+					isDataRequest(file)
+					? REVALIDATE
+					: ONE_HOUR;
+			};
 			const serve = async (context: Context<AppServerEnv>, path: string, file: StaticFile) => {
 				context.env.onServedFile?.(file.path);
-				const value = cacheControl(file.path);
-				const headers = new Headers(value == null ? undefined : { "Cache-Control": value });
-				// Why `Headers`: the build captures lowercase names, and each layer must replace the one before it in any case.
-				for (const layer of [
-					capturedHeaders.get(manifestKey(path)),
-					options.headers?.({ path, context }),
-				]) {
-					for (const [name, layerValue] of Object.entries(layer ?? {})) {
-						headers.set(name, layerValue);
-					}
-				}
 				return staticResponse(context, {
 					files,
 					file,
-					headers: Object.fromEntries(headers),
+					headers: [
+						{
+							"Cache-Control": options.cacheControl?.(file.path) ?? defaultCacheControl(file.path),
+						},
+						capturedHeaders.get(manifestKey(path)),
+						options.headers?.({ path, file: file.path, context }),
+					],
 					contentTypes,
 				});
 			};
@@ -384,13 +390,10 @@ export function prerendered(options: PrerenderedOptions = {}): Plugin {
 					context.res = await serve(context, path, file);
 				}
 				if (twin != null) {
-					varyOnAccept(context);
-				}
-				if (twin != null && preferred == null) {
-					linkToTwin(context, twin.path);
+					await negotiate(context, preferred == null ? twin.path : undefined);
 				}
 			};
 		},
 		middleware: async (context, next) => (stage == null ? next() : stage(context, next)),
-	};
+	});
 }

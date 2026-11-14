@@ -1,11 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { brotliDecompressSync, constants, gunzipSync } from "node:zlib";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import type { Context } from "hono";
+import { describe, expect, it, vi } from "vitest";
 import { heldStream, productionSetup, stubFramework, testServer } from "../../test-server.js";
 import { createServer, serverInternals } from "../create-server.js";
 import { withHeaderHook } from "../header-hook.js";
-import type { AppServerEnv, Plugin } from "../types.js";
+import type { AppServerEnv, Plugin, ServerEnv } from "../types.js";
+import { buildId } from "./build-id.js";
 import { MAX_JOINED_BYTES, streamingCompress } from "./streaming-compress.js";
 
 /** A plugin whose header hook sets `name` to `value`. */
@@ -13,8 +15,12 @@ function setsHeader(name: string, value: string): Plugin {
 	return {
 		name: `sets-${name.toLowerCase()}`,
 		middleware: async (context, next) =>
-			withHeaderHook(context, next, (headers) => {
-				headers.set(name, value);
+			withHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					headers.set(name, value);
+				},
 			}),
 	};
 }
@@ -297,6 +303,20 @@ describe("streamingCompress", () => {
 		await expect(response.text()).resolves.toBe("abc");
 	});
 
+	it("sends a page as it is to a request with no Accept-Encoding", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/");
+
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+		await expect(response.text()).resolves.toBe(page);
+	});
+
 	it("follows the q values of Accept-Encoding, with q=0 as a refusal", async () => {
 		const page = `<p>${"hi ".repeat(500)}</p>`;
 		const { request } = await testServer({
@@ -455,6 +475,81 @@ describe("streamingCompress", () => {
 
 		await expect(bodyOf("Content-Encoding", "br")).resolves.toStrictEqual(["br", page]);
 		await expect(bodyOf("Content-Range", "bytes 0-1502/2000")).resolves.toStrictEqual([null, page]);
+	});
+
+	it("compresses a body when a header hook throws before its stage has the value that the hook needs", async () => {
+		// Why: the plugin runs each hook before the code that an earlier stage runs after its `next()`.
+		const setsLate: Plugin = {
+			name: "sets-late",
+			middleware: async (context, next) => {
+				const late: { value?: string } = {};
+				await withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						if (late.value == null) {
+							throw new Error("The stage has no value yet.");
+						}
+						headers.set("X-Late", late.value);
+					},
+				});
+				late.value = "set";
+			},
+		};
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const { request } = await testServer({
+			plugins: [setsLate, streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect([
+			response.status,
+			response.headers.get("X-Late"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual([200, "set", "gzip"]);
+		expect(gunzipSync(new Uint8Array(await response.arrayBuffer())).toString()).toBe(page);
+	});
+
+	it("leaves a body alone when a hook that a stage adds to headerHooks marks it no-transform", async () => {
+		const page = `<p>${"hi ".repeat(500)}</p>`;
+		const marks: Plugin = {
+			name: "marks",
+			middleware: async (context, next) => {
+				// Why the annotation: the list is in the environment of the server, not of an app.
+				const server: Context<ServerEnv> = context;
+				server.get("headerHooks")?.push((headers) => {
+					headers.set("Cache-Control", "public, no-transform");
+				});
+				await next();
+			},
+		};
+		const { request } = await testServer({
+			plugins: [marks, streamingCompress()],
+			render: async () => new Response(page, { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const response = await request("/", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+		await expect(response.text()).resolves.toBe(page);
+	});
+
+	it("calls the paths of buildId one time for a response that it compresses", async () => {
+		const paths = vi.fn<(path: string) => boolean>(() => false);
+		const { request } = await testServer({
+			plugins: [buildId({ value: "b1", paths }), streamingCompress()],
+			// Why not HTML: `buildId` asks `paths` only for a response that is not a document.
+			render: async () =>
+				new Response("hi ".repeat(500), { headers: { "Content-Type": "text/plain" } }),
+		});
+
+		const response = await request("/api/words", { headers: { "Accept-Encoding": "gzip" } });
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(paths).toHaveBeenCalledTimes(1);
 	});
 
 	it("adds Accept-Encoding to Vary in a plain Hono app", async () => {

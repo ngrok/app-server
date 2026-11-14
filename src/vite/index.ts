@@ -22,16 +22,27 @@ import {
 } from "node:path";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { getPath } from "hono/utils/url";
-import type { Environment, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
-import { BUILD_MANIFEST_FILE, DEFAULT_ASSETS_PATH, manifestKey } from "../core/build-manifest.js";
+import type { Environment, Logger, Plugin, PreviewServer, ResolvedConfig, Rolldown } from "vite";
+import {
+	BUILD_MANIFEST_FILE,
+	DEFAULT_ASSETS_PATH,
+	manifestKey,
+	SERVER_ENTRY_FILE,
+} from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
-import { copyName, isCompressible, MIN_COMPRESS_BYTES } from "../core/compression.js";
+import {
+	COPY_ENCODINGS,
+	copyName,
+	isCompressible,
+	MIN_COMPRESS_BYTES,
+} from "../core/compression.js";
 import type { Encoding } from "../core/compression.js";
 import { contentType } from "../core/static-files.js";
 import { scriptHashesOf } from "../node/script-hashes.js";
 import { node } from "../node/vite.js";
 import { reactRouterAdapter } from "../react-router/vite.js";
 import { tanstackStartAdapter } from "../tanstack-start/vite.js";
+import { RESOLVED_SERVER_ENTRY_ID, SERVER_ENTRY_ID, serverEntrySource } from "./entry-source.js";
 import {
 	copyPackages,
 	removeUntraced,
@@ -43,10 +54,6 @@ import {
 	RESOLVE_CALL,
 	readsOwnFiles,
 } from "./standalone.js";
-
-/** The module ID of the server entry that {@link appServer} generates. */
-export const SERVER_ENTRY_ID = "virtual:@ngrok/app-server/entry";
-const RESOLVED_SERVER_ENTRY_ID = `\0${SERVER_ENTRY_ID}`;
 
 /** The Vite environment that builds the server. */
 const SERVER_ENVIRONMENT = "ssr";
@@ -84,13 +91,12 @@ const UNCAPTURED_HEADERS = new Set([
  * `reactRouterAdapter()` from `@ngrok/app-server/react-router/vite`.
  */
 export type FrameworkBuild = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The Vite ID of the framework's server module, such as `virtual:react-router/server-build`. */
 	serverModule: string;
 	/**
-	 * The module whose `runtime` export makes the run side from the server
-	 * module. It has the type `FrameworkRuntimeFactory`.
+	 * The module whose `runtime` export makes the run side. The server entry
+	 * calls `runtime(serverModule, { ...runtimeOptions, mode })`. The call
+	 * returns a `FrameworkRuntime`.
 	 */
 	runtimeModule: string;
 	/**
@@ -99,10 +105,16 @@ export type FrameworkBuild = {
 	 * it, because the source is part of the server entry.
 	 */
 	runtimeOptions?: string;
+	/**
+	 * Content types that `mime` does not know, by file extension, such as
+	 * `{ ".data": "text/x-script" }`. Give the `contentTypes` of the run side.
+	 * Why: the build writes the compressed copies of each file with a
+	 * compressible type. With no copy, the server compresses such a file for
+	 * each request.
+	 */
+	contentTypes?: Readonly<Record<string, string>>;
 	/** Whether a preview server runs the framework's prerender pass. */
 	isPrerenderPass: (server: PreviewServer) => boolean;
-	/** Throws for a config that the adapter does not support, so the build fails, not the first request. */
-	validate?: (config: ResolvedConfig) => void;
 };
 
 /**
@@ -110,23 +122,28 @@ export type FrameworkBuild = {
  * `node()` from `@ngrok/app-server/node/vite`.
  */
 export type HostBuild = {
-	/** A name for logs and errors. */
-	name: string;
 	/** The module whose `host` export is the run side, a `HostRuntime`. */
 	runtimeModule: string;
-	/** The file name of the server entry in the server build, such as `app-server.js`. */
-	entryFileName: string;
+	/**
+	 * The encodings of the compressed copies that the host reads for one file
+	 * of the client build. `path` is the URL path of the file, such as
+	 * `/assets/app-abc.js`, and `assetsPath` is the URL path of Vite's
+	 * `build.assetsDir`. The build writes no other copy of the file. Why: a
+	 * host whose output holds only some copies does not pay for the others.
+	 * @default each encoding: gzip and brotli
+	 */
+	copies?: (file: { path: string; assetsPath: string }) => readonly Encoding[];
 	/**
 	 * Writes the host's deploy output, such as Vercel's `.vercel/output`. It
-	 * runs after each prerender pass and after the build, so it can run two
-	 * times. Why after the pass too: when `appServer` comes before the
-	 * framework's plugin, the pass runs after the build. Why sync: Vite does
-	 * not wait for the end of that pass.
+	 * runs one time, after the build and the prerender pass. When `appServer`
+	 * comes before the framework's plugin, the pass runs after the build. Then
+	 * `output` runs after the build, with no prerendered file, and again after
+	 * the pass. Why sync: Vite does not wait for the end of that pass.
 	 */
 	output?: (build: HostOutput) => void;
 };
 
-/** What a host's `output` gets: the absolute paths of the build. */
+/** What a host's `output` gets: the absolute paths of the build, and Vite's logger. */
 export type HostOutput = {
 	/** The Vite root. */
 	root: string;
@@ -139,6 +156,12 @@ export type HostOutput = {
 	 * `/assets/`. Its files have content hashes in their names.
 	 */
 	assetsPath: string;
+	/**
+	 * The logger of the Vite build, so Vite's `logLevel` and `customLogger`
+	 * apply to what the host prints. After a prerender pass, it is still the
+	 * logger of the build, not the logger of the framework's preview server.
+	 */
+	logger: Pick<Logger, "info" | "warn">;
 };
 
 /** Options for {@link appServer}. */
@@ -155,7 +178,8 @@ export type AppServerOptions = {
 	 * The module whose default export is the app from `createServer`, relative
 	 * to the Vite root. When omitted, the plugin uses `server.ts`, else
 	 * `server.js`, in the Vite root. When neither exists, the server uses its
-	 * default plugins.
+	 * default plugins. A path that Vite resolves to no module stops
+	 * `app-server start` and the build.
 	 */
 	app?: string;
 	/**
@@ -212,77 +236,28 @@ function defaultApp(root: string): string | undefined {
 		.find((path) => existsSync(path));
 }
 
-/** What {@link serverEntrySource} needs. */
-type EntrySource = {
-	framework: Pick<FrameworkBuild, "serverModule" | "runtimeModule" | "runtimeOptions">;
-	host: Pick<HostBuild, "runtimeModule">;
-	/** The absolute path of the app module, else `undefined` for the default app. */
-	appModule: string | undefined;
-	/** The source of an expression that gives the client build: a path or a `file:` URL. */
-	clientDirectory: string;
-};
-
 /**
- * The source of the server entry. When a runtime runs the file as its main
- * module, such as `node build/server/app-server.js`, the entry starts the
- * server. When the CLI imports it, the CLI starts the server.
+ * The logger of the build whose post step ran, by Vite root. Why in the
+ * module: the framework starts its prerender preview with a new instance of
+ * this plugin and its own log level, which is `silent` for React Router. So
+ * what the host's `output` prints after that pass needs the logger of the build.
  */
-export function serverEntrySource({
-	framework,
-	host,
-	appModule,
-	clientDirectory,
-}: EntrySource): string {
-	const modules = [
-		framework.serverModule,
-		// Why from the bundle: the CLI calls this export, so the server runs on the bundle's copy of
-		// this package and of the framework, the same copies as the app and the routes.
-		"@ngrok/app-server",
-		framework.runtimeModule,
-		host.runtimeModule,
-		...(appModule == null ? [] : [appModule]),
-	];
-	return [
-		// Why before the imports: React reads `NODE_ENV` when it loads. Why dynamic imports: a static
-		// import loads before this line.
-		"if (import.meta.main) {",
-		'\tprocess.env.NODE_ENV ??= "production";',
-		'\tif (typeof process.setSourceMapsEnabled === "function") {',
-		"\t\tprocess.setSourceMapsEnabled(true);",
-		"\t}",
-		"}",
-		`const [serverModule, { createEntry, createServer }, { runtime }, hostModule${appModule == null ? "" : ", { default: app }"}] = await Promise.all([`,
-		...modules.map((module) => `\timport(${JSON.stringify(module)}),`),
-		"]);",
-		...(appModule == null
-			? [
-					`const app = createServer({ trustForwardedProto: process.env.TRUST_FORWARDED_PROTO === "1", trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 0) });`,
-				]
-			: []),
-		`export const appServer = createEntry({`,
-		`\tapp,`,
-		`\thost: hostModule.host,`,
-		`\tclientDirectory: ${clientDirectory},`,
-		`\tframework: (mode) => runtime(serverModule, { ${framework.runtimeOptions == null ? "" : `...${framework.runtimeOptions}, `}mode }),`,
-		`});`,
-		// Why: a serverless host's function file calls the run side through the bundle's copy.
-		"export { hostModule };",
-		"if (import.meta.main) {",
-		"\tawait appServer.start();",
-		"}",
-	].join("\n");
-}
+const buildLoggers = new Map<string, Logger>();
 
-/** The paths of the build that a host's `output` gets. */
-function hostOutput(config: ResolvedConfig, host: HostBuild): HostOutput {
+/** What a host's `output` gets for the build of `config`. */
+function hostOutput(config: ResolvedConfig): HostOutput {
 	return {
 		root: config.root,
 		clientDirectory: outDir(config, "client"),
-		entryFile: join(outDir(config, SERVER_ENVIRONMENT), host.entryFileName),
-		assetsPath: urlPathOfAssetsDir(
-			config.environments.client?.build.assetsDir ?? config.build.assetsDir,
-		),
+		entryFile: join(outDir(config, SERVER_ENVIRONMENT), SERVER_ENTRY_FILE),
+		assetsPath: assetsPathOf(config),
+		logger: buildLoggers.get(config.root) ?? config.logger,
 	};
+}
+
+/** The URL path of Vite's `build.assetsDir` in the client build of `config`. */
+function assetsPathOf(config: ResolvedConfig): string {
+	return urlPathOfAssetsDir(config.environments.client?.build.assetsDir ?? config.build.assetsDir);
 }
 
 /**
@@ -612,8 +587,16 @@ function withPeers(start: { name: string; from: string }[]): Set<string> {
 	return names;
 }
 
+/**
+ * `.app-server.json` while the build runs. The client build writes
+ * `incomplete`, and the post step of `appServer` removes it. Why: the
+ * framework starts its prerender pass with a new instance of this plugin, so
+ * the file tells that instance whether the post step still comes.
+ */
+type DraftManifest = BuildManifest & { incomplete?: true | undefined };
+
 /** Writes `.app-server.json` into the client build. */
-function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): void {
+function writeBuildManifest(clientDirectory: string, manifest: DraftManifest): void {
 	mkdirSync(clientDirectory, { recursive: true });
 	writeFileSync(
 		join(clientDirectory, BUILD_MANIFEST_FILE),
@@ -623,9 +606,9 @@ function writeBuildManifest(clientDirectory: string, manifest: BuildManifest): v
 
 /**
  * Writes the build ID and the script hashes of the client build
- * ({@link scriptHashesOf}) into `.app-server.json`, and keeps the rest of the
- * file. Why after the build too: a build with no prerender pass can have HTML
- * files, such as `public/offline.html`.
+ * ({@link scriptHashesOf}) into `.app-server.json`, removes `incomplete`, and
+ * keeps the rest of the file. Why the script hashes of each build: a build
+ * with no prerender pass can have HTML files, such as `public/offline.html`.
  */
 function completeBuildManifest(clientDirectory: string, buildId: string | undefined): void {
 	if (!existsSync(clientDirectory)) {
@@ -639,6 +622,8 @@ function completeBuildManifest(clientDirectory: string, buildId: string | undefi
 		...(typeof recorded === "object" && recorded != null ? recorded : {}),
 		...(buildId == null ? {} : { buildId }),
 		scriptHashes: scriptHashesOf(clientDirectory),
+		// Why `undefined`: JSON leaves out a field with no value.
+		incomplete: undefined,
 	});
 }
 
@@ -706,11 +691,13 @@ function appBuildId({ bundleId, assetsDirectory, assets }: ClientBuild): string 
 }
 
 /**
- * The `buildId` and the `assetsPath` of the build manifest that the client
- * build wrote. Why keep them: the prerender pass runs after the client build,
- * which knows them.
+ * The `buildId`, the `assetsPath`, and `incomplete` of the build manifest
+ * that the client build wrote. Why keep them: the prerender pass runs after
+ * the client build, which knows them.
  */
-function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildId" | "assetsPath"> {
+function clientBuildFields(
+	clientDirectory: string,
+): Pick<DraftManifest, "buildId" | "assetsPath" | "incomplete"> {
 	const path = join(clientDirectory, BUILD_MANIFEST_FILE);
 	const manifest: unknown = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
 	if (typeof manifest !== "object" || manifest == null) {
@@ -723,16 +710,22 @@ function clientBuildFields(clientDirectory: string): Pick<BuildManifest, "buildI
 		...("assetsPath" in manifest && typeof manifest.assetsPath === "string"
 			? { assetsPath: manifest.assetsPath }
 			: {}),
+		...("incomplete" in manifest && manifest.incomplete === true ? { incomplete: true } : {}),
 	};
 }
 
 /**
  * Records each 2xx path and the headers of each non-document response while
  * the framework's prerender pass runs. It writes them to `.app-server.json` in
- * the client build when the preview server closes, with the script hashes of
- * each HTML file.
+ * the client build when the preview server closes. When the post step of the
+ * build ran before the pass, it also does the work of that step for the files
+ * of the pass: the script hashes, the copies (see {@link writeAllCopies}), and
+ * `afterPass`.
  */
-function capture(server: PreviewServer, afterPass: () => void): void {
+function capture(
+	server: PreviewServer,
+	{ afterPass, ...copies }: Omit<CopyOptions, "changedSince"> & { afterPass: () => void },
+): void {
 	const clientDirectory = outDir(server.config, "client");
 	const started = Date.now();
 	const paths = new Set<string>();
@@ -765,22 +758,28 @@ function capture(server: PreviewServer, afterPass: () => void): void {
 		});
 		next();
 	});
+	// Why sync: Vite does not wait for this listener.
 	server.httpServer.once("close", () => {
+		const recorded = clientBuildFields(clientDirectory);
+		// Why: with `incomplete`, the post step of the build comes after this pass, and it does this
+		// work for each file. Without it, that step ran before this pass, as it does when `appServer`
+		// comes before the framework's plugin.
+		const afterPostStep = recorded.incomplete !== true;
 		writeBuildManifest(clientDirectory, {
-			...clientBuildFields(clientDirectory),
+			...recorded,
 			prerendered: [...paths].toSorted(),
 			headers: Object.fromEntries(
 				Object.entries(headers).toSorted(([first], [second]) => first.localeCompare(second)),
 			),
-			scriptHashes: scriptHashesOf(clientDirectory),
+			scriptHashes: afterPostStep ? scriptHashesOf(clientDirectory) : {},
 		});
-		// Why here too: the copy step of `buildApp` runs before this pass when `appServer` comes
-		// before the framework's plugin. Why sync: Vite does not wait for this listener.
-		// Why each file that the pass changed, not each path: a path does not name its file, as
-		// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
-		// modification time in steps of 1 or 2 s.
-		writeAllCopies(clientDirectory, { changedSince: started - 2000 });
-		afterPass();
+		if (afterPostStep) {
+			// Why each file that the pass changed, not each path: a path does not name its file, as
+			// TanStack Start can write `/page` to `page.html`. Why 2 s early: a file system can keep the
+			// modification time in steps of 1 or 2 s.
+			writeAllCopies(clientDirectory, { ...copies, changedSince: started - 2000 });
+			afterPass();
+		}
 	});
 }
 
@@ -791,43 +790,78 @@ function capture(server: PreviewServer, afterPass: () => void): void {
  */
 const BROTLI_QUALITY = 9;
 
+/** Which compressed copies the build writes. */
+type CopyOptions = {
+	/** The framework's content types, as the server reads them. */
+	contentTypes: FrameworkBuild["contentTypes"];
+	/** The encodings of the copies that the host reads for the file at a URL path. */
+	encodingsOf: (path: string) => readonly Encoding[];
+	/** Only for a file that changed at or after this time, in milliseconds since the epoch. */
+	changedSince?: number;
+};
+
+/**
+ * The bytes of the file at `path` when the server compresses the file: a
+ * compressible type of 1 KiB or more. `contentTypes` are the framework's
+ * types, as the server reads them.
+ */
+function compressibleBytes(
+	path: string,
+	contentTypes: Readonly<Record<string, string>>,
+): Uint8Array | undefined {
+	if (
+		!isCompressible(contentType(path, contentTypes)) ||
+		statSync(path, { throwIfNoEntry: false })?.isFile() !== true
+	) {
+		return undefined;
+	}
+	const bytes = readFileSync(path);
+	return bytes.byteLength < MIN_COMPRESS_BYTES ? undefined : bytes;
+}
+
+/** `copy` when it is smaller than `source`. */
+function ifSmaller(copy: Uint8Array, source: Uint8Array): Uint8Array | undefined {
+	return copy.byteLength < source.byteLength ? copy : undefined;
+}
+
 /**
  * Writes the compressed copies (`.<file>.gz` and `.<file>.br`) of the file at
- * `path` when the server compresses the file: a compressible type of 1 KiB
- * or more. It writes a copy only when it is smaller: the gzip copy than the
- * file, and the brotli copy than the gzip copy. Else it removes an old copy,
- * so a copy from an earlier build never replaces a changed file.
+ * `path` when the server compresses the file ({@link compressibleBytes}). It
+ * writes only the `encodings`, and a copy only when it is smaller: the gzip
+ * copy than the file, and the brotli copy than the gzip copy. With no gzip in
+ * `encodings`, it writes the brotli copy when it is smaller than the file.
+ * Else it removes an old copy, so a copy from an earlier build never replaces
+ * a changed file.
  */
-function writeCopies(path: string): void {
-	const bytes =
-		isCompressible(contentType(path, {})) &&
-		statSync(path, { throwIfNoEntry: false })?.isFile() === true
-			? readFileSync(path)
-			: undefined;
+function writeCopies(
+	path: string,
+	{
+		contentTypes,
+		encodings,
+	}: { contentTypes: Readonly<Record<string, string>>; encodings: readonly Encoding[] },
+): void {
+	const bytes = encodings.length === 0 ? undefined : compressibleBytes(path, contentTypes);
 	// Why the highest gzip level: the build compresses each file once, and each response sends fewer bytes.
 	const gzip =
-		bytes == null || bytes.byteLength < MIN_COMPRESS_BYTES
-			? undefined
-			: gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION });
-	const gzipCopy =
-		gzip != null && bytes != null && gzip.byteLength < bytes.byteLength ? gzip : undefined;
+		bytes != null && encodings.includes("gzip")
+			? ifSmaller(gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION }), bytes)
+			: undefined;
 	const brotli =
-		gzipCopy == null || bytes == null
-			? undefined
-			: brotliCompressSync(bytes, {
-					params: {
-						[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
-						[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
-						[constants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
-					},
-				});
-	const brotliCopy =
-		brotli != null && gzipCopy != null && brotli.byteLength < gzipCopy.byteLength
-			? brotli
+		bytes != null && encodings.includes("br") && (gzip != null || !encodings.includes("gzip"))
+			? ifSmaller(
+					brotliCompressSync(bytes, {
+						params: {
+							[constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT,
+							[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+							[constants.BROTLI_PARAM_SIZE_HINT]: bytes.byteLength,
+						},
+					}),
+					gzip ?? bytes,
+				)
 			: undefined;
 	const copies: readonly (readonly [Encoding, Uint8Array | undefined])[] = [
-		["gzip", gzipCopy],
-		["br", brotliCopy],
+		["gzip", gzip],
+		["br", brotli],
 	];
 	for (const [encoding, copy] of copies) {
 		const copyPath = join(dirname(path), copyName(basename(path), encoding));
@@ -841,12 +875,11 @@ function writeCopies(path: string): void {
 
 /**
  * Runs {@link writeCopies} for each file in the client build, except dotfiles
- * such as the copies, and except a link or a file in a linked directory. With `changedSince`, only for a file that changed at or
- * after that time, in milliseconds since the epoch.
+ * such as the copies, and except a link or a file in a linked directory.
  */
 function writeAllCopies(
 	clientDirectory: string,
-	{ changedSince }: { changedSince?: number } = {},
+	{ contentTypes = {}, encodingsOf, changedSince }: CopyOptions,
 ): void {
 	if (!existsSync(clientDirectory)) {
 		return;
@@ -858,7 +891,10 @@ function writeAllCopies(
 			(changedSince == null ||
 				(statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= changedSince)
 		) {
-			writeCopies(path);
+			writeCopies(path, {
+				contentTypes,
+				encodings: encodingsOf(`/${relative(clientDirectory, path).split(sep).join("/")}`),
+			});
 		}
 	}
 }
@@ -883,7 +919,7 @@ function filesInside(directory: string): string[] {
  * plugin.
  *
  * - It adds the server entry to the server build, such as
- *   `build/server/app-server.js` on the node host. The entry bundles the app
+ *   `build/server/app-server.js`. The entry bundles the app
  *   (the default export of `app`) with the framework's server module, so the
  *   server gets the app's path aliases and its one copy of the framework.
  *   The framework's own entry does not change. When a runtime runs the entry
@@ -906,7 +942,8 @@ function filesInside(directory: string): string[] {
  *   `contentSecurityPolicy` plugin. It also writes a gzip copy (`.<file>.gz`)
  *   and a brotli copy (`.<file>.br`) next to each text file of 1 KiB or more
  *   in the client build, HTML included. The static stages send a copy, so the
- *   server does not compress these files for each request.
+ *   server does not compress these files for each request. A host can ask
+ *   for fewer copies with `copies` of `HostBuild`, as `vercel()` does.
  *
  * @example
  * // vite.config.ts
@@ -919,7 +956,13 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
 		| undefined;
 	let clientBuild: ClientBuild | undefined;
-	const copies: Plugin = {
+	/** The `CopyOptions` of the build of `config`: the types of the framework and the encodings of the host. */
+	const copyOptions = (config: ResolvedConfig): CopyOptions => ({
+		contentTypes: resolved?.framework.contentTypes,
+		encodingsOf: (path) =>
+			host.copies?.({ path, assetsPath: assetsPathOf(config) }) ?? COPY_ENCODINGS,
+	});
+	const postStep: Plugin = {
 		name: "@ngrok/app-server:compressed-copies",
 		// Why last: the framework prerenders in a `buildApp` hook of an `enforce: "post"` plugin.
 		enforce: "post",
@@ -931,8 +974,9 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					clientDirectory,
 					clientBuild == null ? undefined : appBuildId(clientBuild),
 				);
-				writeAllCopies(clientDirectory);
-				host.output?.(hostOutput(builder.config, host));
+				writeAllCopies(clientDirectory, copyOptions(builder.config));
+				buildLoggers.set(builder.config.root, builder.config.logger);
+				host.output?.(hostOutput(builder.config));
 			},
 		},
 	};
@@ -940,7 +984,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		name: "@ngrok/app-server",
 		configResolved: (config) => {
 			const framework = options.framework ?? detectFramework(config.plugins);
-			framework.validate?.(config);
+			// Why here and not in an adapter: the server serves at "/" with each framework.
+			if (config.base !== "/") {
+				throw new Error(
+					`@ngrok/app-server serves a build at "/" only, and this config has the base "${config.base}".`,
+				);
+			}
 			resolved = {
 				config,
 				framework,
@@ -948,11 +997,23 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					options.app == null ? defaultApp(config.root) : resolve(config.root, options.app),
 			};
 		},
-		buildStart() {
+		async buildStart() {
 			// Why a chunk and not an input: the framework's own entry stays the same, and its prerender
 			// preview reads that entry.
 			if (isServerBuild(this.environment)) {
-				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: host.entryFileName });
+				this.emitFile({ type: "chunk", id: SERVER_ENTRY_ID, fileName: SERVER_ENTRY_FILE });
+			}
+			// Why here and not `existsSync` in `configResolved`: Vite's resolver adds the extension, so
+			// `app: "server"` stays valid. Why not the client build: the app is a server module.
+			const appModule = options.app == null ? undefined : resolved?.appModule;
+			if (
+				appModule != null &&
+				(this.environment.mode === "dev" || isServerBuild(this.environment)) &&
+				(await this.resolve(appModule)) == null
+			) {
+				throw new Error(
+					`@ngrok/app-server found no module at ${appModule} for the \`app\` option. Give a path from the Vite root, ${resolved?.config.root}.`,
+				);
 			}
 		},
 		writeBundle(output, bundle) {
@@ -970,6 +1031,9 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 					prerendered: [],
 					headers: {},
 					scriptHashes: {},
+					// Why: the post step of this build completes the file. Until then, a prerender pass
+					// leaves the script hashes, the copies, and the host's output to that step.
+					incomplete: true,
 				});
 			}
 		},
@@ -1002,10 +1066,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 				);
 			}
 			// Why a URL in a build: the build can move, and the client build stays next to it.
-			const fromEntry = relative(
-				dirname(join(serverDirectory, host.entryFileName)),
-				clientDirectory,
-			).replaceAll("\\", "/");
+			const fromEntry = relative(serverDirectory, clientDirectory).replaceAll("\\", "/");
 			return serverEntrySource({
 				framework,
 				host,
@@ -1019,9 +1080,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 		configurePreviewServer: (server) => {
 			if (resolved?.framework.isPrerenderPass(server) === true) {
 				// Why the preview's config: the framework starts the preview with a new instance of this plugin.
-				capture(server, () => host.output?.(hostOutput(server.config, host)));
+				capture(server, {
+					...copyOptions(server.config),
+					afterPass: () => host.output?.(hostOutput(server.config)),
+				});
 			}
 		},
 	};
-	return [main, copies, standalone(options.externals)];
+	return [main, postStep, standalone(options.externals)];
 }

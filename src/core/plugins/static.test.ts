@@ -1,17 +1,25 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { Context } from "hono";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import type { IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
-import { afterAll, describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
-import { createServer, serverInternals } from "../create-server.js";
+import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
+import { createEntry } from "../entry.js";
 import { withHeaderHook } from "../header-hook.js";
 import { tcp } from "../../node/tcp.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
+import { handler, host as vercelHost } from "../../vercel/index.js";
+import { buildId } from "./build-id.js";
+import { requestId } from "./request-id.js";
 import { runtimeEnv } from "./runtime-env.js";
 import { assets, prerendered } from "./static.js";
 import type { PrerenderedOptions } from "./static.js";
-import type { Plugin } from "../types.js";
+import type { Plugin, ServerEnv } from "../types.js";
 
 const clientDirectory = mkdtempSync(join(tmpdir(), "app-server-static-"));
 const files: Record<string, string> = {
@@ -104,6 +112,21 @@ describe("prerendered", () => {
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://a.example");
 	});
 
+	it("gives the headers option the path that names the file, and the path of the file", async () => {
+		const { request } = await staticServer({
+			headers: ({ path, file }) => ({ "X-Path": path, "X-File": file }),
+			rewrite: ({ path }) => (path === "/old" ? "/components/button.md" : path),
+		});
+
+		const page = await request("/components/button");
+		const rewritten = await request("/old");
+
+		expect(page.headers.get("X-Path")).toBe("/components/button");
+		expect(page.headers.get("X-File")).toBe("/components/button/index.html");
+		expect(rewritten.headers.get("X-Path")).toBe("/components/button.md");
+		expect(rewritten.headers.get("X-File")).toBe("/components/button.md");
+	});
+
 	it("lets the headers option replace a captured header in any case", async () => {
 		const { request } = await staticServer({
 			headers: ({ path }) =>
@@ -113,6 +136,32 @@ describe("prerendered", () => {
 		const response = await request("/components/button.md");
 
 		expect(response.headers.get("Cache-Control")).toBe("private, no-cache");
+	});
+
+	it("takes a value of the headers option as Headers does: with no white space at its ends, and a number as text", async () => {
+		const { request } = await staticServer({
+			headers: ({ path }) =>
+				path === "/llms.txt"
+					? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- an app in JavaScript can give a number.
+						({ "Content-Type": "\ttext/html ", "Access-Control-Max-Age": 600 } as unknown as Record<
+							string,
+							string
+						>)
+					: undefined,
+		});
+
+		const response = await request("/llms.txt", { headers: { Range: "bytes=0-1" } });
+
+		expect(response.headers.get("Content-Type")).toBe("text/html");
+		expect(response.headers.get("Access-Control-Max-Age")).toBe("600");
+		// Why: the server reads the type as it sends it, so the file is an HTML page with no ranges.
+		expect([response.status, response.headers.get("Accept-Ranges")]).toStrictEqual([200, null]);
+	});
+
+	it("answers 500 for a value of the headers option that no header can hold", async () => {
+		const { request } = await staticServer({ headers: () => ({ "X-Note": "first\nsecond" }) });
+
+		expect((await request("/llms.txt")).status).toBe(500);
 	});
 
 	it("serves the file that rewrite names, with that file's headers", async () => {
@@ -140,6 +189,99 @@ describe("prerendered", () => {
 
 		await expect(etag("v1")).resolves.toBe(await etag("v1"));
 		await expect(etag("v1")).resolves.not.toBe(await etag("v2"));
+	});
+
+	// Why: the server keeps the hash of each list of parts, and a list is the same only when each part is.
+	it("gives a new ETag when the first or the last of two parts changes", async () => {
+		const parts = { first: "a1", last: "b1" };
+		const { request } = await testServer({
+			plugins: [
+				{ name: "first", etagPart: () => parts.first },
+				{ name: "last", etagPart: () => parts.last },
+				prerendered(),
+			],
+			clientDirectory,
+		});
+		const etag = async () => (await request("/llms.txt")).headers.get("ETag") ?? "";
+
+		const start = await etag();
+		parts.last = "b2";
+		const lastChanged = await etag();
+		const kept = await request("/llms.txt", { headers: { "If-None-Match": start } });
+		parts.first = "a2";
+		const firstChanged = await etag();
+		parts.last = "b1";
+		const lastBack = await etag();
+
+		expect(new Set([start, lastChanged, firstChanged, lastBack]).size).toBe(4);
+		expect(kept.status).toBe(200);
+	});
+
+	it("makes the ETag from the size and the time in hexadecimal, then the hash of the parts", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "app-server-etag-"));
+		onTestFinished(() => {
+			rmSync(directory, { recursive: true, force: true });
+		});
+		// Why these times: the server converts the high bits and the low 24 bits of a time apart, and
+		// V8 converts a number from 2^31 on a slower path. Each time has the text of its `toString(16)`.
+		const times: readonly (readonly [milliseconds: number, hex: string])[] = [
+			// Under 2^24, and under 2^32.
+			[16_000_000, "f42400"],
+			[86_400_000, "5265c00"],
+			// The low 32 bits are under 2^31, and then from 2^31.
+			[1_767_323_045_000, "19b7ca98c88"],
+			[1_794_600_000_000, "1a1d67eda00"],
+			// The low 24 bits start with zero digits, and then all low 32 bits are zero.
+			[1_760_047_399_000, "199cb000058"],
+			[1_610_612_736_000, "17700000000"],
+		];
+		for (const [time, hex] of times) {
+			writeFileSync(join(directory, `${hex}.txt`), "0123456789abcdef");
+			utimesSync(join(directory, `${hex}.txt`), new Date(time), new Date(time));
+		}
+		const plain = await testServer({ plugins: [prerendered()], clientDirectory: directory });
+		const versioned = await testServer({
+			plugins: [{ name: "versioned", etagPart: () => "v1" }, prerendered()],
+			clientDirectory: directory,
+		});
+		const etag = async (server: typeof plain, path: string) =>
+			(await server.request(path)).headers.get("ETag");
+
+		const tags = await Promise.all(times.map(async ([, hex]) => etag(plain, `/${hex}.txt`)));
+
+		expect(tags).toStrictEqual(times.map(([, hex]) => `W/"10-${hex}"`));
+		await expect(etag(versioned, "/19b7ca98c88.txt")).resolves.toBe(
+			'W/"10-19b7ca98c88-O_wmlZTvZJIo6adL"',
+		);
+	});
+
+	it("gives each list of parts its own ETag when requests with other parts come between", async () => {
+		const part = { value: "" };
+		const { request } = await testServer({
+			plugins: [{ name: "versioned", etagPart: () => part.value }, prerendered()],
+			clientDirectory,
+		});
+		// Why 40: more lists of parts than the server keeps a hash for.
+		const values = Array.from({ length: 40 }, (_, index) => `v${index}`);
+		/** The ETags of three requests at one time for each value. Each can be the first with its parts. */
+		const etags = async () => {
+			const tags: (string | null)[][] = [];
+			for (const value of values) {
+				part.value = value;
+				const responses = await Promise.all(
+					Array.from({ length: 3 }, async () => request("/llms.txt")),
+				);
+				tags.push(responses.map((response) => response.headers.get("ETag")));
+			}
+			return tags;
+		};
+
+		const first = await etags();
+		const again = await etags();
+
+		expect(first.map((tags) => new Set(tags).size)).toStrictEqual(values.map(() => 1));
+		expect(new Set(first.flat()).size).toBe(values.length);
+		expect(again).toStrictEqual(first);
 	});
 
 	it("applies the request-path rules to a rewritten path", async () => {
@@ -195,14 +337,14 @@ describe("prerendered", () => {
 		expect(generated.status).toBe(200);
 	});
 
-	it("answers 304 to a matching If-None-Match", async () => {
+	it("answers 304 to a matching If-None-Match, with no body and no Content-Type", async () => {
 		const { request } = await staticServer();
 		const etag = (await request("/llms.txt")).headers.get("ETag") ?? "";
 
 		const response = await request("/llms.txt", { headers: { "If-None-Match": etag } });
 
 		expect(etag).toMatch(/^W\/"[\da-f]+-[\da-f]+"$/u);
-		expect(response.status).toBe(304);
+		expect([response.status, response.headers.get("Content-Type")]).toStrictEqual([304, null]);
 		await expect(response.text()).resolves.toBe("");
 	});
 
@@ -279,7 +421,24 @@ describe("prerendered", () => {
 			{
 				level: "warn",
 				message: "prerendered paths with no file",
-				attributes: { "app_server.missing_paths": ["/gone"] },
+				attributes: { "app_server.missing_count": 1, "app_server.missing_paths": ["/gone"] },
+			},
+		]);
+	});
+
+	it("names 20 of the prerendered paths with no file, and counts each one", async () => {
+		const gone = Array.from({ length: 25 }, (_, index) => `/gone-${index}`);
+
+		const { lines } = await staticServer({}, gone);
+
+		expect(lines).toStrictEqual([
+			{
+				level: "warn",
+				message: "prerendered paths with no file",
+				attributes: {
+					"app_server.missing_count": 25,
+					"app_server.missing_paths": gone.slice(0, 20),
+				},
 			},
 		]);
 	});
@@ -315,15 +474,37 @@ describe("prerendered cacheControl", () => {
 		await expect(cacheControl("/components/button.md")).resolves.toBe("max-age=60");
 	});
 
-	it("uses the cacheControl option, and sends none for undefined", async () => {
+	it("uses the cacheControl option, and keeps the default of a file for undefined", async () => {
 		const { request } = await staticServer({
-			cacheControl: (path) => (path.startsWith("/images/") ? "public, max-age=86400" : undefined),
+			cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined),
+		});
+		const cacheControl = async (path: string) => (await request(path)).headers.get("Cache-Control");
+
+		await expect(cacheControl("/images/logo.svg")).resolves.toBe("public, max-age=86400");
+		await expect(cacheControl("/install.sh")).resolves.toBe(
+			"public, max-age=3600, stale-while-revalidate=86400",
+		);
+		await expect(cacheControl("/legacy.htm")).resolves.toBe("public, max-age=0, must-revalidate");
+	});
+
+	it("sends no Cache-Control when a header hook of an earlier plugin deletes it", async () => {
+		const noCacheControl: Plugin = {
+			name: "no-cache-control",
+			middleware: async (context, next) =>
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.delete("Cache-Control");
+					},
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [noCacheControl, assets(), prerendered()],
+			clientDirectory,
 		});
 
-		expect((await request("/images/logo.svg")).headers.get("Cache-Control")).toBe(
-			"public, max-age=86400",
-		);
-		expect((await request("/llms.txt")).headers.get("Cache-Control")).toBeNull();
+		expect((await request("/install.sh")).headers.get("Cache-Control")).toBeNull();
 	});
 });
 
@@ -642,8 +823,12 @@ describe("compressed copies from the build", () => {
 		const noTransform: Plugin = {
 			name: "no-transform",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("Cache-Control", "public, no-transform");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("Cache-Control", "public, no-transform");
+					},
 				}),
 		};
 		const { request } = await testServer({
@@ -657,6 +842,154 @@ describe("compressed copies from the build", () => {
 			expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
 			expect(response.headers.get("Content-Encoding")).toBeNull();
 		}
+	});
+
+	it("lets the header hook of an outer stage have the last word on no-transform", async () => {
+		const sets = (name: string, value: string): Plugin => ({
+			name,
+			middleware: async (context, next) =>
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("Cache-Control", value);
+					},
+				}),
+		});
+		const forbids = sets("forbids", "public, no-transform");
+		const allows = sets("allows", "public, max-age=60");
+		const outerForbids = await testServer({
+			plugins: [forbids, allows, prerendered()],
+			clientDirectory,
+		});
+		const outerAllows = await testServer({
+			plugins: [allows, forbids, prerendered()],
+			clientDirectory,
+		});
+
+		const kept = await outerForbids.request("/copy.txt", withBrotli);
+		const copied = await outerAllows.request("/copy.txt", withBrotli);
+
+		expect([kept.headers.get("Cache-Control"), kept.headers.get("Content-Encoding")]).toStrictEqual(
+			["public, no-transform", null],
+		);
+		expect([
+			copied.headers.get("Cache-Control"),
+			copied.headers.get("Content-Encoding"),
+		]).toStrictEqual(["public, max-age=60", "br"]);
+	});
+
+	it("sends the copy when a header hook throws before its stage has the value that the hook needs", async () => {
+		// Why: the static stage runs each hook before the code that an earlier stage runs after its `next()`.
+		const setsLate: Plugin = {
+			name: "sets-late",
+			middleware: async (context, next) => {
+				const late: { value?: string } = {};
+				await withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						if (late.value == null) {
+							throw new Error("The stage has no value yet.");
+						}
+						response.set("X-Late", late.value);
+					},
+				});
+				late.value = "set";
+			},
+		};
+		const { request } = await testServer({
+			plugins: [setsLate, prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect([
+			response.status,
+			response.headers.get("X-Late"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual([200, "set", "br"]);
+	});
+
+	it("sends a value that a header hook appends one time, though the static stage also runs the hook", async () => {
+		const appends: Plugin = {
+			name: "appends",
+			middleware: async (context, next) =>
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.append("X-Stage", "appends");
+					},
+				}),
+		};
+		const { request } = await testServer({ plugins: [appends, prerendered()], clientDirectory });
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect([
+			response.headers.get("X-Stage"),
+			response.headers.get("Content-Encoding"),
+		]).toStrictEqual(["appends", "br"]);
+	});
+
+	it("lets an app hook mark no-transform by a header that a built-in hook sets", async () => {
+		const byRequestId: Plugin = {
+			name: "by-request-id",
+			middleware: async (context, next) =>
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						if (response.has("X-Request-Id")) {
+							response.set("Cache-Control", "public, no-transform");
+						}
+					},
+				}),
+		};
+		const { request } = await testServer({
+			plugins: [byRequestId, requestId(), prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+	});
+
+	it("sends the file, not its copy, when a hook that a stage adds to headerHooks marks it no-transform", async () => {
+		const marks: Plugin = {
+			name: "marks",
+			middleware: async (context, next) => {
+				// Why the annotation: the list is in the environment of the server, not of an app.
+				const server: Context<ServerEnv> = context;
+				server.get("headerHooks")?.push((headers) => {
+					headers.set("Cache-Control", "public, no-transform");
+				});
+				await next();
+			},
+		};
+		const { request } = await testServer({ plugins: [marks, prerendered()], clientDirectory });
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Cache-Control")).toBe("public, no-transform");
+		expect(response.headers.get("Content-Encoding")).toBeNull();
+	});
+
+	it("calls the paths of buildId one time for a file with a copy", async () => {
+		const paths = vi.fn<(path: string) => boolean>(() => false);
+		const { request } = await testServer({
+			plugins: [buildId({ value: "b1", paths }), prerendered()],
+			clientDirectory,
+		});
+
+		const response = await request("/copy.txt", withBrotli);
+
+		expect(response.headers.get("Content-Encoding")).toBe("br");
+		expect(paths).toHaveBeenCalledTimes(1);
 	});
 
 	it("sends the HTML file, not its copy, when runtimeEnv adds values to the page", async () => {
@@ -681,6 +1014,166 @@ describe("compressed copies from the build", () => {
 		expect(injected.headers.get("Content-Encoding")).toBeNull();
 		await expect(injected.text()).resolves.toContain('<script id="app-server-public-env"');
 		expect(copied.headers.get("Content-Encoding")).toBe("br");
+	});
+});
+
+describe("a page that a stage with rewritesHtml changes", () => {
+	const banner = "<!-- banner -->";
+	const pages: Record<string, string> = {
+		"/banner/small": "<!doctype html><html><body><h1>Small</h1></body></html>",
+		// Why this size: the page is too large for one chunk, so it streams.
+		"/banner/large": `<!doctype html><html><head></head><body>${"<p>The quick brown fox jumps over the lazy dog.</p>\n".repeat(6000)}</body></html>`,
+	};
+	for (const [path, page] of Object.entries(pages)) {
+		mkdirSync(join(clientDirectory, path), { recursive: true });
+		writeFileSync(join(clientDirectory, path, "index.html"), page);
+		writeFileSync(join(clientDirectory, path, ".index.html.gz"), gzipSync(page));
+		writeFileSync(join(clientDirectory, path, ".index.html.br"), brotliCompressSync(page));
+	}
+
+	/** `response` with the banner after the last byte of an HTML body. */
+	function addBanner(response: Response): Response {
+		const html = response.headers.get("Content-Type")?.startsWith("text/html") ?? false;
+		if (!html || response.body == null) {
+			return response;
+		}
+		const withBanner = new TransformStream<Uint8Array, Uint8Array>({
+			flush(controller) {
+				controller.enqueue(new TextEncoder().encode(banner));
+			},
+		});
+		return new Response(response.body.pipeThrough(withBanner), response);
+	}
+
+	/** The plugin of the README and of the changelog, as an app writes it. */
+	const addsBanner: Plugin = {
+		name: "adds-banner",
+		middleware: async (context, next) => {
+			context.set("rewritesHtml", true);
+			await next();
+			context.res = addBanner(context.res);
+		},
+	};
+
+	/** The URL of a server on the node host or on the vercel host, with the plugin before the static stages. */
+	async function serving(hostName: "node" | "vercel"): Promise<string> {
+		const plugins = defaultPlugins({ beforeStatic: [addsBanner] });
+		if (hostName === "node") {
+			const { internals, framework } = await testServer({
+				plugins,
+				clientDirectory,
+				options: { listeners: [tcp({ port: 0, host: "127.0.0.1" })] },
+			});
+			const server = await internals.listen(framework, []);
+			onTestFinished(async () => server.shutdown());
+			return server.urls[0] ?? "";
+		}
+		const listener = handler(
+			createEntry({
+				app: createServer({ plugins, logger: { log: () => {} } }),
+				host: vercelHost,
+				clientDirectory,
+				framework: () => stubFramework(),
+			}),
+		);
+		const server = createHttpServer((incoming, outgoing) => {
+			void listener(incoming, outgoing);
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(
+			async () =>
+				new Promise<void>((resolve) => {
+					server.close(() => {
+						resolve();
+					});
+				}),
+		);
+		return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	}
+
+	/** What a GET that accepts `encoding` gets on the wire: the status, the text, and whether the length is right. */
+	async function wire(url: URL, encoding: string) {
+		const response = await new Promise<IncomingMessage>((resolve, reject) => {
+			httpRequest(url, { headers: { "Accept-Encoding": encoding } }, resolve)
+				.once("error", reject)
+				.end();
+		});
+		const chunks: Buffer[] = [];
+		for await (const chunk of response) {
+			chunks.push(chunk as Buffer);
+		}
+		const body = Buffer.concat(chunks);
+		const decoders: Record<string, (bytes: Buffer) => Buffer> = {
+			gzip: gunzipSync,
+			br: brotliDecompressSync,
+		};
+		const decode = decoders[response.headers["content-encoding"] ?? ""];
+		const length = response.headers["content-length"];
+		return {
+			status: response.statusCode,
+			text: (decode == null ? body : decode(body)).toString(),
+			rightLength: length == null || length === String(body.byteLength),
+		};
+	}
+
+	it.each(["node", "vercel"] as const)(
+		"goes out whole on the %s host: small or large, to a client with or without gzip or brotli",
+		async (hostName) => {
+			const base = await serving(hostName);
+
+			for (const [path, page] of Object.entries(pages)) {
+				for (const encoding of ["identity", "gzip", "br"]) {
+					const sent = await wire(new URL(path, base), encoding);
+
+					expect({ path, encoding, ...sent }).toStrictEqual({
+						path,
+						encoding,
+						status: 200,
+						text: `${page}${banner}`,
+						rightLength: true,
+					});
+				}
+			}
+		},
+	);
+
+	it("has no ETag and no length, also not from the headers option, so the ETag of its file gets the full page", async () => {
+		const plain = await staticServer();
+		const fileTag = (await plain.request("/banner/small")).headers.get("ETag") ?? "";
+		const ofFile = { ETag: '"v1"', "Content-Length": "5" };
+		const { request } = await testServer({
+			plugins: [
+				addsBanner,
+				prerendered({ headers: ({ path }) => (path === "/plain" ? ofFile : undefined) }),
+			],
+			clientDirectory,
+		});
+
+		const revalidated = await request("/banner/small", { headers: { "If-None-Match": fileTag } });
+		const tagged = await request("/plain", { headers: { "If-None-Match": '"v1"' } });
+
+		expect(fileTag).not.toBe("");
+		expect([revalidated.status, revalidated.headers.get("ETag")]).toStrictEqual([200, null]);
+		expect([
+			tagged.status,
+			tagged.headers.get("ETag"),
+			tagged.headers.get("Content-Length"),
+		]).toStrictEqual([200, null, null]);
+		await expect(revalidated.text()).resolves.toBe(`${pages["/banner/small"]}${banner}`);
+	});
+
+	it("answers HEAD with no length, and leaves a file that is not HTML as it is", async () => {
+		const { request } = await testServer({ plugins: [addsBanner, prerendered()], clientDirectory });
+
+		const head = await request("/banner/small", { method: "HEAD" });
+		const text = await request("/copy.txt", { headers: { "Accept-Encoding": "br" } });
+
+		expect([head.status, head.headers.get("Content-Length")]).toStrictEqual([200, null]);
+		expect(text.headers.get("Content-Encoding")).toBe("br");
+		expect(text.headers.get("ETag")).toMatch(/^W\/"/u);
+		expect(text.headers.get("Content-Length")).not.toBeNull();
 	});
 });
 
@@ -760,6 +1253,31 @@ describe("prerendered markdownTwins", () => {
 		await expect(renderedTwin.text()).resolves.toBe("# Rendered");
 		await expect(rendered.text()).resolves.toBe("rendered");
 		expect(negotiation(rendered)).toStrictEqual({
+			vary: "Accept",
+			link: '</docs/rendered.md>; rel="alternate"; type="text/markdown"',
+		});
+	});
+
+	it("adds the headers where the response leaves, so the framework's response needs no copy", async () => {
+		const rendered = new Response("rendered", { headers: { "Content-Type": "text/html" } });
+		let seen: Response | undefined;
+		const watch: Plugin = {
+			name: "watch",
+			middleware: async (context, next) => {
+				await next();
+				seen = context.res;
+			},
+		};
+		const { request } = await testServer({
+			plugins: [watch, prerendered({ markdownTwins: true })],
+			clientDirectory,
+			render: async () => rendered,
+		});
+
+		const response = await request("/docs/rendered", browser);
+
+		expect(seen).toBe(rendered);
+		expect(negotiation(response)).toStrictEqual({
 			vary: "Accept",
 			link: '</docs/rendered.md>; rel="alternate"; type="text/markdown"',
 		});

@@ -89,6 +89,14 @@ describe("staticPages", () => {
 		);
 	});
 
+	it("gives the CDN a page when the request ID has another header name, with no request ID", async () => {
+		const [about] = await pagesOf({ requestId: { headerName: "X-Correlation-Id" } }, ["/about"]);
+
+		expect(about).toMatchObject({ path: "/about", cdn: { file: "/about/index.html" } });
+		const headers = about != null && "cdn" in about ? about.cdn.answers[0]?.headers : {};
+		expect(Object.keys(headers ?? {})).not.toContain("x-correlation-id");
+	});
+
 	it("keeps a page on the server when an auth check refuses an anonymous request", async () => {
 		await expect(pagesOf({ beforeStatic: [auth] }, ["/about"])).resolves.toStrictEqual([
 			{ path: "/about", reason: "the status is 302" },
@@ -99,23 +107,35 @@ describe("staticPages", () => {
 		const privatePages: Plugin = {
 			name: "private",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					// Why the capitals: cache directives are case-insensitive.
-					headers.set("Cache-Control", "Private, No-Cache");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						// Why the capitals: cache directives are case-insensitive.
+						headers.set("Cache-Control", "Private, No-Cache");
+					},
 				}),
 		};
 		const cdnNoStore: Plugin = {
 			name: "cdn-no-store",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("Vercel-CDN-Cache-Control", "no-store");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("Vercel-CDN-Cache-Control", "no-store");
+					},
 				}),
 		};
 		const cookie: Plugin = {
 			name: "cookie",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("Set-Cookie", "seen=1");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("Set-Cookie", "seen=1");
+					},
 				}),
 		};
 
@@ -143,15 +163,23 @@ describe("staticPages", () => {
 		const byHost: Plugin = {
 			name: "canonical",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("Link", `<${new URL(context.req.url).origin}/about>; rel="canonical"`);
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("Link", `<${new URL(context.req.url).origin}/about>; rel="canonical"`);
+					},
 				}),
 		};
 		const byHostHeader: Plugin = {
 			name: "canonical-host",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("Link", `<https://${context.req.header("Host")}/about>; rel="canonical"`);
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("Link", `<https://${context.req.header("Host")}/about>; rel="canonical"`);
+					},
 				}),
 		};
 
@@ -169,6 +197,32 @@ describe("staticPages", () => {
 		]);
 	});
 
+	it("keeps a page on the server when its body changes with the request, also in one byte", async () => {
+		/** A plugin that gives a request with a cookie the body that `change` makes. */
+		const forSession = (change: (body: string) => string): Plugin => ({
+			name: "for-session",
+			middleware: async (context, next) => {
+				await next();
+				if (context.req.header("Cookie") != null) {
+					const response = context.res;
+					context.res = new Response(change(await response.text()), response);
+				}
+			},
+		});
+		const lastByte = forSession((body) => `${body.slice(0, -1)}!`);
+		const longer = forSession((body) => `${body}!`);
+		const same = forSession((body) => body);
+
+		for (const plugin of [lastByte, longer]) {
+			await expect(pagesOf({ beforeStatic: [plugin] }, ["/about"])).resolves.toStrictEqual([
+				{ path: "/about", reason: "the body changes with the request" },
+			]);
+		}
+		await expect(pagesOf({ beforeStatic: [same] }, ["/about"])).resolves.toMatchObject([
+			{ path: "/about", cdn: { file: "/about/index.html" } },
+		]);
+	});
+
 	it("keeps a page on the server when a plugin answers a signed-in visitor or a country another way", async () => {
 		const signedIn: Plugin = {
 			name: "signed-in",
@@ -183,8 +237,12 @@ describe("staticPages", () => {
 		const byCountry: Plugin = {
 			name: "by-country",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("Content-Language", context.req.header("x-vercel-ip-country") ?? "US");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("Content-Language", context.req.header("x-vercel-ip-country") ?? "US");
+					},
 				}),
 		};
 
@@ -230,8 +288,12 @@ describe("staticPages", () => {
 		const edgeValue: Plugin = {
 			name: "edge-value",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("X-Edge", context.req.header("x-ngrok-edge") ?? "none");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("X-Edge", context.req.header("x-ngrok-edge") ?? "none");
+					},
 				}),
 		};
 		const twinWithoutEdge = await pagesOf(

@@ -53,7 +53,6 @@ export {
 } from "./plugins/request-id.js";
 export {
 	//,
-	PUBLIC_ENV_SCRIPT_ID,
 	runtimeEnv,
 } from "./plugins/runtime-env.js";
 export {
@@ -97,7 +96,6 @@ export type {
 	AppServer,
 	CreateServerOptions,
 	DefaultPluginsOptions,
-	RunningServer,
 } from "./create-server.js";
 export type {
 	//,
@@ -106,10 +104,19 @@ export type {
 } from "./entry.js";
 export type {
 	//,
+	CdnPage,
+	StaticPage,
+} from "./static-pages.js";
+export type {
+	//,
 	EventStreamOptions,
 	EventStreamSink,
 	ServerSentEvent,
 } from "./event-stream.js";
+export type {
+	//,
+	HeaderHookOptions,
+} from "./header-hook.js";
 export type {
 	//,
 	AccessLogOptions,
@@ -133,6 +140,7 @@ export type {
 export type {
 	//,
 	RedirectRule,
+	RedirectsOptions,
 } from "./plugins/redirects.js";
 export type {
 	//,
@@ -167,7 +175,6 @@ export type {
 	FetchHandler,
 	FileInfo,
 	FrameworkRuntime,
-	FrameworkRuntimeFactory,
 	HeaderHook,
 	HostRuntime,
 	Lifecycle,
@@ -182,6 +189,7 @@ export type {
 	Plugin,
 	RequestContext,
 	RequestLogger,
+	RequestScope,
 	RequestStore,
 	ResponseHeaders,
 	SentResponse,

@@ -5,7 +5,9 @@ import { documentNonce } from "./document-nonce.js";
  * The CSP nonce of the document, for the framework's render. It gives the
  * same value on the server and in the browser, so the hydration matches.
  *
- * - On the server, the nonce of the request that runs, from `requestContext()`.
+ * - In a server request, the nonce of the request, from `requestContext()`.
+ *   Why the request first: a test environment, such as jsdom, and a DOM
+ *   polyfill give the server a `document`.
  * - In the browser, the nonce of the document's first element with a nonce.
  *   Why: React Router's `<HydratedRouter>` takes no nonce, so the app reads it
  *   from the document.
@@ -19,5 +21,9 @@ import { documentNonce } from "./document-nonce.js";
  * <Scripts nonce={cspNonce()} />
  */
 export function cspNonce(): string | undefined {
-	return typeof document === "undefined" ? requestContext()?.cspNonce : documentNonce();
+	const context = requestContext();
+	if (context != null) {
+		return context.cspNonce;
+	}
+	return typeof document === "undefined" ? undefined : documentNonce();
 }

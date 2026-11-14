@@ -1,5 +1,5 @@
-import { withHeaderHook } from "../header-hook.js";
-import { optionPlugin, presenceHeaders } from "../plugin-options.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
+import { checkHeaderName, optionPlugin, presenceHeaders } from "../plugin-options.js";
 import type { Plugin } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -9,6 +9,7 @@ export type NoindexOptions = {
 	 * A request with this header gets no `X-Robots-Tag`, and each response
 	 * gets the header in `Vary`. The `vercel` host can then serve a
 	 * prerendered page from the CDN, which picks the answer by the same header.
+	 * A name that is not an HTTP header name, such as `""`, stops startup.
 	 */
 	unlessHeader: string;
 };
@@ -27,20 +28,28 @@ export type NoindexOptions = {
  */
 export function noindex(options?: NoindexOptions): Plugin {
 	const unlessHeader = options?.unlessHeader;
+	if (unlessHeader != null) {
+		checkHeaderName({ plugin: "noindex", option: "unlessHeader", name: unlessHeader });
+	}
 	const plugin = optionPlugin("noindex", {
 		name: "noindex",
-		middleware: async (context, next) => {
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) => {
 			const hidden = unlessHeader == null || context.req.header(unlessHeader) == null;
-			await withHeaderHook(context, next, (response) => {
-				if (hidden) {
-					response.set("X-Robots-Tag", "noindex, nofollow");
-				}
-				if (unlessHeader != null) {
-					const vary = withVary(response.get("Vary"), unlessHeader);
-					if (vary != null) {
-						response.set("Vary", vary);
+			return withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (response) => {
+					if (hidden) {
+						response.set("X-Robots-Tag", "noindex, nofollow");
 					}
-				}
+					if (unlessHeader != null) {
+						const vary = withVary(response.get("Vary"), unlessHeader);
+						if (vary != null) {
+							response.set("Vary", vary);
+						}
+					}
+				},
 			});
 		},
 	});

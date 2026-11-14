@@ -1,6 +1,5 @@
 import { cpSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { nodeFileTrace } from "@vercel/nft";
 
 /**
  * A package name: an optional scope and a name, each with no `/` or `\` and
@@ -41,8 +40,8 @@ export function packageName(specifier: string): string {
 
 /**
  * Code that finds a file next to its own module: a relative `new URL()` on
- * `import.meta.url`, `fileURLToPath(import.meta.url)`, or
- * `import.meta.dirname`.
+ * `import.meta.url`, `fileURLToPath(import.meta.url)`, `import.meta.dirname`,
+ * or `import.meta.filename`.
  */
 const OWN_FILE =
 	/new\s+URL\(\s*(?<quote>["'`])\.{1,2}\/[^"'`]*\k<quote>\s*,\s*import\.meta\.url\s*\)|fileURLToPath\(\s*import\.meta\.url\s*\)|import\.meta\.(?:dirname|filename)\b/u;
@@ -306,6 +305,9 @@ export async function removeUntraced(
 	if (kept.size === copied.size) {
 		return;
 	}
+	// Why not a static import: the tracer is most of the load time of the Vite plugin, and only a
+	// build that removes files uses it.
+	const { nodeFileTrace } = await import("@vercel/nft");
 	const modules = ownFiles(serverDirectory).filter((file) => /\.[cm]?js$/u.test(file));
 	// Why a cache: the traces share the parse of each module.
 	const cache = {};

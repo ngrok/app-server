@@ -1,15 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
-import { Context } from "hono";
 import { BUILD_MANIFEST_FILE } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
 import type { AppServer } from "../core/create-server.js";
 import { createEntry } from "../core/entry.js";
 import type { AppServerEntry } from "../core/entry.js";
-import { requestLogger } from "../core/log.js";
+import { sinkLogger } from "../core/log.js";
 import { withRequestContext as runInRequestContext } from "../core/request-context.js";
-import type { AppServerEnv, FrameworkRuntime, RequestContext } from "../core/types.js";
+import type { FrameworkRuntime, RequestContext } from "../core/types.js";
 import { host } from "../node/index.js";
 import { scriptHashesOf } from "../node/script-hashes.js";
 
@@ -26,10 +25,13 @@ export type TestServerOptions = {
 	 */
 	files?: Readonly<Record<string, string | Uint8Array>>;
 	/**
-	 * The framework's answer to a request that no stage answers.
+	 * The framework's answer to a request that no stage answers. Give the run
+	 * side of a framework adapter in its place to also set `isDataRequest`,
+	 * `contentTypes`, or `prerenderedPaths`. The client build is always
+	 * `files`: the test server ignores a `clientDirectory`.
 	 * @default a 404
 	 */
-	framework?: FrameworkRuntime["fetch"];
+	framework?: FrameworkRuntime["fetch"] | FrameworkRuntime;
 };
 
 /** What {@link createTestServer} gives. */
@@ -70,7 +72,8 @@ async function startEntry(
 		app,
 		host,
 		clientDirectory,
-		framework: () => ({ name: "test", fetch: framework }),
+		framework: () =>
+			typeof framework === "function" ? { name: "test", fetch: framework } : framework,
 	});
 }
 
@@ -151,14 +154,14 @@ export async function withRequestContext<Result>(
 	values: Partial<RequestContext>,
 	work: () => Result | Promise<Result>,
 ): Promise<Result> {
-	const context = new Context<AppServerEnv>(new Request("http://localhost/"));
-	context.set("logger", values.logger ?? requestLogger({ log: () => {} }, context));
-	if (values.requestId != null) {
-		context.set("requestId", values.requestId);
-	}
-	if (values.cspNonce != null) {
-		context.set("cspNonce", values.cspNonce);
-	}
-	context.set("clientAddress", values.clientAddress);
-	return runInRequestContext(host.storage, context, async () => work());
+	const scope = {
+		context: undefined,
+		values: {
+			requestId: values.requestId,
+			logger: values.logger ?? sinkLogger({ log: () => {} }),
+			cspNonce: values.cspNonce,
+			clientAddress: values.clientAddress,
+		},
+	};
+	return runInRequestContext(host.storage, scope, async () => work());
 }

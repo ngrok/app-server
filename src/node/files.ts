@@ -114,17 +114,51 @@ function fileInfo(stats: Stats | undefined): FileInfo | undefined {
 	if (stats?.isFile() === true) {
 		return { kind: "file", size: stats.size, mtimeMs: stats.mtimeMs };
 	}
-	return stats?.isDirectory() === true
-		? { kind: "directory", size: 0, mtimeMs: stats.mtimeMs }
-		: undefined;
+	return stats?.isDirectory() === true ? { kind: "directory" } : undefined;
 }
+
+/**
+ * Files whose `stat` answers from `entries`, the {@link FileInfo} of each file
+ * and directory by its URL path, and whose bytes come from `openFile`.
+ *
+ * @example
+ * listedFiles(new Map([["/llms.txt", { kind: "file", size: 12, mtimeMs: 0 }]]), files.open).stat("/llms.txt");
+ */
+export function listedFiles(
+	entries: ReadonlyMap<string, FileInfo>,
+	openFile: StaticFiles["open"],
+): StaticFiles {
+	return {
+		stat: async (path) => {
+			const trimmed = path.length > 1 ? path.replace(/\/$/u, "") : path;
+			const info = entries.get(trimmed);
+			// Why only a directory after a `/`: as on the disk, `/docs/` finds `/docs`, and
+			// `/llms.txt/` finds nothing.
+			return trimmed === path || info?.kind === "directory" ? info : undefined;
+		},
+		open: openFile,
+	};
+}
+
+/**
+ * The most file system calls of one `snapshot` in flight. Why a limit: each
+ * call in flight holds about 4 KiB for its request, its path, and its
+ * result, and a walk with no limit has a call in flight for each entry of
+ * the client build. Why 64: a build of 100 pages then starts as fast as with
+ * no limit, and with 8 it starts 11% slower.
+ */
+const SNAPSHOT_CALLS = 64;
+
+/** An entry for `snapshot` to read: its URL path, and the inodes of the directories above it. */
+type Unread = readonly [path: string, parents: ReadonlySet<string>];
 
 /**
  * The client build on the file system. A relative `clientDirectory` is
  * relative to the working directory.
  *
- * Its `snapshot` reads each file and directory once. It throws for an error
- * that does not mean a missing file, so the server does not start.
+ * Its `snapshot` reads each file and directory once, with at most 64 file
+ * system calls in flight. It throws for an error that does not mean a
+ * missing file, so the server does not start.
  *
  * @example
  * nodeFiles("build/client").stat("/llms.txt");
@@ -145,8 +179,9 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 	};
 	const files: StaticFiles = {
 		stat: async (path) => fileInfo(await orMissing(stat(filePath(path)))),
-		open: async (path, range) => {
+		open: async (path, options) => {
 			const candidate = filePath(path);
+			const range = options?.range;
 			if (range != null && range.end - range.start < CHUNK_BYTES) {
 				return oneChunk(await readRange(candidate, range));
 			}
@@ -157,18 +192,16 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 		},
 		snapshot: async () => {
 			const entries = new Map<string, FileInfo>();
-			// Why the inodes of the parents: a symbolic link to a parent directory must not make the
-			// walk endless. A link to another directory, such as a sibling, still lists its files.
-			const walk = async (
-				path: string,
-				stats: Stats,
-				parents: ReadonlySet<string>,
-			): Promise<void> => {
+			/** Reads the entry at `path`, and adds the entries of a directory to `found`. */
+			const read = async ([path, parents]: Unread, found: Unread[]): Promise<void> => {
+				const stats = await orMissing(stat(path === "/" ? root : filePath(path)));
 				const info = fileInfo(stats);
-				if (info == null) {
+				if (stats == null || info == null) {
 					return;
 				}
 				entries.set(path, info);
+				// Why the inodes of the parents: a symbolic link to a parent directory must not make the
+				// walk endless. A link to another directory, such as a sibling, still lists its files.
 				const inode = `${stats.dev}:${stats.ino}`;
 				if (info.kind === "file" || parents.has(inode)) {
 					return;
@@ -176,31 +209,36 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 				const inside = new Set(parents).add(inode);
 				const prefix = path === "/" ? "" : path;
 				// Why: a deploy can remove a directory between its `stat` and this read.
-				const names = (await orMissing(readdir(filePath(path)))) ?? [];
-				await Promise.all(
-					names.map(async (name) => {
-						const childPath = `${prefix}/${name}`;
-						const childStats = await orMissing(stat(filePath(childPath)));
-						if (childStats != null) {
-							await walk(childPath, childStats, inside);
+				for (const name of (await orMissing(readdir(filePath(path)))) ?? []) {
+					found.push([`${prefix}/${name}`, inside]);
+				}
+			};
+			// Why one depth at a time: the list of a depth is complete before a worker takes from it, so
+			// each worker stops when the list is empty.
+			let depth: Unread[] = [["/", new Set()]];
+			while (depth.length > 0) {
+				const unread = depth;
+				const found: Unread[] = [];
+				let next = 0;
+				let failure: { error: unknown } | undefined;
+				const worker = async (): Promise<void> => {
+					for (let entry = unread[next]; entry != null && failure == null; entry = unread[next]) {
+						next += 1;
+						try {
+							await read(entry, found);
+						} catch (error) {
+							failure ??= { error };
 						}
-					}),
-				);
-			};
-			const rootStats = await orMissing(stat(root));
-			if (rootStats != null) {
-				await walk("/", rootStats, new Set());
+					}
+				};
+				await Promise.all(Array.from({ length: Math.min(SNAPSHOT_CALLS, unread.length) }, worker));
+				// Why after each worker ends: no call of a failed walk then runs on while the caller tries again.
+				if (failure != null) {
+					throw failure.error;
+				}
+				depth = found;
 			}
-			return {
-				stat: async (path) => {
-					const trimmed = path.length > 1 ? path.replace(/\/$/u, "") : path;
-					const info = entries.get(trimmed);
-					// Why only a directory after a `/`: as on the disk, `/docs/` finds `/docs`, and
-					// `/llms.txt/` finds nothing.
-					return trimmed === path || info?.kind === "directory" ? info : undefined;
-				},
-				open: files.open,
-			};
+			return listedFiles(entries, files.open);
 		},
 	};
 	return files;

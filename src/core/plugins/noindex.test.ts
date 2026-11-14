@@ -25,6 +25,15 @@ describe("noindex", () => {
 		expect(renderedPage.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
 	});
 
+	it.each(["x ngrok edge", "", "x-ngrok-edge:"])(
+		"stops startup for the unlessHeader %j, which is not an HTTP header name",
+		(unlessHeader) => {
+			expect(() => noindex({ unlessHeader })).toThrow(
+				`The unlessHeader of noindex must be an HTTP header name, not ${JSON.stringify(unlessHeader)}.`,
+			);
+		},
+	);
+
 	it("skips a request with the unlessHeader, and varies each response on it", async () => {
 		const { request } = await testServer({
 			plugins: defaultPlugins({ noindex: { unlessHeader: "x-ngrok-edge" } }),

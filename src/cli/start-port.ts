@@ -22,7 +22,8 @@ export type ListenFromPortOptions = {
 
 /**
  * Starts `server` on `port`. When the port is in use, it tries each next port
- * up to 65535, like Vite and `react-router-serve` do in development.
+ * up to 65535, like Vite and `react-router-serve` do in development. Each
+ * error for a port in use has the words of `vite dev`.
  *
  * @returns the port that the server listens on
  */
@@ -38,7 +39,13 @@ export async function listenFromPort(
 		// Why a warning and not an error: a server on one other address also fails the wildcard
 		// check, and that server does not share `hostname`. Vite warns for the same reason.
 		const freeOnWildcard = hostname == null || (await isFreeOnWildcard(port));
-		await bind(server, port, hostname);
+		try {
+			await bind(server, port, hostname);
+		} catch (error) {
+			throw isAddressInUse(error)
+				? new Error(`Port ${port} is already in use`, { cause: error })
+				: error;
+		}
 		if (!freeOnWildcard) {
 			onWildcardInUse?.(port);
 		}
@@ -59,7 +66,7 @@ export async function listenFromPort(
 		}
 		onPortInUse?.(candidate);
 	}
-	throw new Error(`No open port from ${port} to ${MAX_PORT}.`);
+	throw new Error(`No available ports found between ${port} and ${MAX_PORT}`);
 }
 
 async function bind(server: Server, port: number, hostname: string | undefined): Promise<void> {
@@ -96,7 +103,8 @@ async function isFreeOnWildcard(port: number): Promise<boolean> {
 	return true;
 }
 
-function boundPort(server: Server, fallback: number): number {
+/** The port that `server` listens on, or `fallback` for a server with no TCP address. */
+export function boundPort(server: Server, fallback: number): number {
 	const address = server.address();
 	return typeof address === "object" && address != null ? address.port : fallback;
 }

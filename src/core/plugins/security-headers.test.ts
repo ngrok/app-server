@@ -125,6 +125,17 @@ describe("securityHeaders", () => {
 		);
 	});
 
+	it("stops startup for a value that a header cannot hold, such as a curly quote", () => {
+		const value = "frame-ancestors \u2018none\u2019";
+
+		expect(() => securityHeaders({ headers: { "Content-Security-Policy": value } })).toThrow(
+			`The Content-Security-Policy of securityHeaders must be a value that a header can hold, not ${JSON.stringify(value)}.`,
+		);
+		expect(() => securityHeaders({ headers: { "Permissions-Policy": "camera=()\u0000" } })).toThrow(
+			"The Permissions-Policy of securityHeaders",
+		);
+	});
+
 	it("does not change a response object that the framework sends again", async () => {
 		const shared = new Response(null, {
 			headers: { "Content-Type": "text/html", "Content-Security-Policy": "img-src 'self'" },
@@ -190,6 +201,30 @@ describe("contentSecurityPolicy", () => {
 		expect(first.headers.get("Content-Security-Policy")).toBe(
 			`script-src 'nonce-${firstNonce}' 'strict-dynamic'`,
 		);
+	});
+
+	it("gives each of 1,000 requests its own nonce of 16 bytes in which each byte varies", async () => {
+		const { request } = await testServer({
+			plugins: [csp],
+			render: async () => new Response("x", { headers: { "Content-Type": "text/html" } }),
+		});
+
+		const responses = await Promise.all(Array.from({ length: 1000 }, async () => request("/")));
+		const nonces = responses.map(
+			(response) =>
+				/'nonce-(?<nonce>[^']+)'/u.exec(response.headers.get("Content-Security-Policy") ?? "")
+					?.groups?.nonce ?? "",
+		);
+		const valuesOfByte = Array.from(
+			{ length: 16 },
+			(_, index) => new Set(nonces.map((nonce) => atob(nonce).codePointAt(index))).size,
+		);
+
+		expect(new Set(nonces).size).toBe(1000);
+		// Why `[AQgw]`: the last character of 16 bytes in base64 holds 2 bits.
+		expect(nonces.filter((nonce) => !/^[A-Za-z0-9+/]{21}[AQgw]==$/u.test(nonce))).toStrictEqual([]);
+		// Why 200: 1,000 random bytes take about 251 of the 256 values.
+		expect(valuesOfByte.filter((values) => values < 200)).toStrictEqual([]);
 	});
 
 	it("trusts a prerendered document's inline scripts by their hashes, and its modules by 'self'", async () => {
@@ -265,9 +300,13 @@ describe("withHeaderHook", () => {
 		const async: Plugin = {
 			name: "async",
 			middleware: async (context, next) =>
-				// @ts-expect-error -- Why: an async hook would set its header after the head goes out.
-				withHeaderHook(context, next, async (response) => {
-					response.set("X-Async", "1");
+				withHeaderHook({
+					context,
+					next,
+					// @ts-expect-error -- Why: an async hook would set its header after the head goes out.
+					hook: async (response) => {
+						response.set("X-Async", "1");
+					},
 				}),
 		};
 		expect(async.name).toBe("async");

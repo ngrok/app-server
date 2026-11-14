@@ -11,10 +11,12 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { IMMUTABLE } from "../core/build-manifest.js";
 import { copyName } from "../core/compression.js";
 import { hasDotSegment } from "../core/static-files.js";
 import type { HostBuild, HostOutput } from "../vite/index.js";
-import { BROTLI_ONLY_LIST } from "./brotli-only.js";
+import { FILE_LIST } from "./brotli-only.js";
+import type { FunctionFiles } from "./brotli-only.js";
 import type { CdnPageReport, PagesReport } from "./pages.js";
 
 /** Options for {@link vercel}. */
@@ -56,8 +58,6 @@ export type VercelOptions = {
 	maxDuration?: number;
 };
 
-const IMMUTABLE = "public, max-age=31536000, immutable";
-
 /** The most routes of a deployment. See https://vercel.com/docs/limits. */
 const ROUTE_LIMIT = 2048;
 
@@ -71,7 +71,7 @@ const PAGES = "/_app-server/pages";
 /**
  * The script that finds the pages that the CDN serves. Why the source in a
  * `.ts` module: the tests of this package run the source, and Node.js runs a
- * `.ts` file with no import of its own.
+ * `.ts` file that imports no value of its own.
  */
 const PAGES_SCRIPT = fileURLToPath(
 	new URL(import.meta.url.endsWith(".ts") ? "./pages.ts" : "./vercel-pages.js", import.meta.url),
@@ -82,9 +82,6 @@ const MARKDOWN = "text/markdown".replaceAll(
 	/[a-z]/gu,
 	(letter) => `[${letter}${letter.toUpperCase()}]`,
 );
-
-/** The variable that gives the function the time of the build, in milliseconds. */
-const BUILT_AT = "APP_SERVER_BUILT_AT";
 
 /** The function's file, next to the server entry. */
 const FUNCTION_FILE = "vercel-function.js";
@@ -106,22 +103,23 @@ function copyFile(from: string, to: string): void {
 }
 
 /**
- * The path of each file under `directory`, relative to it. Why follow links:
- * the CDN and the function each get a copy of the linked file, not a link
- * whose target can be in the other part. Why the inodes of the parents: a
- * link to a parent directory must not make the walk endless.
+ * The path of each file under `directory`, relative to it, with the size of
+ * the file. Why follow links: the CDN and the function each get a copy of the
+ * linked file, not a link whose target can be in the other part. Why the
+ * inodes of the parents: a link to a parent directory must not make the walk
+ * endless.
  */
 function filesUnder(
 	directory: string,
 	under = "",
 	parents: ReadonlySet<string> = new Set(),
-): string[] {
+): [file: string, size: number][] {
 	const stats = statSync(join(directory, under), { throwIfNoEntry: false });
 	if (stats == null) {
 		return [];
 	}
 	if (!stats.isDirectory()) {
-		return [under];
+		return [[under, stats.size]];
 	}
 	const inode = `${stats.dev}:${stats.ino}`;
 	if (parents.has(inode)) {
@@ -270,27 +268,31 @@ function findCdnPages(
 	return pages;
 }
 
-/** Writes the paths that the function serves, and why, so the build log shows them. */
-function reportPages({ cdn, server }: PagesReport): void {
-	const shown = server.slice(0, 20);
-	process.stdout.write(
+/** Logs each path that the function serves, and why, so the build log shows them. */
+function reportPages({ cdn, server }: PagesReport, logger: HostOutput["logger"]): void {
+	logger.info(
 		[
 			`@ngrok/app-server/vercel: the CDN serves ${cdn.length} prerendered paths, and the function serves ${server.length}.`,
-			...shown.map(({ path, reason }) => `  ${path}: ${reason}`),
-			...(server.length > shown.length ? [`  and ${server.length - shown.length} more`] : []),
-			"",
+			...server.map(({ path, reason }) => `  ${path}: ${reason}`),
 		].join("\n"),
 	);
 }
 
+/**
+ * The URL path prefixes of the files that the CDN serves. Why `assetsPath`
+ * last: Vercel applies each matched rule in order, so its immutable cache wins
+ * over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
+ */
+function cdnPrefixes(cdnPaths: readonly string[], assetsPath: string): string[] {
+	return [...cdnPaths.filter((path) => path !== assetsPath), assetsPath];
+}
+
 /** Writes `.vercel/output` (the Build Output API, version 3) for one build. */
 function writeOutput(
-	{ root, clientDirectory, entryFile, assetsPath }: HostOutput,
+	{ root, clientDirectory, entryFile, assetsPath, logger }: HostOutput,
 	{ cdnPaths = [], cdnHeaders = {}, cdnPages = false, regions, memory, maxDuration }: VercelOptions,
 ): void {
-	// Why `assetsPath` last: Vercel applies each matched rule in order, so its immutable cache wins
-	// over a `cdnHeaders` value for a `cdnPaths` entry that holds it.
-	const prefixes = [...cdnPaths.filter((path) => path !== assetsPath), assetsPath];
+	const prefixes = cdnPrefixes(cdnPaths, assetsPath);
 	const output = join(root, ".vercel/output");
 	rmSync(output, { recursive: true, force: true });
 	const pages = findCdnPages(entryFile, output, {
@@ -299,7 +301,7 @@ function writeOutput(
 		routeBudget: ROUTE_LIMIT - routes(prefixes, { assetsPath, cdnHeaders, pages: [] }).length - 1,
 	});
 	if (cdnPages !== false) {
-		reportPages(pages);
+		reportPages(pages, logger);
 	}
 	const fromRoot = (path: string): string => {
 		const inside = relative(root, path);
@@ -312,10 +314,8 @@ function writeOutput(
 	const isCdnFile = (file: string): boolean =>
 		prefixes.some((prefix) => `/${posix(file)}`.startsWith(prefix));
 
-	const clientFiles = filesUnder(clientDirectory);
-	const listed = new Set(clientFiles);
-	/** The file of each brotli copy that the function keeps, with the size of the file. */
-	const brotliOnly: Record<string, number> = {};
+	const clientFiles = new Map(filesUnder(clientDirectory));
+	const list: FunctionFiles = { builtAt: Date.now(), files: {}, brotliOnly: {} };
 	/**
 	 * Whether the function drops `file`, a file or a gzip copy, because the
 	 * brotli copy of its file takes its place. Why: the function then holds one
@@ -327,19 +327,20 @@ function writeOutput(
 		const original = name.startsWith(".") ? /^\.(?<name>.+)\.gz$/u.exec(name)?.groups?.name : name;
 		return (
 			original != null &&
-			listed.has(join(dirname(file), original)) &&
-			listed.has(join(dirname(file), copyName(original, "br")))
+			clientFiles.has(join(dirname(file), original)) &&
+			clientFiles.has(join(dirname(file), copyName(original, "br")))
 		);
 	};
-	for (const file of clientFiles) {
+	for (const [file, size] of clientFiles) {
 		const from = join(clientDirectory, file);
 		// Why the function keeps the file of a page that the CDN serves: a request that no page route
 		// matches, such as the other trailing slash form, or a markdown request, reaches the function.
 		if (!isCdnFile(file)) {
 			if (!brotliCopyOnly(file)) {
 				copyFile(from, join(functionDirectory, fromRoot(from)));
+				list.files[`/${posix(file)}`] = size;
 			} else if (!basename(file).startsWith(".")) {
-				brotliOnly[`/${posix(file)}`] = statSync(from).size;
+				list.brotliOnly[`/${posix(file)}`] = size;
 			}
 		} else if (!hasDotSegment(`/${posix(file)}`)) {
 			// Why the static stages' check: the CDN sends each file that it has, and the static stages
@@ -348,12 +349,11 @@ function writeOutput(
 		}
 	}
 
-	if (Object.keys(brotliOnly).length > 0) {
-		writeFileSync(
-			join(functionDirectory, fromRoot(clientDirectory), BROTLI_ONLY_LIST),
-			JSON.stringify(brotliOnly),
-		);
-	}
+	// Why a list: the function then reads one file at a cold start, not each directory of its
+	// client build. See `host` in `@ngrok/app-server/vercel`.
+	const listFile = join(functionDirectory, fromRoot(clientDirectory), FILE_LIST);
+	mkdirSync(dirname(listFile), { recursive: true });
+	writeFileSync(listFile, JSON.stringify(list));
 
 	// Why the whole server build: it runs with no install, and it keeps the client build's path.
 	const serverDirectory = dirname(entryFile);
@@ -382,9 +382,6 @@ function writeOutput(
 				handler: posix(fromRoot(functionFile)),
 				launcherType: "Nodejs",
 				supportsResponseStreaming: true,
-				// Why: the deploy gives each file of the function one fixed time, and the ETag of a file
-				// reads its time. See `host` in `@ngrok/app-server/vercel`.
-				environment: { [BUILT_AT]: String(Date.now()) },
 				...(regions == null ? {} : { regions }),
 				...(memory == null ? {} : { memory }),
 				...(maxDuration == null ? {} : { maxDuration }),
@@ -419,8 +416,8 @@ function checkCdnPaths(paths: readonly string[]): void {
  *   `build.assetsDir` gets a one-year immutable cache. It also holds the
  *   prerendered pages that the CDN serves, with `cdnPages`.
  * - `functions/index.func/`: one Node.js function that runs the pipeline for
- *   each other request, with the whole server build and the rest of the
- *   client build.
+ *   each other request, with the whole server build, the rest of the client
+ *   build, and the list of those client files, which the function serves.
  *
  * @example
  * appServer({ host: vercel() });
@@ -428,9 +425,13 @@ function checkCdnPaths(paths: readonly string[]): void {
 export function vercel(options: VercelOptions = {}): HostBuild {
 	checkCdnPaths(options.cdnPaths ?? []);
 	return {
-		name: "vercel",
 		runtimeModule: "@ngrok/app-server/vercel",
-		entryFileName: "app-server.js",
+		// Why brotli only: the function keeps the brotli copy in place of the file and its gzip copy.
+		// Why no copy of a CDN file: the CDN compresses it, and the output holds no dotfile of it.
+		copies: ({ path, assetsPath }) =>
+			cdnPrefixes(options.cdnPaths ?? [], assetsPath).some((prefix) => path.startsWith(prefix))
+				? []
+				: ["br"],
 		output: (build) => {
 			writeOutput(build, options);
 		},

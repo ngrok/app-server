@@ -1,8 +1,14 @@
 import { IncomingMessage, ServerResponse } from "node:http";
 import type { OutgoingHttpHeader, OutgoingHttpHeaders } from "node:http";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { MiddlewareHandler } from "hono";
-import type { AppServerEnv, HeaderHook, ListenerBindings, ResponseHeaders } from "../core/types.js";
+import type { Context, MiddlewareHandler } from "hono";
+import type {
+	AppServerEnv,
+	HeaderHook,
+	ListenerBindings,
+	ResponseHeaders,
+	ServerEnv,
+} from "../core/types.js";
 import { publicScriptHashes } from "./script-hashes.js";
 
 /** A Connect middleware, such as `vite.middlewares`. */
@@ -115,9 +121,12 @@ function publicFileHashes(
  * response goes on.
  *
  * @example
- * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares, {
- *   publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
- * }));
+ * entry.fetchDev(request, {
+ *   bindings,
+ *   devServer: devServerStage(viteServer.middlewares, {
+ *     publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
+ *   }),
+ * });
  */
 export function devServerStage(
 	middleware: NodeMiddleware,
@@ -141,7 +150,8 @@ export function devServerStage(
 		for (const [name, value] of context.res.headers) {
 			outgoing.appendHeader(name, value);
 		}
-		const hooks = context.get("headerHooks") ?? [];
+		const server: Context<ServerEnv> = context;
+		const hooks = server.get("headerHooks") ?? [];
 		const undoHooks = runHooksAtHead(outgoing, hooks);
 		const answered = await new Promise<boolean>((resolve, reject) => {
 			const onFinish = () => {

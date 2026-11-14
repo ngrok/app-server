@@ -17,8 +17,12 @@ const encoder = new TextEncoder();
 const noStore: Plugin = {
 	name: "no-store",
 	middleware: async (context, next) =>
-		withHeaderHook(context, next, (headers) => {
-			headers.set("Cache-Control", "no-store");
+		withHeaderHook({
+			context,
+			next,
+			hook: (headers) => {
+				headers.set("Cache-Control", "no-store");
+			},
 		}),
 };
 
@@ -49,6 +53,20 @@ async function firstChunk(response: IncomingMessage): Promise<Buffer> {
 	});
 }
 
+/**
+ * The `http.url` of the line for each request whose URL is one of `urls` as
+ * it is, with no URL parse. Why: Deno gives the request target as the client
+ * sent it, and `new Request` parses it.
+ */
+async function loggedAsSent(urls: readonly string[]): Promise<unknown[]> {
+	const { app, framework, lines } = await testServer({ plugins: [accessLog()] });
+	for (const url of urls) {
+		const request = Object.defineProperty(new Request("http://localhost/"), "url", { value: url });
+		await (await app.fetch(request, { framework })).text();
+	}
+	return lines.map((line) => line.attributes["http.url"]);
+}
+
 describe("accessLog", () => {
 	it("logs one line with the request ID and the query values redacted", async () => {
 		const { request, lines } = await testServer({ plugins: [requestId(), accessLog()] });
@@ -67,6 +85,51 @@ describe("accessLog", () => {
 				"network.bytes_written": 8,
 			},
 		});
+	});
+
+	it("redacts each value of a query, for a key in each form", async () => {
+		const logged = {
+			"/a?b=1&c=2": "/a?b=REDACTED&c=REDACTED",
+			"/a.data?_routes=routes%2Fdocs.%24": "/a.data?_routes=REDACTED",
+			"/a?b=1=2&c=&d.e-f_g~h=3": "/a?b=REDACTED&c=REDACTED&d.e-f_g~h=REDACTED",
+			"/a?token": "/a?token=REDACTED",
+			"/a?=1": "/a?=REDACTED",
+			"/a?b=1&&c=2&": "/a?b=REDACTED&c=REDACTED",
+			// Why one query for each key: one key that needs the URL parse sends its whole query to the parse.
+			"/a?x+y=1": "/a?x%20y=REDACTED",
+			"/a?%61=2": "/a?a=REDACTED",
+			"/a?a[]=3": "/a?a%5B%5D=REDACTED",
+			"/a?a/b=4": "/a?a%2Fb=REDACTED",
+			"/a?b=1&x+y=2": "/a?b=REDACTED&x%20y=REDACTED",
+			"/caf%C3%A9?caf%C3%A9=1": "/caf%C3%A9?caf%C3%A9=REDACTED",
+		};
+		const { request, lines } = await testServer({ plugins: [accessLog()] });
+
+		for (const path of Object.keys(logged)) {
+			await (await request(path)).text();
+		}
+
+		expect(lines.map((line) => line.attributes["http.url"])).toStrictEqual(Object.values(logged));
+	});
+
+	it("logs each key as a URL parse gives it, for a key with each printable ASCII character in a URL as the client sent it", async () => {
+		const characters = Array.from({ length: 95 }, (_, index) => String.fromCodePoint(index + 32));
+		// Why two queries: the rule is for the first key and for each later key.
+		const urls = characters.flatMap((character) => [
+			`http://localhost/a?k${character}=1`,
+			`http://localhost/a?b=1&k${character}=2`,
+		]);
+
+		await expect(loggedAsSent(urls)).resolves.toStrictEqual(
+			urls.map((url) => loggedUrl(new URL(url), { redact: true })),
+		);
+	});
+
+	it("logs a query of plain keys when the request URL does not parse", async () => {
+		// Why: the Node.js listener gives such a URL for a `Host: 1.2.3.4.5` header.
+		await expect(loggedAsSent(["http://1.2.3.4.5/a?x=1"])).resolves.toStrictEqual([
+			"/a?x=REDACTED",
+		]);
 	});
 
 	it("logs a streamed response when its body ends, with every byte counted", async () => {
@@ -99,7 +162,7 @@ describe("accessLog", () => {
 		const response = await request("/streamed");
 		await response.body?.cancel();
 
-		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
+		expect(lines[0]?.attributes["http.aborted"]).toBe(true);
 	});
 
 	it("logs a line when the response body fails", async () => {
@@ -118,7 +181,7 @@ describe("accessLog", () => {
 		const response = await request("/");
 		await expect(response.text()).rejects.toThrow("render failed");
 
-		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
+		expect(lines[0]?.attributes["http.aborted"]).toBe(true);
 	});
 
 	it("logs a 5xx with no body as 499 at info when the client went away before it", async () => {
@@ -310,7 +373,7 @@ describe("accessLog", () => {
 		];
 		expect(lines.map((line) => Object.keys(line.attributes))).toStrictEqual([
 			[...keys, "usr.id"],
-			[...keys, "http.client_aborted", "usr.id"],
+			[...keys, "http.aborted", "usr.id"],
 		]);
 	});
 });
@@ -345,7 +408,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(response.headers["content-encoding"]).toBe("gzip");
 		expect(requestLines()[0]?.attributes["network.bytes_written"]).toBe(received);
-		expect(requestLines()[0]?.attributes["http.client_aborted"]).toBeUndefined();
+		expect(requestLines()[0]?.attributes["http.aborted"]).toBeUndefined();
 	});
 
 	it("marks the line when the client disconnects before the body ends", async () => {
@@ -363,7 +426,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"http.status_code": 200,
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -390,7 +453,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]).toMatchObject({
 			level: "info",
-			attributes: { "http.status_code": 499, "http.client_aborted": true },
+			attributes: { "http.status_code": 499, "http.aborted": true },
 		});
 	});
 
@@ -424,7 +487,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]).toMatchObject({
 			level: "error",
-			attributes: { "http.status_code": 503, "http.client_aborted": true },
+			attributes: { "http.status_code": 503, "http.aborted": true },
 		});
 	});
 
@@ -458,7 +521,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(first.toString()).toBe("first");
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -530,7 +593,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"http.status_code": 200,
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -550,7 +613,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"network.bytes_written": size,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -709,11 +772,43 @@ describe("accessLog on the Node.js listener", () => {
 			"/a#frag": "/a",
 			"/a?": "/a",
 			"/a?x='y'#f": "/a?x=%27y%27",
+			"/a?x='y'&z=1": "/a?x=%27y%27&z=1",
 		};
 		const { url, requestLines } = await listening(
 			[accessLog({ redactQuery: false })],
 			async () => new Response("ok"),
 		);
+		const { port } = new URL(url);
+
+		for (const path of Object.keys(logged)) {
+			const response = await new Promise<IncomingMessage>((resolve, reject) => {
+				httpGet({ host: "127.0.0.1", port, path }, resolve).once("error", reject);
+			});
+			response.resume();
+			await new Promise((resolve) => {
+				response.once("end", resolve);
+			});
+		}
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(Object.keys(logged).length);
+		});
+
+		expect(requestLines().map((line) => line.attributes["http.url"])).toStrictEqual(
+			Object.values(logged),
+		);
+	});
+
+	it("logs the path that a URL parse gives before a redacted query, for targets that a parse changes", async () => {
+		// Why these targets: the line takes the path before a query of plain keys as it is, so the
+		// listener must give each of these as a parsed URL.
+		const logged = {
+			"/a/../b?x=1": "/b?x=REDACTED",
+			"/a{b}?x=1&y=2": "/a%7Bb%7D?x=REDACTED&y=REDACTED",
+			"/%2e%2e/x?x=1": "/x?x=REDACTED",
+			"/a?x='y'": "/a?x=REDACTED",
+			"/a?x=1#f": "/a?x=REDACTED",
+		};
+		const { url, requestLines } = await listening([accessLog()], async () => new Response("ok"));
 		const { port } = new URL(url);
 
 		for (const path of Object.keys(logged)) {

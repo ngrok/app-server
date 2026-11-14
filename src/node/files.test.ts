@@ -19,7 +19,7 @@ chmodSync(join(root, "client/unreadable.txt"), 0o000);
 /** Runs full garbage collections, and waits for the cleanup that each one queues. */
 async function collectGarbage(): Promise<void> {
 	setFlagsFromString("--expose-gc");
-	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `gc` exists in a new context after the flag is set.
+	// Why the cast: `gc` exists in a new context after the flag is set.
 	const gc = runInNewContext("gc") as () => void;
 	// Why three: a stream and its file handle can need more than one collection.
 	for (let round = 0; round < 3; round += 1) {
@@ -37,7 +37,7 @@ describe("nodeFiles", () => {
 		const files = nodeFiles(pathToFileURL(join(root, "client/")).href);
 
 		await expect(files.stat("/llms.txt")).resolves.toMatchObject({ kind: "file", size: 4 });
-		await expect(files.stat("/docs")).resolves.toMatchObject({ kind: "directory" });
+		await expect(files.stat("/docs")).resolves.toStrictEqual({ kind: "directory" });
 		await expect(files.stat("/missing")).resolves.toBeUndefined();
 		await expect(new Response(await files.open("/llms.txt")).text()).resolves.toBe("llms");
 	});
@@ -78,6 +78,7 @@ describe("nodeFiles", () => {
 			undefined,
 			undefined,
 		]);
+		await expect(files?.stat("/docs")).resolves.toStrictEqual({ kind: "directory" });
 	});
 
 	it("lists the files of a directory under each symbolic link to it", async () => {
@@ -89,6 +90,33 @@ describe("nodeFiles", () => {
 
 		await expect(files?.stat("/real/a.txt")).resolves.toMatchObject({ kind: "file" });
 		await expect(files?.stat("/link/a.txt")).resolves.toMatchObject({ kind: "file" });
+	});
+
+	it("gives the answers of stat from a snapshot of a tree with more entries than it reads at one time", async () => {
+		const client = join(root, "tree");
+		const paths = ["/", "/missing", "/missing/a.txt", "/a/0/0.txt/", "/a/0/0.txt/b"];
+		for (const section of ["a", "b", "c"]) {
+			for (let directory = 0; directory < 8; directory += 1) {
+				mkdirSync(join(client, section, String(directory)), { recursive: true });
+				paths.push(`/${section}`, `/${section}/${directory}`, `/${section}/${directory}/`);
+				for (let file = 0; file < 10; file += 1) {
+					writeFileSync(join(client, section, String(directory), `${file}.txt`), "x".repeat(file));
+					paths.push(`/${section}/${directory}/${file}.txt`);
+				}
+			}
+		}
+		symlinkSync("a", join(client, "linked"));
+		// Why no path under `/b/up`: a snapshot lists a link to a parent directory, but not what is under it.
+		symlinkSync("..", join(client, "b/up"));
+		paths.push("/linked", "/linked/3/4.txt", "/b/up");
+		const files = nodeFiles(client);
+		const snapshot = await files.snapshot?.();
+
+		const fromDisk = await Promise.all(paths.map(async (path) => files.stat(path)));
+		const fromSnapshot = await Promise.all(paths.map(async (path) => snapshot?.stat(path)));
+
+		expect(fromSnapshot).toStrictEqual(fromDisk);
+		expect(fromSnapshot.filter((info) => info != null).length).toBeGreaterThan(300);
 	});
 
 	it("refuses a snapshot when a file system error does not mean a missing file", async () => {

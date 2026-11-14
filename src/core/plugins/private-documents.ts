@@ -1,4 +1,4 @@
-import { withHeaderHook } from "../header-hook.js";
+import { withBuiltInHeaderHook } from "../header-hook.js";
 import type { Plugin, SetupInfo } from "../types.js";
 
 /** The data check before `setup` runs. */
@@ -27,15 +27,20 @@ export function privateDocuments(): Plugin {
 		setup: (info) => {
 			({ isDataRequest } = info);
 		},
-		middleware: async (context, next) =>
-			withHeaderHook(context, next, (headers) => {
-				if (
-					!headers.has("Cache-Control") &&
-					((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
-						isDataRequest(context.req.path))
-				) {
-					headers.set("Cache-Control", "private, no-cache");
-				}
+		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
+		middleware: (context, next) =>
+			withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					if (
+						!headers.has("Cache-Control") &&
+						((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
+							isDataRequest(context.req.path))
+					) {
+						headers.set("Cache-Control", "private, no-cache");
+					}
+				},
 			}),
 	};
 }
