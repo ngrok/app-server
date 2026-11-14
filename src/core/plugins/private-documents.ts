@@ -29,14 +29,18 @@ export function privateDocuments(): Plugin {
 		},
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) =>
-			withBuiltInHeaderHook(context, next, (headers) => {
-				if (
-					!headers.has("Cache-Control") &&
-					((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
-						isDataRequest(context.req.path))
-				) {
-					headers.set("Cache-Control", "private, no-cache");
-				}
+			withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					if (
+						!headers.has("Cache-Control") &&
+						((headers.get("Content-Type")?.startsWith("text/html") ?? false) ||
+							isDataRequest(context.req.path))
+					) {
+						headers.set("Cache-Control", "private, no-cache");
+					}
+				},
 			}),
 	};
 }

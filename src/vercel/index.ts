@@ -69,7 +69,7 @@ export const host: HostRuntime = {
 		};
 		return {
 			stat: async (path) => ((await list()) ?? disk).stat(path),
-			open: async (path, range) => ((await list()) ?? disk).open(path, range),
+			open: async (path, options) => ((await list()) ?? disk).open(path, options),
 			snapshot: async () => (await list()) ?? (await disk.snapshot?.()) ?? disk,
 		};
 	},

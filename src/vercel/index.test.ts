@@ -87,8 +87,12 @@ describe("handler", () => {
 		const echoesId: Plugin = {
 			name: "echoes-id",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (headers) => {
-					headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+				withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						headers.set("X-Context-Id", requestContext()?.requestId ?? "none");
+					},
 				}),
 		};
 		const url = await serve([requestId(), echoesId]);

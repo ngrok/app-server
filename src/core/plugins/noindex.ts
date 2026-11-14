@@ -36,16 +36,20 @@ export function noindex(options?: NoindexOptions): Plugin {
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) => {
 			const hidden = unlessHeader == null || context.req.header(unlessHeader) == null;
-			return withBuiltInHeaderHook(context, next, (response) => {
-				if (hidden) {
-					response.set("X-Robots-Tag", "noindex, nofollow");
-				}
-				if (unlessHeader != null) {
-					const vary = withVary(response.get("Vary"), unlessHeader);
-					if (vary != null) {
-						response.set("Vary", vary);
+			return withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (response) => {
+					if (hidden) {
+						response.set("X-Robots-Tag", "noindex, nofollow");
 					}
-				}
+					if (unlessHeader != null) {
+						const vary = withVary(response.get("Vary"), unlessHeader);
+						if (vary != null) {
+							response.set("Vary", vary);
+						}
+					}
+				},
 			});
 		},
 	});

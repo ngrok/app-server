@@ -85,9 +85,9 @@ export function brotliOnlyOpen(
 	open: StaticFiles["open"],
 	brotliOnly: ReadonlySet<string>,
 ): StaticFiles["open"] {
-	return async (path, range) => {
+	return async (path, options) => {
 		if (!brotliOnly.has(path)) {
-			return open(path, range);
+			return open(path, options);
 		}
 		return decodedOnRead(async () => {
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Node.js types its web streams apart from the global ones.
@@ -96,6 +96,7 @@ export function brotliOnlyOpen(
 				Uint8Array
 			>;
 			const decoded = (await open(copyPath(path, "br"))).pipeThrough(decompress);
+			const range = options?.range;
 			return range == null ? decoded : sliced(decoded, range);
 		});
 	};

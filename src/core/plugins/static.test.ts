@@ -491,8 +491,12 @@ describe("prerendered cacheControl", () => {
 		const noCacheControl: Plugin = {
 			name: "no-cache-control",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.delete("Cache-Control");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.delete("Cache-Control");
+					},
 				}),
 		};
 		const { request } = await testServer({
@@ -819,8 +823,12 @@ describe("compressed copies from the build", () => {
 		const noTransform: Plugin = {
 			name: "no-transform",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("Cache-Control", "public, no-transform");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("Cache-Control", "public, no-transform");
+					},
 				}),
 		};
 		const { request } = await testServer({
@@ -840,8 +848,12 @@ describe("compressed copies from the build", () => {
 		const sets = (name: string, value: string): Plugin => ({
 			name,
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("Cache-Control", value);
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("Cache-Control", value);
+					},
 				}),
 		});
 		const forbids = sets("forbids", "public, no-transform");
@@ -873,11 +885,15 @@ describe("compressed copies from the build", () => {
 			name: "sets-late",
 			middleware: async (context, next) => {
 				const late: { value?: string } = {};
-				await withHeaderHook(context, next, (response) => {
-					if (late.value == null) {
-						throw new Error("The stage has no value yet.");
-					}
-					response.set("X-Late", late.value);
+				await withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						if (late.value == null) {
+							throw new Error("The stage has no value yet.");
+						}
+						response.set("X-Late", late.value);
+					},
 				});
 				late.value = "set";
 			},
@@ -900,8 +916,12 @@ describe("compressed copies from the build", () => {
 		const appends: Plugin = {
 			name: "appends",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.append("X-Stage", "appends");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.append("X-Stage", "appends");
+					},
 				}),
 		};
 		const { request } = await testServer({ plugins: [appends, prerendered()], clientDirectory });
@@ -918,10 +938,14 @@ describe("compressed copies from the build", () => {
 		const byRequestId: Plugin = {
 			name: "by-request-id",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					if (response.has("X-Request-Id")) {
-						response.set("Cache-Control", "public, no-transform");
-					}
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						if (response.has("X-Request-Id")) {
+							response.set("Cache-Control", "public, no-transform");
+						}
+					},
 				}),
 		};
 		const { request } = await testServer({

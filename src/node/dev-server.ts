@@ -121,9 +121,12 @@ function publicFileHashes(
  * response goes on.
  *
  * @example
- * entry.fetchDev(request, bindings, devServerStage(viteServer.middlewares, {
- *   publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
- * }));
+ * entry.fetchDev(request, {
+ *   bindings,
+ *   devServer: devServerStage(viteServer.middlewares, {
+ *     publicFiles: () => ({ directory: viteServer.config.publicDir, base: viteServer.config.base }),
+ *   }),
+ * });
  */
 export function devServerStage(
 	middleware: NodeMiddleware,

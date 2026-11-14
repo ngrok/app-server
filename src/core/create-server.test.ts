@@ -422,8 +422,12 @@ describe("createServer", () => {
 		const throwsInHook: Plugin = {
 			name: "throws-in-hook",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, () => {
-					throw new Error("hook failed");
+				withHeaderHook({
+					context,
+					next,
+					hook: () => {
+						throw new Error("hook failed");
+					},
 				}),
 		};
 		const { request, lines } = await testServer({
@@ -443,8 +447,12 @@ describe("createServer", () => {
 		const throwsInHook: Plugin = {
 			name: "throws-in-hook",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, () => {
-					throw new Error("hook failed");
+				withHeaderHook({
+					context,
+					next,
+					hook: () => {
+						throw new Error("hook failed");
+					},
 				}),
 		};
 		const { request } = await testServer({
@@ -639,7 +647,7 @@ describe("createServer", () => {
 		const server = await listening(
 			async () =>
 				eventStream(async ({ send }) => {
-					send({ data: "hello" });
+					void send({ data: "hello" });
 					return new Promise(() => {});
 				}),
 			[...defaultPlugins(), { name: "shutdown-probe", onShutdown }],
@@ -692,9 +700,9 @@ describe("createServer", () => {
 			});
 			app.get("/events", () =>
 				eventStream(async ({ send }) => {
-					send({ data: "open" });
+					void send({ data: "open" });
 					await more.promise;
-					send({ data: "still open" });
+					void send({ data: "still open" });
 					return new Promise(() => {});
 				}),
 			);
@@ -1430,8 +1438,12 @@ describe("the pipeline", () => {
 				{
 					name: "throws-in-hook",
 					middleware: async (context, next) =>
-						withHeaderHook(context, next, () => {
-							throw new Error("hook failed");
+						withHeaderHook({
+							context,
+							next,
+							hook: () => {
+								throw new Error("hook failed");
+							},
 						}),
 				},
 			],
@@ -1557,7 +1569,7 @@ describe("the pipeline", () => {
 				plugins: [
 					{
 						name: "throws-in-hook",
-						middleware: async (context, next) => withHeaderHook(context, next, down),
+						middleware: async (context, next) => withHeaderHook({ context, next, hook: down }),
 					},
 				],
 			},

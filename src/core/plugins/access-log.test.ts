@@ -17,8 +17,12 @@ const encoder = new TextEncoder();
 const noStore: Plugin = {
 	name: "no-store",
 	middleware: async (context, next) =>
-		withHeaderHook(context, next, (headers) => {
-			headers.set("Cache-Control", "no-store");
+		withHeaderHook({
+			context,
+			next,
+			hook: (headers) => {
+				headers.set("Cache-Control", "no-store");
+			},
 		}),
 };
 

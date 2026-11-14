@@ -40,7 +40,7 @@ Short, named rules for how to work. They are the methods that meet the [north st
 - [Minimize reader load](./docs/principles/minimize-reader-load.md) (code, prose): code and prose that read in one pass.
 - [Experience first](./docs/principles/experience-first.md) (code, prose): judge a change by the visitor, the app developer, and the operator.
 - [Make illegal states unrepresentable](./docs/principles/make-illegal-states-unrepresentable.md) (code): contracts in types.
-- [Name the arguments](./docs/principles/name-the-arguments.md) (code): a public function, option, or hook takes one named object.
+- [Name the arguments](./docs/principles/name-the-arguments.md) (code): a public function, option, or hook takes one named object, or a subject and then one options object.
 - [Pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md) (code): pure functions in the core, I/O in the adapters.
 - [Derive, don't sync](./docs/principles/derive-dont-sync.md) (code): compute ETags, cache keys, and lists from their source.
 - [Validate at the boundary](./docs/principles/validate-at-the-boundary.md) (code): parse input once, where it enters. Check config at startup.

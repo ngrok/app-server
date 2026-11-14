@@ -15,8 +15,12 @@ function setsHeader(name: string, value: string): Plugin {
 	return {
 		name: `sets-${name.toLowerCase()}`,
 		middleware: async (context, next) =>
-			withHeaderHook(context, next, (headers) => {
-				headers.set(name, value);
+			withHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					headers.set(name, value);
+				},
 			}),
 	};
 }
@@ -479,11 +483,15 @@ describe("streamingCompress", () => {
 			name: "sets-late",
 			middleware: async (context, next) => {
 				const late: { value?: string } = {};
-				await withHeaderHook(context, next, (headers) => {
-					if (late.value == null) {
-						throw new Error("The stage has no value yet.");
-					}
-					headers.set("X-Late", late.value);
+				await withHeaderHook({
+					context,
+					next,
+					hook: (headers) => {
+						if (late.value == null) {
+							throw new Error("The stage has no value yet.");
+						}
+						headers.set("X-Late", late.value);
+					},
 				});
 				late.value = "set";
 			},

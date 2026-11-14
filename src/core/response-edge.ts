@@ -119,7 +119,7 @@ export class ResponseEdge {
 	 * Keeps `headers`, the headers of the response after each header hook, and
 	 * `base`, its headers before the hooks. The server calls it.
 	 */
-	public useHeaders(base: readonly string[], headers: string[]): void {
+	public useHeaders({ base, headers }: { base: readonly string[]; headers: string[] }): void {
 		this.#base = base;
 		this.#headers = headers;
 	}
@@ -398,7 +398,7 @@ function finishFrom(
 		}
 	}
 	if (edge != null) {
-		edge.useHeaders(base, head);
+		edge.useHeaders({ base, headers: head });
 		for (const report of reports) {
 			edge.onSent(report);
 		}

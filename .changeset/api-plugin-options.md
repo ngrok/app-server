@@ -131,10 +131,14 @@ defaultPlugins({ prerendered: { cacheControl: () => undefined } });
 const noCacheControl: Plugin = {
 	name: "no-cache-control",
 	middleware: async (c, next) =>
-		withHeaderHook(c, next, (response) => {
-			if (isClientBuildFile(c.req.path)) {
-				response.delete("Cache-Control");
-			}
+		withHeaderHook({
+			context: c,
+			next,
+			hook: (response) => {
+				if (isClientBuildFile(c.req.path)) {
+					response.delete("Cache-Control");
+				}
+			},
 		}),
 };
 defaultPlugins({ beforeStatic: [noCacheControl] });

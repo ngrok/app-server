@@ -88,7 +88,7 @@ describe("keptFiles", () => {
 		};
 		const files = keptFiles(source);
 		const chunk = async (range?: { start: number; end: number }) => {
-			const { value } = await (await files.open("/digits.txt", range)).getReader().read();
+			const { value } = await (await files.open("/digits.txt", { range })).getReader().read();
 			return value ?? new Uint8Array();
 		};
 		const decoder = new TextDecoder();

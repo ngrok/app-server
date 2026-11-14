@@ -73,7 +73,7 @@ describe("nodeFiles", () => {
 	it("reads the whole range of a small file when each read gives fewer bytes", async () => {
 		const files = nodeFiles(root);
 
-		const body = await files.open("/file.txt", { start: 0, end: text.length - 1 });
+		const body = await files.open("/file.txt", { range: { start: 0, end: text.length - 1 } });
 
 		await expect(new Response(body).text()).resolves.toBe(text);
 	});

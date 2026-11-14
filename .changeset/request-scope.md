@@ -49,8 +49,12 @@ import { withHeaderHook } from "@ngrok/app-server";
 const frameOptions: Plugin = {
 	name: "frame-options",
 	middleware: async (c, next) =>
-		withHeaderHook(c, next, (headers) => {
-			headers.set("X-Frame-Options", "DENY");
+		withHeaderHook({
+			context: c,
+			next,
+			hook: (headers) => {
+				headers.set("X-Frame-Options", "DENY");
+			},
 		}),
 };
 ```

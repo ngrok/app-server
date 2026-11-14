@@ -103,11 +103,15 @@ export function accessLog({
 			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
 			// There it reads the time for the header, and whether the client left before the answer. Why
 			// not later: the Node.js listener also aborts the signal when a body fails after the head.
-			await withBuiltInHeaderHook(context, next, (headers) => {
-				clientLeft = context.req.raw.signal.aborted;
-				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
-					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
-				}
+			await withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					clientLeft = context.req.raw.signal.aborted;
+					if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
+						headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
+					}
+				},
 			});
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {

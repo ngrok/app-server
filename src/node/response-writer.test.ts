@@ -78,8 +78,12 @@ async function bodyOf(response: IncomingMessage): Promise<Buffer> {
 const throwsInHook: Plugin = {
 	name: "throws-in-hook",
 	middleware: async (context, next) =>
-		withHeaderHook(context, next, () => {
-			throw new Error("hook failed");
+		withHeaderHook({
+			context,
+			next,
+			hook: () => {
+				throw new Error("hook failed");
+			},
 		}),
 };
 
@@ -88,8 +92,12 @@ function setsHeader(name: string, value: string): Plugin {
 	return {
 		name: `sets-${name}-${value}`,
 		middleware: async (context, next) =>
-			withHeaderHook(context, next, (headers) => {
-				headers.set(name, value);
+			withHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					headers.set(name, value);
+				},
 			}),
 	};
 }
@@ -188,7 +196,7 @@ describe("the node response writer", () => {
 		const url = await listening(async () =>
 			eventStream(async ({ send }) => {
 				await opened.promise;
-				send({ data: "hello" });
+				void send({ data: "hello" });
 				return new Promise(() => {});
 			}),
 		);

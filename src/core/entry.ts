@@ -38,11 +38,10 @@ export type AppServerEntry = {
 	 * listen. The first call runs each plugin's `setup`.
 	 */
 	fetch: FetchHandler;
-	/** Development: answers one request with the dev server inside the pipeline. */
+	/** Development: answers one request with `devServer` inside the pipeline. */
 	fetchDev: (
 		request: Request,
-		bindings: ListenerBindings,
-		devServer: MiddlewareHandler<AppServerEnv>,
+		options: { devServer: MiddlewareHandler<AppServerEnv>; bindings?: ListenerBindings },
 	) => Promise<Response>;
 	/**
 	 * Production, for a build step: each prerendered path, with the answer
@@ -209,7 +208,7 @@ export function createEntry({
 			ready == null
 				? fetchAfterSetup(request, bindings)
 				: app.fetch(request, { ...bindings, framework: ready }),
-		fetchDev: async (request, bindings, devServer) => {
+		fetchDev: async (request, { bindings, devServer }) => {
 			development ??= framework("development");
 			// Why only until it succeeds: `prepare` reads the info of its first call. After a failure,
 			// the next request runs each `setup` again.

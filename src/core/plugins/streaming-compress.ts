@@ -210,21 +210,25 @@ export function streamingCompress(): Plugin {
 			// Why a hook for `Vary`: the code after `next()` decides, and a response that the plugin does
 			// not compress then needs no copy for it.
 			let compressing = false;
-			await withBuiltInHeaderHook(context, next, (headers) => {
-				// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
-				// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
-				const type = headers.get("Content-Type");
-				const vary =
-					type == null || isCompressible(type)
-						? withVary(headers.get("Vary"), "Accept-Encoding")
-						: undefined;
-				if (vary != null) {
-					headers.set("Vary", vary);
-				}
-				// Why: the hook of an inner stage can set the length of the body before compression.
-				if (compressing) {
-					headers.delete("Content-Length");
-				}
+			await withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (headers) => {
+					// Why: the bytes of a type that the plugin never compresses, such as an image, do not vary by
+					// `Accept-Encoding`. A response with no type, such as a 304, keeps the `Vary` of its 200.
+					const type = headers.get("Content-Type");
+					const vary =
+						type == null || isCompressible(type)
+							? withVary(headers.get("Vary"), "Accept-Encoding")
+							: undefined;
+					if (vary != null) {
+						headers.set("Vary", vary);
+					}
+					// Why: the hook of an inner stage can set the length of the body before compression.
+					if (compressing) {
+						headers.delete("Content-Length");
+					}
+				},
 			});
 			const response = context.res;
 			const type = response.headers.get("Content-Type");

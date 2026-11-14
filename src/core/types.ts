@@ -128,7 +128,10 @@ export type StaticFiles = {
 	 * static stages answer a `Range` request with these bytes. Open the file on
 	 * the first read. Why: a stage can drop a response that no one reads.
 	 */
-	open: (path: string, range?: ByteRange) => Promise<ReadableStream<Uint8Array>>;
+	open: (
+		path: string,
+		options?: { range?: ByteRange | undefined },
+	) => Promise<ReadableStream<Uint8Array>>;
 	/**
 	 * A copy whose `stat` answers from a list of the files that it reads once.
 	 * The production server uses it, because the client build does not change

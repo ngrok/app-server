@@ -64,7 +64,7 @@ export async function start(): Promise<void> {
 		try {
 			return await apps.serve(
 				await loadEntry(await ssrRunner().import(SERVER_ENTRY_ID)),
-				async (entry) => entry.fetchDev(request, bindings, devServer),
+				async (entry) => entry.fetchDev(request, { bindings, devServer }),
 			);
 		} catch (error) {
 			if (error instanceof Error) {

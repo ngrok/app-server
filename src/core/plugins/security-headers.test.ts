@@ -300,9 +300,13 @@ describe("withHeaderHook", () => {
 		const async: Plugin = {
 			name: "async",
 			middleware: async (context, next) =>
-				// @ts-expect-error -- Why: an async hook would set its header after the head goes out.
-				withHeaderHook(context, next, async (response) => {
-					response.set("X-Async", "1");
+				withHeaderHook({
+					context,
+					next,
+					// @ts-expect-error -- Why: an async hook would set its header after the head goes out.
+					hook: async (response) => {
+						response.set("X-Async", "1");
+					},
 				}),
 		};
 		expect(async.name).toBe("async");

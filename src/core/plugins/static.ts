@@ -222,14 +222,18 @@ async function noLaterStage(): Promise<void> {}
 async function negotiate(context: Context<AppServerEnv>, twinPath?: string): Promise<void> {
 	const link =
 		twinPath == null ? undefined : `<${urlPath(twinPath)}>; rel="alternate"; type="text/markdown"`;
-	await withBuiltInHeaderHook(context, noLaterStage, (headers) => {
-		const vary = withVary(headers.get("Vary"), "Accept");
-		if (vary != null) {
-			headers.set("Vary", vary);
-		}
-		if (link != null) {
-			headers.append("Link", link);
-		}
+	await withBuiltInHeaderHook({
+		context,
+		next: noLaterStage,
+		hook: (headers) => {
+			const vary = withVary(headers.get("Vary"), "Accept");
+			if (vary != null) {
+				headers.set("Vary", vary);
+			}
+			if (link != null) {
+				headers.append("Link", link);
+			}
+		},
 	});
 }
 

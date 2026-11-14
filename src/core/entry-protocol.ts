@@ -3,7 +3,7 @@
 import type { AppServerEntry } from "./entry.js";
 
 /** The version of the contract between the CLI and the `appServer` export of a build. */
-export const ENTRY_PROTOCOL = 2;
+export const ENTRY_PROTOCOL = 3;
 
 /**
  * Whether a value is an entry of this protocol version.

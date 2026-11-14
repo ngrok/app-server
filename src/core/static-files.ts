@@ -253,7 +253,7 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 	let total = 0;
 	return {
 		stat: files.stat,
-		open: async (path, range) => {
+		open: async (path, options) => {
 			let bytes = kept.get(path);
 			const info = bytes == null ? await files.stat(path) : undefined;
 			// Why again: another request can start to read the file during the `stat`.
@@ -264,12 +264,12 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 					info.size > KEPT_FILE_BYTES ||
 					total + info.size > KEPT_TOTAL_BYTES
 				) {
-					return files.open(path, range);
+					return files.open(path, options);
 				}
 				total += info.size;
 				// Why the size as a range: the kept bytes then match the `Content-Length` from the lookup.
 				bytes = files
-					.open(path, { start: 0, end: info.size - 1 })
+					.open(path, { range: { start: 0, end: info.size - 1 } })
 					.then(async (stream) => new Uint8Array(await new Response(stream).arrayBuffer()));
 				kept.set(path, bytes);
 				bytes.catch(() => {
@@ -278,6 +278,7 @@ export function keptFiles(files: StaticFiles): StaticFiles {
 				});
 			}
 			// Why a copy: a later stage can change the bytes that it reads.
+			const range = options?.range;
 			const chunk = (await bytes).slice(
 				range?.start ?? 0,
 				range == null ? undefined : range.end + 1,
@@ -392,7 +393,9 @@ async function wholeFile(
 	files: StaticFiles,
 	file: StaticFile,
 ): Promise<ReadableStream<Uint8Array> | null> {
-	return file.size === 0 ? null : files.open(file.path, { start: 0, end: file.size - 1 });
+	return file.size === 0
+		? null
+		: files.open(file.path, { range: { start: 0, end: file.size - 1 } });
 }
 
 /**
@@ -558,7 +561,7 @@ export async function staticResponse(
 	if (range != null) {
 		head.set("content-range", `bytes ${range.start}-${range.end}/${file.size}`);
 		head.set("content-length", String(range.end - range.start + 1));
-		return respond(await files.open(file.path, range), 206, head);
+		return respond(await files.open(file.path, { range }), 206, head);
 	}
 	return respond(await wholeFile(files, file), 200, head);
 }

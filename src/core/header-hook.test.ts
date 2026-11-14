@@ -11,8 +11,12 @@ describe("withHeaderHook", () => {
 		const answer = new Response("x");
 		const app = new Hono<AppServerEnv>()
 			.use(async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.delete("X-Build-Id");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.delete("X-Build-Id");
+					},
 				}),
 			)
 			.get("/", () => answer);
@@ -24,8 +28,12 @@ describe("withHeaderHook", () => {
 		let cached: Response | undefined;
 		const app = new Hono<AppServerEnv>()
 			.use(async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("X-Request-Id", context.req.header("X-Request-Id") ?? "");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("X-Request-Id", context.req.header("X-Request-Id") ?? "");
+					},
 				}),
 			)
 			// Why: a plugin that keeps the response after an inner hook copied it.
@@ -38,8 +46,12 @@ describe("withHeaderHook", () => {
 				cached = context.res;
 			})
 			.use(async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("X-Frame-Options", "DENY");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("X-Frame-Options", "DENY");
+					},
 				}),
 			)
 			.get("/", () => new Response(null, { status: 204 }));
@@ -61,8 +73,12 @@ describe("withHeaderHook", () => {
 						if (context.req.path === "/throws") {
 							throw new Error("The stage failed.");
 						}
-						return withHeaderHook(context, next, (response) => {
-							response.set("X-Frame-Options", "DENY");
+						return withHeaderHook({
+							context,
+							next,
+							hook: (response) => {
+								response.set("X-Frame-Options", "DENY");
+							},
 						});
 					},
 				},

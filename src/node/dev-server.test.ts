@@ -349,8 +349,12 @@ describe("devServerStage", () => {
 		const appPolicy: Plugin = {
 			name: "app-policy",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					response.set("Content-Security-Policy", "script-src 'self'");
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						response.set("Content-Security-Policy", "script-src 'self'");
+					},
 				}),
 		};
 		const app = createServer({
@@ -407,9 +411,13 @@ describe("devServerStage", () => {
 		const counted: Plugin = {
 			name: "counted",
 			middleware: async (context, next) =>
-				withHeaderHook(context, next, (response) => {
-					calls += 1;
-					response.set("X-Calls", String(calls));
+				withHeaderHook({
+					context,
+					next,
+					hook: (response) => {
+						calls += 1;
+						response.set("X-Calls", String(calls));
+					},
 				}),
 		};
 		const app = createServer({

@@ -115,6 +115,10 @@ export type {
 } from "./event-stream.js";
 export type {
 	//,
+	HeaderHookOptions,
+} from "./header-hook.js";
+export type {
+	//,
 	AccessLogOptions,
 } from "./plugins/access-log.js";
 export type {

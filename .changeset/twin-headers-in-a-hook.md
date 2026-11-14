@@ -15,8 +15,12 @@ middleware: async (c, next) => {
 
 // After
 middleware: async (c, next) =>
-	withHeaderHook(c, next, (headers) => {
-		const link = headers.get("Link");
+	withHeaderHook({
+		context: c,
+		next,
+		hook: (headers) => {
+			const link = headers.get("Link");
+		},
 	}),
 ```
 

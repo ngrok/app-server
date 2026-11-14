@@ -141,29 +141,33 @@ export function buildId({
 		etagPart: () => value,
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) =>
-			withBuiltInHeaderHook(context, next, (response) => {
-				const { path } = context.req;
-				const isRouter =
-					(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
-				const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
-				// Why remove the build of an upstream API: the client must read only this app's build.
-				const before = response.get("Server-Timing");
-				const stamp = isStamped && timing != null ? timing : "";
-				// Why no parse with no header: most responses have none, so they have no metric to keep.
-				const metrics =
-					before == null
-						? stamp
-						: [...otherMetrics(before), ...(stamp === "" ? [] : [stamp])].join(", ");
-				if (metrics === "") {
-					response.delete("Server-Timing");
-				} else if (metrics !== before) {
-					response.set("Server-Timing", metrics);
-				}
-				if (isRouter && value != null) {
-					response.set(headerName, value);
-				} else {
-					response.delete(headerName);
-				}
+			withBuiltInHeaderHook({
+				context,
+				next,
+				hook: (response) => {
+					const { path } = context.req;
+					const isRouter =
+						(response.get("Content-Type")?.startsWith("text/html") ?? false) || isDataRequest(path);
+					const isStamped = isRouter || (paths?.(path) === true && !isReusable(response));
+					// Why remove the build of an upstream API: the client must read only this app's build.
+					const before = response.get("Server-Timing");
+					const stamp = isStamped && timing != null ? timing : "";
+					// Why no parse with no header: most responses have none, so they have no metric to keep.
+					const metrics =
+						before == null
+							? stamp
+							: [...otherMetrics(before), ...(stamp === "" ? [] : [stamp])].join(", ");
+					if (metrics === "") {
+						response.delete("Server-Timing");
+					} else if (metrics !== before) {
+						response.set("Server-Timing", metrics);
+					}
+					if (isRouter && value != null) {
+						response.set(headerName, value);
+					} else {
+						response.delete(headerName);
+					}
+				},
 			}),
 	});
 }

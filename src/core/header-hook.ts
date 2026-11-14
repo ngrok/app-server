@@ -73,6 +73,16 @@ function responseHeaders(context: Context<AppServerEnv>): ResponseHeaders {
  */
 type HookList = HeaderHook[] & { builtIn?: number };
 
+/** Options for {@link withHeaderHook}. */
+export type HeaderHookOptions = {
+	/** The context of the stage. */
+	context: Context<AppServerEnv>;
+	/** The `next` of the stage. */
+	next: Next;
+	/** Changes the response headers where the response leaves. */
+	hook: HeaderHook;
+};
+
 /**
  * Runs `hook` on the response headers after the later stages. In an app
  * server, the hook changes the head once, where the response leaves, so the
@@ -85,22 +95,22 @@ type HookList = HeaderHook[] & { builtIn?: number };
  * @example
  * const frameOptions: Plugin = {
  * 	name: "frame-options",
- * 	middleware: async (c, next) =>
- * 		withHeaderHook(c, next, (response) => {
- * 			response.set("X-Frame-Options", "DENY");
+ * 	middleware: async (context, next) =>
+ * 		withHeaderHook({
+ * 			context,
+ * 			next,
+ * 			hook: (response) => {
+ * 				response.set("X-Frame-Options", "DENY");
+ * 			},
  * 		}),
  * };
  */
 // oxlint-disable-next-line typescript/promise-function-async -- nothing here throws before `next()`, and an `async` function adds a promise to each stage with a hook.
-export function withHeaderHook(
-	context: Context<AppServerEnv>,
-	next: Next,
-	hook: HeaderHook,
-): Promise<void> {
+export function withHeaderHook({ context, next, hook }: HeaderHookOptions): Promise<void> {
 	const server: Context<ServerEnv> = context;
 	const hooks = server.get("headerHooks");
 	if (hooks == null) {
-		return hookAfter(context, next, hook);
+		return hookAfter({ context, next, hook });
 	}
 	hooks.push(hook);
 	return next();
@@ -113,20 +123,20 @@ export function withHeaderHook(
  * `Content-Encoding` or `Content-Range`. So a stage runs no view for it.
  *
  * @example
- * withBuiltInHeaderHook(context, next, (headers) => {
- * 	headers.set("X-Robots-Tag", "noindex, nofollow");
+ * withBuiltInHeaderHook({
+ * 	context,
+ * 	next,
+ * 	hook: (headers) => {
+ * 		headers.set("X-Robots-Tag", "noindex, nofollow");
+ * 	},
  * });
  */
 // oxlint-disable-next-line typescript/promise-function-async -- nothing here throws before `next()`, and an `async` function adds a promise to each stage with a hook.
-export function withBuiltInHeaderHook(
-	context: Context<AppServerEnv>,
-	next: Next,
-	hook: HeaderHook,
-): Promise<void> {
+export function withBuiltInHeaderHook({ context, next, hook }: HeaderHookOptions): Promise<void> {
 	const server: Context<ServerEnv> = context;
 	const hooks: HookList | undefined = server.get("headerHooks");
 	if (hooks == null) {
-		return hookAfter(context, next, hook);
+		return hookAfter({ context, next, hook });
 	}
 	hooks.builtIn = (hooks.builtIn ?? 0) + 1;
 	hooks.push(hook);
@@ -134,11 +144,7 @@ export function withBuiltInHeaderHook(
 }
 
 /** {@link withHeaderHook} outside an app server, such as in a plain Hono app, where nothing runs the hook later. */
-async function hookAfter(
-	context: Context<AppServerEnv>,
-	next: Next,
-	hook: HeaderHook,
-): Promise<void> {
+async function hookAfter({ context, next, hook }: HeaderHookOptions): Promise<void> {
 	await next();
 	hook(responseHeaders(context));
 }

@@ -79,9 +79,9 @@ describe("createEntry", () => {
 			framework: () => stubFramework(),
 		});
 
-		const response = await entry.fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
-			next(),
-		);
+		const response = await entry.fetchDev(new Request("http://localhost/"), {
+			devServer: async (_, next) => next(),
+		});
 
 		await expect(response.text()).resolves.toBe("rendered");
 	});
@@ -97,9 +97,9 @@ describe("createEntry", () => {
 				framework: () => stubFramework(),
 			});
 
-		const page = await entry().fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
-			next(),
-		);
+		const page = await entry().fetchDev(new Request("http://localhost/"), {
+			devServer: async (_, next) => next(),
+		});
 		await page.text();
 
 		expect(written()).toStrictEqual([
@@ -144,11 +144,9 @@ describe("createEntry", () => {
 		const built = await entry([accessLog()]).fetch(new Request("http://localhost/about"), {});
 		await built.text();
 		const production = { kept: [...kept], written: [...written] };
-		const page = await entry([accessLog(), assets()]).fetchDev(
-			new Request("http://localhost/"),
-			{},
-			async (_, next) => next(),
-		);
+		const page = await entry([accessLog(), assets()]).fetchDev(new Request("http://localhost/"), {
+			devServer: async (_, next) => next(),
+		});
 		await page.text();
 		const development = { kept: [...kept], written: written.slice(1) };
 		await expect(entry([fails]).start()).rejects.toThrow("config server down");
@@ -176,9 +174,9 @@ describe("createEntry", () => {
 			framework: () => stubFramework(),
 		});
 
-		const page = await entry.fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
-			next(),
-		);
+		const page = await entry.fetchDev(new Request("http://localhost/"), {
+			devServer: async (_, next) => next(),
+		});
 		await page.text();
 
 		expect(lines).toStrictEqual([expect.stringMatching(/^request /u)]);
@@ -195,7 +193,7 @@ describe("createEntry", () => {
 		const devServer = async () => new Response("export {};");
 
 		await expect(
-			entry.fetchDev(new Request("http://localhost/@vite/client"), {}, devServer),
+			entry.fetchDev(new Request("http://localhost/@vite/client"), { devServer }),
 		).rejects.toThrow(
 			"No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.",
 		);
@@ -222,11 +220,9 @@ describe("createEntry", () => {
 				host: nodeHost,
 				framework: () => stubFramework(),
 			});
-			const response = await entry.fetchDev(
-				new Request("http://localhost/@vite/client"),
-				{},
+			const response = await entry.fetchDev(new Request("http://localhost/@vite/client"), {
 				devServer,
-			);
+			});
 
 			await expect(response.text()).resolves.toBe("export {};");
 		}
@@ -246,8 +242,7 @@ describe("createEntry", () => {
 
 		const response = await entry.fetchDev(
 			new Request("http://localhost/docs", { headers: { Accept: "text/markdown" } }),
-			{},
-			async (_, next) => next(),
+			{ devServer: async (_, next) => next() },
 		);
 
 		await expect(response.text()).resolves.toBe("# Twin");
@@ -262,11 +257,9 @@ describe("createEntry", () => {
 		});
 
 		for (const path of ["/", "/about", "/docs"]) {
-			const response = await entry.fetchDev(
-				new Request(`http://localhost${path}`),
-				{},
-				async (_, next) => next(),
-			);
+			const response = await entry.fetchDev(new Request(`http://localhost${path}`), {
+				devServer: async (_, next) => next(),
+			});
 			await response.text();
 		}
 
@@ -278,11 +271,10 @@ describe("createEntry", () => {
 		app.get("/address", (context) => context.text(context.get("clientAddress") ?? "none"));
 		const entry = createEntry({ app, host: nodeHost, framework: () => stubFramework() });
 		const address = async (remoteAddress: string) => {
-			const response = await entry.fetchDev(
-				new Request("http://localhost/address"),
-				{ remoteAddress },
-				async (_, next) => next(),
-			);
+			const response = await entry.fetchDev(new Request("http://localhost/address"), {
+				bindings: { remoteAddress },
+				devServer: async (_, next) => next(),
+			});
 			return response.text();
 		};
 
@@ -300,7 +292,7 @@ describe("createEntry", () => {
 			framework: () => stubFramework(),
 		});
 		const request = async () =>
-			entry.fetchDev(new Request("http://localhost/"), {}, async (_, next) => next());
+			entry.fetchDev(new Request("http://localhost/"), { devServer: async (_, next) => next() });
 
 		await expect(request()).rejects.toThrow("config server down");
 		const response = await request();
@@ -323,9 +315,9 @@ describe("createEntry", () => {
 
 		await production.start();
 		const built = await fetch()?.(new Request("http://localhost/"), {});
-		const dev = await development.fetchDev(new Request("http://localhost/"), {}, async (_, next) =>
-			next(),
-		);
+		const dev = await development.fetchDev(new Request("http://localhost/"), {
+			devServer: async (_, next) => next(),
+		});
 
 		expect(built?.headers.get("X-Build-Id")).toBe("b42");
 		expect(dev.headers.get("X-Build-Id")).toBeNull();
@@ -369,9 +361,9 @@ describe("createEntry", () => {
 			const { snapshot } = files;
 			return {
 				stat: files.stat,
-				open: async (path, range) => {
-					opened.push([path, range]);
-					return files.open(path, range);
+				open: async (path, options) => {
+					opened.push([path, options?.range]);
+					return files.open(path, options);
 				},
 				...(snapshot == null ? {} : { snapshot: async () => recording(await snapshot()) }),
 			};

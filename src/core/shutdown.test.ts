@@ -60,7 +60,7 @@ async function signalInDevelopment(
 	});
 	const entry = createEntry({ app, host, framework: () => stubFramework() });
 	await apps.serve(entry, async ({ fetchDev }) =>
-		fetchDev(new Request("http://localhost/"), {}, devServer),
+		fetchDev(new Request("http://localhost/"), { devServer }),
 	);
 	return signal;
 }

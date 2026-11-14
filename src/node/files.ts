@@ -179,8 +179,9 @@ export function nodeFiles(clientDirectory: string): StaticFiles {
 	};
 	const files: StaticFiles = {
 		stat: async (path) => fileInfo(await orMissing(stat(filePath(path)))),
-		open: async (path, range) => {
+		open: async (path, options) => {
 			const candidate = filePath(path);
+			const range = options?.range;
 			if (range != null && range.end - range.start < CHUNK_BYTES) {
 				return oneChunk(await readRange(candidate, range));
 			}
