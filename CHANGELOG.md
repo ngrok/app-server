@@ -1,5 +1,1132 @@
 # @ngrok/app-server
 
+## 0.5.0
+
+### Minor Changes
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Breaking changes to the build side of the package: the `/vite` and `/react-router` entries, and the adapter contracts `FrameworkBuild` and `HostBuild`. An app that uses `appServer()`, `node()`, `vercel()`, `reactRouterAdapter()`, and `tanstackStartAdapter()` as the README shows needs no change for them. One change reaches the environment of a deploy: see the first item.
+  
+  **A bad `TRUST_FORWARDED_PROTO` or `TRUSTED_PROXY_HOPS` now stops startup.** For a build with no `server.ts`, these variables set `trustForwardedProto` and `trustedProxyHops`. Before, `TRUST_FORWARDED_PROTO=true` left the option off with no error and no log line. Behind a proxy that ends TLS, the server then sent no `Strict-Transport-Security` header and gave the app an `http:` request URL. `TRUSTED_PROXY_HOPS=1e2` counted as 100 proxies, and `TRUSTED_PROXY_HOPS=abc` failed with a message about `trustedProxyHops` and `NaN`.
+  
+  - `TRUST_FORWARDED_PROTO` takes `1` or `0`.
+  - `TRUSTED_PROXY_HOPS` takes an integer of 0 or more.
+  - For each of them, no value and an empty value keep the default.
+  - Each other value stops startup with a message that names the variable, the value, and the fix. This includes a value with a space or a carriage return, such as `" 1"`, which `TRUSTED_PROXY_HOPS` took before. The message shows the value as JSON, so a hidden character shows as `"1\r"`.
+  
+  ```sh
+  # Before: the server starts, and does not trust X-Forwarded-Proto.
+  # After: the server stops with this message.
+  # TRUST_FORWARDED_PROTO must be "1" or "0", not "true". Set TRUST_FORWARDED_PROTO=1 to trust X-Forwarded-Proto, or remove the variable.
+  TRUST_FORWARDED_PROTO=true app-server serve
+  
+  # The fix: the server starts, and trusts X-Forwarded-Proto.
+  TRUST_FORWARDED_PROTO=1 app-server serve
+  ```
+  
+  Check the environment of each deploy of a build with no `server.ts` before you upgrade. This also applies to the vercel host: a bad value there fails the `cdnPages` step of the build, or each request to the function. In `app-server start`, the first request shows the message.
+  
+  **Four exports that only the package used are gone.**
+  
+  - `SERVER_ENTRY_ID` and `serverEntrySource` from `@ngrok/app-server/vite` have no replacement. The entry now exports only `appServer` and its types.
+  - `isServerBuild` from `@ngrok/app-server/react-router`: call `runtime()`, which throws for a module that is not a React Router server build.
+  - The type `AppServerContext` from `@ngrok/app-server/react-router`: use `RequestContext` from `@ngrok/app-server`, which is the same type.
+  
+  ```ts
+  // Before
+  import type { AppServerContext } from "@ngrok/app-server/react-router";
+  
+  // After
+  import type { RequestContext } from "@ngrok/app-server";
+  ```
+  
+  `app-server serve` with a module that is not a server build still stops at startup. Its message is now `The server module is not a React Router server build.`
+  
+  **`FrameworkBuild` and `HostBuild` have no `name`.** No log and no error read it. Delete `name` from the object of a custom adapter. TypeScript reports each one in a typed object literal.
+  
+  **`HostBuild` has no `entryFileName`.** The server entry is `app-server.js` in the server build on each host, which is where `app-server serve` looks for it. `node()` and `vercel()` gave that name already. A custom host that gave another name now gets `app-server.js`, also in plain JavaScript, where no type error shows it. Such a host must read `entryFile` in its `output`, or write its own file there, as `vercel()` writes `vercel-function.js`.
+  
+  A custom host before and after these two changes:
+  
+  ```ts
+  // Before
+  appServer({ host: { name: "edge", runtimeModule: "edge-host", entryFileName: "app-server.js" } });
+  
+  // After
+  appServer({ host: { runtimeModule: "edge-host" } });
+  ```
+  
+  **`FrameworkBuild` has no `validate`.** The `appServer` plugin now checks Vite's `base` itself, for each framework adapter. Before, each adapter of the package made the check, so a custom adapter with no `validate` built with a `base` other than `/`, and the server then served at `/` only. Such a build now fails with `@ngrok/app-server serves a build at "/" only`. The plugin no longer calls `validate`, also in plain JavaScript, where no type error shows it. To check the Vite config, add a Vite plugin with a `configResolved` hook.
+  
+  ```ts
+  // Before
+  appServer({ framework: { ...adapter, validate: (config) => check(config) } });
+  
+  // After
+  plugins: [{ name: "my-check", configResolved: (config) => check(config) }, appServer({ framework: adapter })];
+  ```
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Breaking changes to the install and to the contracts of a plugin, a host adapter, and a listener. The first change is for each app. The others are for an app with a plugin that logs in `setup`, a host or a listener of its own, or an import of a removed export.
+  
+  **`hono` is a peer dependency (`^4.13.16`), not a dependency.** The app and the package now share one copy of Hono, and the server runs on the app's version. Before, the package had its own copy at one pinned version (4.13.14 in 0.4.1), and an app with another version got a second copy. TypeScript then refused a middleware of the app's copy, such as `cors()` from `hono/cors`, as the `middleware` of a plugin, and it refused `app.route("/api", new Hono())`.
+  
+  The install line of the README stays `pnpm add -E @ngrok/app-server hono`. The app must have `hono` 4.13.16 or later:
+  
+  ```sh
+  # An app with no `hono` of its own, or with `hono` below 4.13.16
+  pnpm add -E hono
+  ```
+  
+  pnpm, npm, and Bun install a peer that the app does not have. Yarn does not, and pnpm with `auto-install-peers=false` does not.
+  
+  We measured an empty app with the install line of the README, when the latest Hono was 4.13.18 and the package pinned 4.13.16. The app had 2 versions of Hono and 3 type errors before, and it has 1 version and 0 errors now. The server build of a React Router app whose `server.ts` imports `cors()` held two copies of Hono before, and it holds one now: the JavaScript in `build/server` goes from 1,821,793 to 1,761,656 bytes.
+  
+  **`info.logger` in the `setup` of a plugin is a logger with one method for each level**, as `logger()` and `c.get("logger")` are. Before, it was the sink. TypeScript reports each call. In JavaScript, the old call throws when it runs.
+  
+  ```ts
+  // Before
+  info.logger.log({ level: "warn", message: "cache is cold", attributes: { "cache.entries": 0 } });
+  // After
+  info.logger.warn("cache is cold", { "cache.entries": 0 });
+  ```
+  
+  **`HostRuntime` and `Listener` have no `name`.** No log and no error read it. Delete `name` from a host or a listener of your own. TypeScript reports each one.
+  
+  ```ts
+  // Before
+  const listener: Listener = { name: "unix", start };
+  // After
+  const listener: Listener = { start };
+  ```
+  
+  **`HostRuntime.listeners` is a list, not a function**, as the `listeners` option of `createServer` is. TypeScript reports the old form. In JavaScript, a host that still gives a function fails at start with `This app server has no listener`. The docs of `HostRuntime.lifecycle` now say that a host with `listeners` must give a lifecycle, else a stop signal ends the process with no drain.
+  
+  ```ts
+  // Before
+  export const host: HostRuntime = { files, listeners: () => [tcp()], lifecycle };
+  // After
+  export const host: HostRuntime = { files, listeners: [tcp()], lifecycle };
+  ```
+  
+  **`@ngrok/app-server` no longer exports `PUBLIC_ENV_SCRIPT_ID`, `RunningServer`, and `FrameworkRuntimeFactory`.** No public function used the two types. Browser code could not import the constant, because the import pulled the server into the client bundle.
+  
+  - For `PUBLIC_ENV_SCRIPT_ID`, write the ID: `document.getElementById("app-server-public-env")`.
+  - For `FrameworkRuntimeFactory`, declare the function: `runtime(serverModule: unknown, options: { mode: Mode }): FrameworkRuntime`. Add the fields of your `runtimeOptions` to `options`.
+  - `RunningServer` has no replacement.
+  
+  **`@ngrok/app-server/node` no longer exports `devServerStage`, `DevServerStageOptions`, and `NodeMiddleware`.** Only `app-server start` used them, and they have no replacement. A server build on the node host holds the code of each export of this module, so it loses the dev server stage and the script hash code. A build on the vercel host does not change.
+  
+  - Without them, the module in a server build is about 9 kB smaller before minification, and about 3 kB smaller with gzip.
+  - The module no longer loads `node:http` and `node:crypto` at import. On Bun 1.3.14, the import of the module takes about 8.4 ms, not 12.7 ms. On Deno 2.9.8, it takes about 14.6 ms, not 18.7 ms.
+  - On Node.js, the time to `listening` does not change, because the listener of `tcp()` loads `node:http` when it starts.
+  
+  We measured a Vite SSR bundle of `import * as hostModule from "@ngrok/app-server/node"` with `ssr.noExternal`, as the generated server entry imports it. For the time, a new process imported the bundle. Each time is the median of 40 interleaved runs after 5 warm-up rounds, on an Apple M3 Max.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The options of the plugins get one name for each job, and a bad value or a bad plugin list now stops startup. Each breaking change has a before and an after.
+  
+  Breaking change: the option that names the build header is now `headerName` in `buildId()`, `staleBuildReactRouter()`, and `staleBuildTanStack()`, as in `requestId()`. Before, it was `header`. JavaScript ignores the old name with no error, and the server then sends `X-Build-Id` again.
+  
+  ```ts
+  // Before
+  defaultPlugins({ buildId: { header: "X-App-Build" } });
+  staleBuildReactRouter({ header: "X-App-Build" });
+  staleBuildTanStack(router, { header: "X-App-Build" });
+  
+  // After
+  defaultPlugins({ buildId: { headerName: "X-App-Build" } });
+  staleBuildReactRouter({ headerName: "X-App-Build" });
+  staleBuildTanStack(router, { headerName: "X-App-Build" });
+  ```
+  
+  Breaking change, for a listener that writes each response itself: `ResponseEdge.close` now takes one object, so the call says what each value is. Before, it took three positional values. JavaScript gives no error for the old call: the access log line then has no status.
+  
+  ```ts
+  // Before
+  edge.close(status, aborted, head);
+  
+  // After
+  edge.close({ status, aborted, head });
+  ```
+  
+  The object costs about 60 bytes of heap for each response on Node.js and Vercel, and no time that the benchmark shows. Measured on Node.js 26.13 on an Apple M3 Max, with the built `ResponseEdge` of one build and only the `close` line changed: one edge for one response (`new`, `claim`, `useHeaders`, `onSent`, `close`) takes 36.2 ns before and 35.5 ns after, and 956 bytes of heap before against 1,015 bytes after. Each number is the median of 5 runs in turn, and each run is the median of 9 rounds of 3,000,000 edges. Three sets of runs gave a cost from 56 to 64 bytes. For scale, one `/ping` request through `defaultPlugins()` allocates about 38,700 bytes.
+  
+  Breaking change: `health()` now stops startup for a `livePath` or a `readyPath` that does not start with `/` or that has `?` or `#`, and for one path for both probes. Before, such a path never answered, because a request path starts with `/` and has no query and no fragment. One path for both probes always answered 200, so `ready` never ran, and the path did not answer 503 at shutdown. The check also finds one option that has the default of the other, such as `readyPath: "/livez"`. For a platform with one health URL, set only `readyPath`.
+  
+  ```ts
+  // Before
+  defaultPlugins({ health: { livePath: "/healthz", readyPath: "/healthz", ready } });
+  
+  // After
+  defaultPlugins({ health: { readyPath: "/healthz", ready } });
+  ```
+  
+  The error names the option, the value, and the fix:
+  
+  ```
+  health needs a livePath and a readyPath that differ. Both are "/healthz", so the readiness check would never run. For one health URL, set only readyPath.
+  ```
+  
+  Breaking change: a header name or a header value in an option that no header can hold now stops startup. Before, the server started, and each response that got the header was a 500, while `/livez` and `/readyz` answered 200. The log line did not name the option. The checks cover `headerName` of `requestId()` and `buildId()`, `value` of `buildId()`, `unlessHeader` of `noindex()`, and each value of `securityHeaders({ headers })`. A value can hold a tab and each character from U+0020 to U+00FF except U+007F, so a value such as `café` still works.
+  
+  ```ts
+  // Before: the server started, and each page answered 500.
+  defaultPlugins({ buildId: { value: "v42\n" } });
+  defaultPlugins({ securityHeaders: { headers: { "Content-Security-Policy": "frame-ancestors ‘none’" } } });
+  
+  // After: remove the line break, and use the ASCII quote.
+  defaultPlugins({ buildId: { value: "v42" } });
+  defaultPlugins({ securityHeaders: { headers: { "Content-Security-Policy": "frame-ancestors 'none'" } } });
+  ```
+  
+  An empty `unlessHeader` also stops startup now. Before, `noindex({ unlessHeader: "" })` started and set no `X-Robots-Tag` on any response, so a search engine could index a preview deploy. Give the header a name, or use `noindex: true`.
+  
+  ```ts
+  // Before
+  defaultPlugins({ noindex: { unlessHeader: process.env.EDGE_HEADER ?? "" } });
+  
+  // After
+  defaultPlugins({ noindex: process.env.EDGE_HEADER ? { unlessHeader: process.env.EDGE_HEADER } : true });
+  ```
+  
+  The error names the option, the value, and the fix:
+  
+  ```
+  The value of buildId must be a value that a header can hold, not "v42\n". Remove each control character, such as a line break, and each character above U+00FF.
+  ```
+  
+  Breaking change: a second plugin of the options `requestId`, `accessLog`, `securityHeaders`, `bodyLimit`, `trailingSlash`, or `prerendered` of `defaultPlugins()` now stops startup, as a second `health`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` plugin already did. Before, the server started, and the two copies did not act as one. For example, a second `bodyLimit()` with a higher limit changed nothing, a second `trailingSlash()` in another mode sent each page into a redirect loop, and a second `accessLog()` wrote two lines for each request. A second `redirects()` still starts, because a second table is valid. Use the option:
+  
+  ```ts
+  // Before
+  createServer({ plugins: [...defaultPlugins(), bodyLimit({ maxBytes: 52_428_800 })] });
+  
+  // After
+  createServer({ plugins: defaultPlugins({ bodyLimit: 52_428_800 }) });
+  ```
+  
+  Two lists that worked before now also stop startup. A second `bodyLimit()` with a lower limit: set the `bodyLimit` option to the lower limit. A second `prerendered()` for the paths that the first one skips: use one `prerendered`, whose `skip`, `rewrite`, `headers`, and `cacheControl` decide by path. To put your own copy of a plugin at another place, turn the option off with `false`, or filter the default out of the list:
+  
+  ```ts
+  createServer({
+  	plugins: [...defaultPlugins().filter((plugin) => plugin.name !== "access-log"), accessLog()],
+  });
+  ```
+  
+  Breaking change: a plugin of the options `securityHeaders`, `noindex`, `buildId`, `contentSecurityPolicy`, or `env` that comes after `prerendered()` in the plugin list now stops startup. Before, the server started, and each prerendered page went out with no CSP, no `X-Robots-Tag`, no build ID, or no public `runtimeEnv` values, while each rendered page had them. Development serves no prerendered page, so only production showed the failure. The check does not read the build, so such a list also stops startup for an app with no prerendered page. Use the option, or put the plugin before `prerendered()`, such as in `beforeStatic`:
+  
+  ```ts
+  // Before
+  createServer({ plugins: [...defaultPlugins(), contentSecurityPolicy({ policy }), noindex(), env] });
+  
+  // After
+  createServer({
+  	plugins: defaultPlugins({ contentSecurityPolicy: { policy }, noindex: true, env }),
+  });
+  ```
+  
+  The error names the plugin, the option, and the other way out:
+  
+  ```
+  The noindex plugin comes after prerendered(), so the prerendered pages do not get it. Set the "noindex" option of defaultPlugins(), or put the plugin before prerendered().
+  ```
+  
+  Breaking change: when `prerendered({ cacheControl })` gives `undefined` for a file, the file now gets the default `Cache-Control`. Before, it got none, so a function that set a value for some files took the default off each other file, and each CDN then used its own rules for them. The example of the option did that:
+  
+  ```ts
+  prerendered({
+  	cacheControl: (file) => (file.startsWith("/images/") ? "public, max-age=86400" : undefined),
+  });
+  // Before: `/about`, `/about.data`, and `/llms.txt` had no `Cache-Control`.
+  // After: `/about` and `/about.data` have `public, max-age=0, must-revalidate`, and `/llms.txt` has
+  // `public, max-age=3600, stale-while-revalidate=86400`.
+  ```
+  
+  `cacheControl: () => undefined` no longer removes the header. To send no `Cache-Control`, delete it in a header hook of a plugin before the static stages. A prerendered file behind an auth check still needs `Cache-Control: private` from the auth plugin.
+  
+  ```ts
+  // Before
+  defaultPlugins({ prerendered: { cacheControl: () => undefined } });
+  
+  // After
+  const noCacheControl: Plugin = {
+  	name: "no-cache-control",
+  	middleware: async (c, next) =>
+  		withHeaderHook({
+  			context: c,
+  			next,
+  			hook: (response) => {
+  				if (isClientBuildFile(c.req.path)) {
+  					response.delete("Cache-Control");
+  				}
+  			},
+  		}),
+  };
+  defaultPlugins({ beforeStatic: [noCacheControl] });
+  ```
+  
+  `isClientBuildFile` stands for the app's own test of the path. Without it, the hook also removes the header of each rendered page.
+  
+  Breaking change: `redirects` now stops startup for a `from` that no request path can equal: one with a query, a fragment, a dot segment, or a character that is not percent-encoded, such as a space or `é`. It also stops startup for a segment of `from` that starts with `:` or has `*` and is not `:name` or `*`, such as `:id?`, `:slug*`, `(.*)`, and `*.html`. Before, each of these rules started, and its old URL got the framework's 404. A rule matches the path only, so a rule cannot select one query.
+  
+  ```ts
+  // Before: each rule started and never matched.
+  redirects([
+  	{ from: "/café", to: "/cafe" },
+  	{ from: "/old?page=1", to: "/new" },
+  	{ from: "/blog/:slug*", to: "/articles/:slug" },
+  ]);
+  
+  // After
+  redirects([
+  	{ from: "/caf%C3%A9", to: "/cafe" },
+  	{ from: "/old", to: "/new" },
+  	{ from: "/blog/*", to: "/articles/*" },
+  ]);
+  ```
+  
+  A literal segment that starts with `:` or has `*`, such as `/files/:1` or `/a*b`, did redirect before. It also stops startup now, and it has no form in a rule. Answer such a path with a route of the app.
+  
+  The error names the rule and the fix:
+  
+  ```
+  The redirect from /café can never match. A rule matches the path only. Write it percent-encoded, with no query and no fragment: /caf%C3%A9.
+  ```
+  
+  Breaking change: `runtimeEnv(schema, { publicPrefix: "" })` now throws. Before, an empty prefix made each value public, so the server wrote each value, secrets included, into each HTML document. Set a prefix of one character or more, and give each public value a name with that prefix.
+  
+  ```ts
+  // Before: `SESSION_KEY` went into each HTML document.
+  runtimeEnv(z.object({ API_URL: z.url(), SESSION_KEY: z.string() }), { publicPrefix: "" });
+  
+  // After
+  runtimeEnv(z.object({ PUBLIC_API_URL: z.url(), SESSION_KEY: z.string() }));
+  ```
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Breaking change: `appServer({ app })` with a path to no module now stops `app-server start` when it starts, with an error that names the path and the Vite root:
+  
+  ```
+  @ngrok/app-server found no module at /app/srever.ts for the `app` option. Give a path from the Vite root, /app.
+  ```
+  
+  Before, `start` printed its URLs, and then each request got a 500 with `Failed to load url … in virtual:@ngrok/app-server/entry`. A build already failed for such a path, and it now fails with the same error. A path with no extension, such as `app: "server"`, still works.
+  
+  ```ts
+  // Before: `start` printed its URLs, and each request got a 500.
+  // After: `start` stops with the error.
+  appServer({ app: "./srever.ts" });
+  
+  // The fix: give the path of the module.
+  appServer({ app: "./server.ts" });
+  ```
+  
+  If you start `app-server start` before the app module exists, start it again after you make the file.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - In `app-server start`, an app with no `logger` option now writes its log lines, such as `request` and `unhandled error`, in the text format of Go's `log/slog`, as the other lines of `start` do. Before, those lines were JSON between the text lines of Vite and of `start`.
+  
+  ```
+  time=2026-11-13T23:03:26.685Z level=INFO msg=request http.request_id=c6cb08cb-7c9b-42ee-970d-cd6a70d3f562 http.method=GET http.url_details.path=/ http.url=/ http.status_code=200 http.useragent=curl/8.7.1 network.client.ip=::1 network.bytes_written=8 duration=4926083
+  ```
+  
+  Breaking change: a tool that reads the lines of `app-server start` as JSON no longer gets JSON from an app with no `logger` option. For JSON in development too, give `logger: jsonSink()`.
+  
+  ```ts
+  // Before: JSON lines in development and in production.
+  createServer({ plugins: defaultPlugins() });
+  
+  // After: for JSON lines in development too.
+  createServer({ plugins: defaultPlugins(), logger: jsonSink() });
+  ```
+  
+  An app that gives `logger` does not change, and production still writes JSON. A line that module code writes with `logger()` before the first request is still JSON. As in JSON, a line has no field for an attribute that is `undefined`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - In `app-server start`, a plugin list with no `assets()` now fails each request with this error:
+  
+  ```
+  No plugin runs the dev server, so Vite serves no source module, HMR client, or CSS. Add assets() to the plugin list.
+  ```
+  
+  Before, the page rendered, but each request for a Vite module, the HMR client, or a CSS file got the 404 of the framework, with no log line that said why. `assets()` is the plugin that runs Vite in development.
+  
+  This is a breaking change for an app that gives its own plugin list with no `assets()`, such as `defaultPlugins().filter((plugin) => plugin.name !== "assets")`. Add `assets()` to the list:
+  
+  ```ts
+  // Before
+  createServer({ plugins: [requestId(), accessLog(), prerendered()] });
+  
+  // After
+  createServer({ plugins: [requestId(), accessLog(), assets(), prerendered()] });
+  ```
+  
+  A plugin of your own that reads `info.devServer` in its `setup` and runs it also passes. `defaultPlugins()` has `assets()`, and production does not change. A test that calls `fetchDev` of a server entry needs the same change.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The node host now drains after an uncaught error, then exits with code 1. An uncaught error is an error that no code catches, such as a rejected promise with no handler in a route. Before, the runtime stopped the process at once: each open request lost its connection, and the log had no line for the error, only the runtime's text on standard error (stderr).
+  
+  - The server logs one error line, `uncaught exception`, with the fields of the error. `app_server.origin` is `uncaughtException` or `unhandledRejection`. On Node.js, the line also has the fields of the request that the error came from, such as `http.request_id`.
+  - The server then stops as it does on `SIGTERM`: `/readyz` answers 503, the server waits for `shutdownDelayMs`, and it drains until `shutdownDeadlineMs`. So the exit comes later than before, by up to the sum of the two times.
+  - The exit code is still 1. The server drains for the first uncaught error only: a later one can stop the process at once, as before.
+  - An app's own `unhandledRejection` listener still handles a rejected promise on each runtime. The server then logs no line and does not stop.
+  
+  This applies to `app-server serve` and `node build/server/app-server.js` on Node.js, Bun, and Deno. `app-server start` and the vercel host do not change.
+  
+  Breaking change: an app's own `uncaughtException` listener no longer keeps the process up. Before, a process with such a listener stayed up after an uncaught error. Now the listener still runs, and then the server drains and the process exits with code 1. On Deno, the same is true for a web `error` listener that calls `preventDefault()`. No option keeps the process up, so run the server under a process manager that starts a new process, such as Kubernetes or systemd.
+  
+  Measured on Node.js 26.13, Bun 1.3.14, and Deno 2.9.8, with two runs for each runtime before and after: a 400 ms request was open when a route left a rejected promise with no handler. Before, the open request failed on each runtime, and the process exited 8 to 9 ms after the error, with 13 to 18 lines on stderr. Now the open request completes on each runtime, and the process exits with code 1 after 357 to 360 ms, with one JSON error line and no line on stderr.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - **Breaking:** `eventStream()` takes `produce` first and its options last, and `send()` returns a promise that an app can await.
+  
+  - `send()` resolves when the client has read the earlier events down to 64 KiB of unread bytes, or when the stream ends. It never rejects. A producer that awaits it slows down for a slow client, so the server keeps little in memory. Before, the events that a client did not read stayed in memory with no limit.
+  - A stream with more than 1 MiB of unread bytes stops: the response fails, and the producer's `signal` aborts with an error that says `Await send()`. Only a producer that does not await `send()` gets there.
+  - The heartbeat skips a ping while the client has unread events.
+  
+  Before:
+  
+  ```ts
+  return eventStream({ signal: request.signal }, async ({ send, signal }) => {
+  	for await (const update of watch({ signal })) {
+  		send({ data: JSON.stringify(update) });
+  	}
+  });
+  ```
+  
+  After:
+  
+  ```ts
+  return eventStream(
+  	async ({ send, signal }) => {
+  		for await (const update of watch({ signal })) {
+  			await send({ data: JSON.stringify(update) });
+  		}
+  	},
+  	{ signal: request.signal },
+  );
+  ```
+  
+  With no options, `eventStream({}, produce)` is now `eventStream(produce)`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `eventStream()` now throws a `RangeError` for a `heartbeatMs` that a timer cannot hold: `NaN`, a value under 1, or a value over 2,147,483,647. The message names the value. Before, the timer turned such a value into 1 ms with no error. Each open stream then sent a `: ping` comment each millisecond: about 90 comments in 100 ms, in a test on Node.js 26.13.
+  
+  Breaking change: a route that passes such a value now throws on each request. Before, it sent its stream. `0` and `Infinity` are such values, and they never turned the heartbeat off. Pass a value from 1 to 2,147,483,647. No value turns the heartbeat off, and the largest value is about 24.8 days.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `tcp({ idleTimeoutMs })` now takes a value above 299 s on Node.js, such as `620_000` behind a load balancer that keeps idle connections for 600 s. Before, such a value stopped startup with an error about `headersTimeout`. For such a value, the server also raises the request timeout of Node.js from 300 s to the idle timeout plus 1 s.
+  
+  `tcp()` now checks `idleTimeoutMs` when the app calls it. A value that is not an integer from 0 to 2147482647 throws an error that names the option and the value, on Node.js, Bun, and Deno.
+  
+  Breaking change: on Bun and Deno, a value that is not an integer from 0 to 2147482647 now stops startup. Before, Bun started with a value such as `Infinity`, `1.5`, or the string `"95000"`: it rounded the value up to whole seconds and used 255 s at most. Deno started with each value, because it does not use the option. Pass an integer from 0 to 2147482647. For example, change `idleTimeoutMs: Infinity` to `idleTimeoutMs: 255_000` on Bun, and change a string from the environment to a number. On Node.js, such a value already stopped startup.
+  
+  The README and the JSDoc now say what each runtime does with the option: Node.js keeps an idle connection for this time. Bun counts whole seconds, 255 at most, and also closes a response that sends no bytes for this time. Deno has no idle timeout, so the option has no effect there.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - **Breaking:** the access line attribute `http.client_aborted` is now `http.aborted`. Why: the attribute is also `true` when the server stops the body, such as a body that fails after its first chunk, or a response that the drain deadline cuts. An operator who dropped these lines as client noise also dropped the responses that the server broke. A 5xx whose client left before the app answered logs as `499`, so that line still tells a client abort from a server fault.
+  
+  Before:
+  
+  ```txt
+  @http.client_aborted:true
+  ```
+  
+  After:
+  
+  ```txt
+  @http.aborted:true
+  ```
+  
+  Change each Datadog query, monitor, and dashboard that uses `@http.client_aborted`. A query on the old name finds nothing, with no error.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - **Breaking:** four public functions take named arguments: one object, or a subject and then one options object.
+  
+  - `withHeaderHook({ context, next, hook })` takes one object. The new type `HeaderHookOptions` names it.
+  - A host adapter's `files(...).open(path, { range })` takes `range` in an options object.
+  - `ResponseEdge.useHeaders({ base, headers })` takes one object.
+  - `AppServerEntry.fetchDev(request, { bindings, devServer })` takes an options object, and `bindings` is optional. The entry protocol is now 3, so the CLI refuses a build from an earlier version. Install the same version of `@ngrok/app-server` that the build uses.
+  
+  Before:
+  
+  ```ts
+  const frameOptions: Plugin = {
+  	name: "frame-options",
+  	middleware: async (c, next) =>
+  		withHeaderHook(c, next, (headers) => {
+  			headers.set("X-Frame-Options", "DENY");
+  		}),
+  };
+  
+  const files: StaticFiles = {
+  	stat,
+  	open: async (path, range) => read(path, range),
+  };
+  ```
+  
+  After:
+  
+  ```ts
+  const frameOptions: Plugin = {
+  	name: "frame-options",
+  	middleware: async (c, next) =>
+  		withHeaderHook({
+  			context: c,
+  			next,
+  			hook: (headers) => {
+  				headers.set("X-Frame-Options", "DENY");
+  			},
+  		}),
+  };
+  
+  const files: StaticFiles = {
+  	stat,
+  	open: async (path, options) => read(path, options?.range),
+  };
+  ```
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Breaking change: `@ngrok/app-server/node` no longer exports `nodeFiles` and `parsePort`. Only the package used them, and the server entry of each node-host build held their code.
+  
+  - For `nodeFiles(clientDirectory)`, use `host.files(clientDirectory)` from the same entry.
+  - `parsePort` has no replacement. `tcp()` reads and checks `PORT`.
+  
+  ```ts
+  // Before
+  import { nodeFiles } from "@ngrok/app-server/node";
+  const files = nodeFiles(clientDirectory);
+  
+  // After
+  import { host } from "@ngrok/app-server/node";
+  const files = host.files(clientDirectory);
+  ```
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `createServer` now stops startup for an entry of the plugin list that is not a plugin: a function, a list, a promise, or a value that is not an object. The `Plugin` type now rejects a function. Before, the compiler took a Hono middleware, or a plugin factory that the app did not call, as a plugin, and the server started and never ran it. For example, `defaultPlugins({ beforeStatic: [basicAuth({ username, password })] })` sent each page with no auth check.
+  
+  The error names the entry and the fix:
+  
+  ```
+  plugins[7] is the function basicAuth, not a plugin. Call a plugin factory, such as requestId(). Put a Hono middleware in a plugin, such as { name: "auth", middleware: basicAuth() }.
+  ```
+  
+  Breaking change: a Hono middleware in the plugin list now stops startup. Before, the server started and never ran the middleware. Put the middleware in a plugin.
+  
+  ```ts
+  // Before
+  defaultPlugins({ beforeStatic: [basicAuth({ username, password })] });
+  
+  // After
+  defaultPlugins({
+  	beforeStatic: [{ name: "auth", middleware: basicAuth({ username, password }) }],
+  });
+  ```
+  
+  Breaking change: a plugin factory that the app does not call now stops startup. Before, the server started without the plugin. Call the factory.
+  
+  ```ts
+  // Before
+  createServer({ plugins: [requestId, accessLog] });
+  
+  // After
+  createServer({ plugins: [requestId(), accessLog()] });
+  ```
+  
+  Breaking change: an entry that is not an object, such as `false` from `condition && plugin`, now stops startup. Before, the server skipped `false`, a string, or a number. To add a plugin on a condition, spread a list.
+  
+  ```ts
+  // Before
+  createServer({ plugins: [...defaultPlugins(), isDebug && debugHeaders] });
+  
+  // After
+  createServer({ plugins: [...defaultPlugins(), ...(isDebug ? [debugHeaders] : [])] });
+  ```
+  
+  Breaking change: a list of plugins as one entry, such as `defaultPlugins()` with no spread, now stops startup. Before, the server started and ran no plugin of that list. Spread the list.
+  
+  ```ts
+  // Before
+  createServer({ plugins: [defaultPlugins(), auth] });
+  
+  // After
+  createServer({ plugins: [...defaultPlugins(), auth] });
+  ```
+  
+  Breaking change: a promise of a plugin, such as the result of an `async` plugin factory with no `await`, now stops startup. Before, the server started without the plugin. Wait for the plugin.
+  
+  ```ts
+  // Before
+  defaultPlugins({ beforeStatic: [loadAuth()] });
+  
+  // After
+  defaultPlugins({ beforeStatic: [await loadAuth()] });
+  ```
+  
+  Breaking change: a function with a `middleware` field of its own now stops startup, as each function does. So does a plugin object that has a `then` function, because the server takes it as a promise. Before, the server ran the `middleware` of both. Give the plugin as an object with no `then` field.
+  
+  ```ts
+  // Before
+  const auth = Object.assign(() => {}, { middleware: basicAuth({ username, password }) });
+  
+  // After
+  const auth = { name: "auth", middleware: basicAuth({ username, password }) };
+  ```
+  
+  Breaking change for TypeScript: the `Plugin` type has a new `call?: never` field, which a function cannot meet. So the compiler also rejects a plugin object that has a `call` field. Give that field another name.
+  
+  A `plugins` option that is not a list, such as `defaultPlugins` with no call, stopped startup before too. Its error now names the fix.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A request no longer stays in memory for the life of a timer that it leaves, and the lists of a request that the server owns leave the public types. Both changes break a type. The first is for a host adapter of your own, and the second is for a plugin that read or set one of three context keys. An app on the node host or the vercel host that uses neither changes nothing.
+  
+  **A `RequestStore` holds a `RequestScope`, not the Hono context.** `RequestScope` is a new type export. A host passes it through and reads no field of it. TypeScript reports the old type. In JavaScript, a host needs no change.
+  
+  ```ts
+  // Before
+  import type { Context } from "hono";
+  import type { AppServerEnv } from "@ngrok/app-server";
+  const storage = new AsyncLocalStorage<Context<AppServerEnv>>();
+  // After
+  import type { RequestScope } from "@ngrok/app-server";
+  const storage = new AsyncLocalStorage<RequestScope>();
+  ```
+  
+  Why: Node.js keeps the stored value of the code that makes a timer until the timer fires. So a timer that a loader or an `entry.server` left, such as a render abort timer that the entry does not clear, kept the Hono context of its request, and with it Node's request and response, the `Response`, and each header hook. When the response is sent, the server now puts the request's values in the scope and lets go of the context.
+  
+  - `requestContext()` and `logger()` give the same values in work that the request started, also after the response is sent. The lines of that logger then carry the request fields (`http.request_id`, `http.method`, `http.url_details.path`, and the trace IDs) that the request had when the response ended. A logger that the app set with `c.set("logger", …)` stays.
+  - On Bun and Deno, a request of a plugin list with no `accessLog()` keeps its context as before. Why: their listeners do not tell the server when a response ends, and the server puts a stream around the body to see that end only for the access log.
+  
+  We measured a React Router page of the test fixture on the node host with the default plugins, on Node.js 26.13 and an Apple M3 Max, with the build before the change and the build after it in turn, 3 times each.
+  
+  - Each request that left a 60 s timer kept 10,107 bytes of heap before and keeps 529 bytes now. With no request storage, the timer alone keeps 149 bytes. We sent 20,000 requests with `oha -c 16` and read `heapUsed` after two garbage collections.
+  - With a 6 s timer for each request and 60,000 requests at about 5,200 requests each second, the peak `heapUsed` goes from 636 to 803 MB down to 152 to 182 MB, and the peak resident set size (RSS) from 975 to 1,132 MB down to 412 to 445 MB. The time in minor garbage collections goes from 562 to 615 ms down to 299 to 308 ms, and the CPU time of the server for each request from 292 to 309 microseconds down to 269 to 278.
+  - With no timer, the same load shows no change in 2 rounds: 265 to 268 microseconds of CPU time for each request before, and 266 to 268 now.
+  - A request with a stub framework, which takes 3 to 12 microseconds, is at most 4% slower, and this benchmark cannot tell that from its noise. We sent requests in one process through the built pipeline, the two builds in turn, 41 rounds of 30,000 requests, 3 times. The median ratio of the time after to the time before was 1.00 with no plugin, 1.02 to 1.04 with the default plugins, and 1.00 to 1.03 with a response edge, as the node listener gives it. Two copies of the build before gave 0.99 to 1.02 and 0.94 to 1.00 for the last two cases.
+  
+  The wrapper that runs each request in the request storage also makes one promise less for each request. In a micro benchmark of the wrapper alone, a call takes 307 ns, not 327 ns (15 interleaved rounds of 300,000 calls, 3 repeats). The time of a full request does not show it.
+  
+  **`AppServerEnv["Variables"]` no longer has `etagParts`, `headerHooks`, and `sentReports`.** The server owns these lists. A plugin that set one of them replaced the list that the server reads: after `c.set("headerHooks", [])`, a rendered page lost `Cache-Control: private, no-cache`, and after `c.set("sentReports", [])`, the request got no access log line. TypeScript now reports a `c.get` or a `c.set` of the three keys. The server runs the same code as before, so a JavaScript plugin can still set them, and must not.
+  
+  ```ts
+  // Before
+  const frameOptions: Plugin = {
+  	name: "frame-options",
+  	middleware: async (c, next) => {
+  		c.get("headerHooks")?.push((headers) => {
+  			headers.set("X-Frame-Options", "DENY");
+  		});
+  		await next();
+  	},
+  };
+  // After
+  import { withHeaderHook } from "@ngrok/app-server";
+  
+  const frameOptions: Plugin = {
+  	name: "frame-options",
+  	middleware: async (c, next) =>
+  		withHeaderHook({
+  			context: c,
+  			next,
+  			hook: (headers) => {
+  				headers.set("X-Frame-Options", "DENY");
+  			},
+  		}),
+  };
+  ```
+  
+  For a value in the ETag of each static file, give the plugin an `etagPart`, not a write to `etagParts`. `sentReports` has no replacement: the package exports no function that reports the end of a response.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server start` now reports a port in use as `vite dev` does: in Vite's words, through Vite's logger. So Vite's `logLevel` and `customLogger` apply to the line, as they do to the URL lines.
+  
+  Breaking change: the two log lines of `start` for a port in use are gone, with their `server.port` and `server.address` attributes. A tool that reads them must read Vite's lines.
+  
+  - When `start` moves to the next port, it prints `Port 3000 is in use, trying another one...`. Before, it printed `time=… level=INFO msg="port in use, trying the next port" server.port=3000`, also with `logLevel: "silent"`.
+  - With `server.strictPort`, `start` stops with the error `Port 3000 is already in use`. Before, the error was `listen EADDRINUSE: address already in use …`. That error is now the `cause`.
+  - With `server.strictPort`, when another server holds the port on a wildcard address, `start` prints Vite's warning for that case. Before, it printed a line with the message `port in use on a wildcard address`.
+  - When no port from 3000 to 65535 is open, `start` stops with the error `No available ports found between 3000 and 65535`. Before, the error was `No open port from 3000 to 65535.`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server start` now does three more things as `vite dev` does:
+  
+  - **`server.resolvedUrls`:** a Vite plugin now reads the URLs of the server from `server.resolvedUrls`, from the `listening` event of `server.httpServer` on, and after a Vite restart. Before, the value was `null`.
+  - **`server.open`:** `start` now opens the browser when Vite's `server.open` is `true` or a path. `BROWSER` and `BROWSER_ARGS` apply, and `BROWSER=none` opens nothing. On Deno, give `--allow-run`. As in `vite dev`, Vite also sends one request for that URL at startup, also with `BROWSER=none`, so the app renders the page one time. Vite's `server.preTransformRequests: false` turns that request off. Before, `start` ignored the option.
+  - **`server.https`:** `start` serves HTTP only. It now writes a warning when `server.https` has a value that turns HTTPS on in `vite dev`, also when a plugin such as `@vitejs/plugin-basic-ssl` sets it. The warning comes again after each Vite restart. `server.https: false` gets no warning. Before, `start` served HTTP with no message.
+  
+  With `server.https` set, Vite also turned off its check of the `Host` header. A plain HTTP server needs that check against a DNS rebinding attack, so `start` now keeps it on. This is a breaking change for an app that sets `server.https` and opens `start` through a tunnel or a proxy with another host name: Vite now answers 403 for that host. Add the host to `server.allowedHosts`, as an app with no `server.https` does.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - With `markdownTwins`, `prerendered()` now adds `Vary: Accept` and the `Link` to the twin in a header hook. Before, it copied each response for a path with a twin to set the two headers. The client gets the same headers.
+  
+  Breaking change for a plugin: a stage before `prerendered()` no longer sees the two headers on `c.res` after its `await next()`, as with each header that a hook sets. Read them in a header hook.
+  
+  ```ts
+  // Before
+  middleware: async (c, next) => {
+  	await next();
+  	const link = c.res.headers.get("Link");
+  },
+  
+  // After
+  middleware: async (c, next) =>
+  	withHeaderHook({
+  		context: c,
+  		next,
+  		hook: (headers) => {
+  			const link = headers.get("Link");
+  		},
+  	}),
+  ```
+  
+  The hook also adds the two headers to a response that an earlier stage puts in place of the answer after its `next()`, such as a 401 for a path with a twin. Before, that response had neither.
+  
+  In process, with the default plugins and `markdownTwins: true`, and a `ResponseEdge` as the node listener calls the server (5 processes, each with 9 rounds of 3,000 requests, the build before and this change in turn; Node.js 26.13, Apple M3 Max, with other load on the machine): a prerendered page with a twin takes 0.90 of its time before (19.0 µs to 17.2 µs), the twin for an agent 0.92, and a rendered page with a twin 0.94. Each ratio is the middle of 3 runs. A path with no twin takes the same time (0.987 and 1.008 in 9 processes).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - One breaking change to the contract of a host adapter. An app with no host adapter of its own needs no change.
+  
+  **`FileInfo` is a union on `kind`, and a directory has no `size` and no `mtimeMs`.** No code reads a size or a time of a directory, and the node host made up `size: 0` to fit the type. A `stat` of a host adapter of your own now gives only `{ kind: "directory" }` for a directory. Code that reads `size` or `mtimeMs` must check `kind === "file"` first. TypeScript reports each place.
+  
+  ```ts
+  // Before
+  const files: StaticFiles = {
+  	stat: async (path) =>
+  		isDirectory(path)
+  			? { kind: "directory", size: 0, mtimeMs: 0 }
+  			: { kind: "file", size: sizeOf(path), mtimeMs: timeOf(path) },
+  	open,
+  };
+  const info = await files.stat("/docs");
+  const size = info?.size;
+  
+  // After
+  const files: StaticFiles = {
+  	stat: async (path) =>
+  		isDirectory(path)
+  			? { kind: "directory" }
+  			: { kind: "file", size: sizeOf(path), mtimeMs: timeOf(path) },
+  	open,
+  };
+  const info = await files.stat("/docs");
+  const size = info?.kind === "file" ? info.size : undefined;
+  ```
+  
+  `nodeFiles(...).stat(path)` and the `stat` of its snapshot give `{ kind: "directory" }` for a directory, with no `size: 0` and no `mtimeMs`. No response changes. In JavaScript, a host that still gives the two fields for a directory works as before.
+
+### Patch Changes
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `accessLog()` redacts the query of a request URL with no URL parse, when each part of the query is `key=value` and each key has only letters, digits, and the characters `-_.!~*'()`. Most queries have this form, such as the `?_routes=…` of a React Router data request. Each other query gets the parse, as before. On Node.js and Bun, the line of a URL that parses is the same.
+  
+  One line is new. A request whose URL does not parse, as with a `Host: 1.2.3.4.5` header, got no line when its URL had a query. When the query has this form, the line now goes out, as it does for such a URL with no query. With a query of another form, the request still gets no line.
+  
+  On Node.js v26.13, a request with such a query costs about 1 µs less CPU time. A React Router data request through the default plugins with no compression costs about 6% less in the pipeline. The numbers come from requests in one process with no socket: the median of 21 rounds that take turns between the build before and this one, in 3 runs.
+  
+  Deno gives each request URL as the client sent it. So on Deno, the line for a URL with such a query now shows the path as the client sent it, as the line for a URL with no query does.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On Node.js, two requests now run the pipeline, with the host `localhost` in the URL: an HTTP/1.0 request with no `Host` header, and a request with an empty `Host` header. Before, each got a 400 with no log line, before the first stage. So an HTTP/1.0 health probe of `/livez`, which HAProxy sends by default, failed with no sign on the server, and the load balancer marked each replica as down.
+  
+  An HTTP/1.1 request with no `Host` header still gets a 400 from Node.js itself, before the pipeline. On Node.js, a request with a `Host` that is not valid also still gets a 400. Deno already answers a request with no `Host`. On Bun, an HTTP/1.0 request with no `Host` and a request with an empty `Host` still get a 500, so give the probe a `Host` header there.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The static stages and `streamingCompress()` now run the header hooks on a view only when the request has a hook that a built-in plugin did not add. Before, they ran each hook on a view for each file with a compressed copy and for each response that `streamingCompress()` compresses, to find a `no-transform`, a `Content-Encoding`, or a `Content-Range` from a hook. No hook of a built-in plugin sets these. So with only built-in plugins, each hook now runs one time, where the response leaves. No response changes.
+  
+  An app hook keeps its contract. When a request has a hook from `withHeaderHook`, or a hook that a stage adds to `headerHooks` itself, each hook of the request still runs on the view. So the app hook can read a header that a built-in hook sets. The `paths` of `buildId()` and the `policy` of `contentSecurityPolicy()` run in a built-in hook. With no app hook, they now run one time for these responses.
+  
+  In process, with the default plugins and a `ResponseEdge` as the node listener calls the server (3 processes for each kind of request, each with 60 pairs of 500 requests after a warm-up, the build before and this change in turn; Node.js 26.13, Apple M3 Max, with other load on the machine). Each time and each heap size is the median of the differences of the pairs in a process:
+  
+  - A prerendered page with a brotli copy takes 0.23 µs to 0.55 µs less of 15.4 µs.
+  - A hashed asset with a copy takes 0.37 µs to 0.48 µs less of 14.9 µs.
+  - A 304 for the page takes 0.54 µs to 0.61 µs less of 13.0 µs.
+  - Each of the three allocates 1.2 KB to 1.5 KB less on the heap, which is about 3%, in 57 to 60 of the 60 pairs.
+  - A rendered page that `streamingCompress()` compresses allocates 2.7 KB to 3.0 KB less of 60.8 KB, in each pair (3 processes, each with 40 pairs of 300 requests). The change in its time is inside the noise of brotli.
+  - With one app hook before the default plugins, the page and the asset stay the same: in 6 processes, the mean difference is inside 0.25 µs and 0.12 KB, in both directions.
+
+- [#74](https://github.com/ngrok/app-server/pull/74) [`f481611`](https://github.com/ngrok/app-server/commit/f4816111d0a1bb9322c8e007cde40b50c90bc310) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The package now needs `hono` 4.13.16 or later, and it pins `@hono/node-server` 2.1.6, to get their security fixes:
+  
+  - An `ECONNRESET` during a WebSocket upgrade no longer stops the Node process.
+  - A backslash in the request path is no longer a path separator, so a path rule at a reverse proxy applies.
+  - `hono` fixes `csrf()`, `validator('form')`, `mount()`, wildcard middleware in `RegExpRouter`, and HTML escapes in the `css` helper.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - With `requestId({ headerName })`, `vercel({ cdnPages })` now gives the CDN each prerendered page that qualifies. Before, a request ID header with another name kept each page in the function, with the reason `the x-correlation-id header changes with the request` in the build log, because the build's check knew only `X-Request-Id`. The check now gets the name from the `requestId()` plugin of the app. A page that the CDN serves has no request ID header, as before.
+  
+  The check does not know `X-Request-Id` by its name now. If your own plugin sets `X-Request-Id` and the plugin list has no `requestId()`, the function now serves each prerendered page, and the build log gives the reason. The check does the same for each other header that changes with each request.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `streamingCompress()` now parses `Accept-Encoding` only for a response that it can compress. A static file with a compressed copy, a 304, a HEAD response, and a body under 1 KiB no longer pay for the parse. No response changes.
+  
+  One parse takes about 205 ns for Safari's header and about 275 ns for Chrome's (Node.js 26.13, Apple M3 Max, 9 rounds of 1,000,000 calls). In process, with the default plugins and a `ResponseEdge`, as the node listener calls the server (7 processes, each with 9 rounds of 3,000 requests, `main` and this change in turn, on a machine with other load): a hashed asset with a brotli copy takes 0.978 of its time before (18.2 µs to 17.5 µs), a 304 0.973, a HEAD 0.989, and a small text file 0.985. A request with no `Accept-Encoding` takes the same time (0.969 to 1.013).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The static stages now build the path of a compressed copy with no regular expression. Each static response, a 304 included, built two copy paths with an expression whose time grew faster than the length of the path. No response changes.
+  
+  One copy path takes 40 ns to 51 ns at each length. Before, it took 249 ns at 21 characters, about 630 ns at 39, and 2,115 ns at 96 (Node.js 26.13, Apple M3 Max, 11 rounds in turn of 1,000,000 calls). In process, with the default plugins and a `ResponseEdge` as the node listener calls the server (5 processes, each with 9 rounds of 3,000 requests, the build before and this change in turn): a hashed asset with a brotli copy takes 0.953 of its time before (16.2 µs to 15.5 µs), a prerendered page 0.966, a 304 0.948, an image 0.948, and a page at a file path of 96 characters 0.819 (24.3 µs to 19.9 µs).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `cspNonce()` from `@ngrok/app-server/client` now gives the nonce of the request when the server has a `document` global. Before, it read the document and gave `undefined`, so `withRequestContext({ cspNonce }, …)` gave no nonce in a jsdom or happy-dom test, and a server with a DOM polyfill rendered each page with no nonce. In a request with no nonce, such as with no `contentSecurityPolicy` plugin, it gives `undefined` and does not read the document. Outside a request, it reads the document, as before. The browser build does not change.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `contentSecurityPolicy()` makes its nonce with less work. On Node.js, one `crypto.getRandomValues` call costs more than the rest of a nonce, and the plugin made one call for each request, assets included. It now gets the random bytes of 64 nonces with one call. Each nonce is still 16 bytes from `crypto.getRandomValues` in base64, and no two nonces share a byte. The bytes that no nonce took yet stay in the memory of the process.
+  
+  One caution is new. If you start more than one process from a copy of the memory of a process that already served a request, each process gives the same next nonces, 63 at most. Such a copy is an image of a virtual machine or a Node.js startup snapshot. A process holds no such bytes before its first request, so make the copy before that request.
+  
+  On Node.js v26.13, the stage went from about 1,200 ns to about 240 ns for each request, and from 1,517 to 876 bytes of garbage. With the option on, a request through the default plugins with no compression costs 6% to 15% less CPU time in the pipeline, for each kind of request. The numbers come from requests in one process with no socket: the median of 21 rounds that take turns between the build before and this one, in 3 runs.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `contentSecurityPolicy()` makes the `'self' 'sha256-…'` source list of each prerendered document one time, at startup. Before, its header hook made the list on each run, which is two times for a page with a compressed copy. On Node.js v26.13, one run of the hook on a document with 4 inline scripts costs about 23% less (about 850 ns to 650 ns) and leaves about 930 bytes less garbage: the median of 21 rounds that take turns between the build before and this one, in 3 runs. The policy does not change.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The build now writes the compressed copies of each React Router `.data` file of 1 kibibyte (KiB) or more: the gzip and the brotli copy on the node host, and the brotli copy on the vercel host. Before, the build read the type of a file from its extension alone, so a `.data` file got no copy. The server then compressed the file for each client navigation to a prerendered page. The server now sends the copy as it sends the copy of each other file: with a `Content-Length`, with an ETag for that encoding, and with no byte ranges.
+  
+  For a prerendered `.data` file of 12.4 KB through the pipeline of a React Router build, in process on Node.js 26.13 and macOS, with `Accept-Encoding: gzip, deflate, br, zstd` and 64 requests at a time: 19,164 requests per second become 31,661, the CPU time for each request goes from 125 to 53 microseconds, and the body goes from 464 to 388 bytes. Each number is the median of 5 runs of 20,000 requests, with the two builds in turn. On the vercel host, the function keeps only the brotli copy of such a file: for an app with 301 prerendered pages, of which 300 have a `.data` file of 12 KB to 13 KB, the client build in the function goes from 4.5 MB to 0.7 MB.
+  
+  The copies have a cost on the node host. The client build gets two more files for each `.data` file of 1 KiB or more, and the node host lists each file of the client build when the server starts. For the same app, the client build goes from 1,227 files to 1,829. `node build/server/app-server.js` then reaches the `listening` line in 95 ms in place of 89 ms, and its resident set size (RSS) at that time is 95.3 MB in place of 90.4 MB. Each number is the median of 61 runs, with the two builds in turn. The function of the vercel host gets no more files, because the brotli copy takes the place of the file. The build takes more time to write the copies: `react-router build` takes 1.67 s in place of 1.57 s on the node host, as the median of 21 builds.
+  
+  A framework adapter can give the build its content types: `FrameworkBuild` has a new optional `contentTypes` field, with the same value as `contentTypes` of the run side. `reactRouterAdapter()` sets it.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - In development, the server now makes the setup info of the plugins one time for each server entry, not for each request. The host's `files()` runs one time for an entry. A `setup` that throws still runs again on the next request.
+  
+  A development request through `defaultPlugins()` that Vite answers costs about 10% less CPU time in the pipeline: 10.1 µs to 9.3 µs. The numbers come from `fetchDev` in process, as the median of 21 interleaved rounds of 20,000 requests, on Node.js 26.13 and an Apple M3 Max.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On Node.js, the drain now ends when the last open response ends. Before, a keep-alive connection that had a request in flight when the drain began stayed open after its response. The server then answered each new request on that connection, waited for the whole `shutdownDeadlineMs` (10 s by default), and reset the request that was in flight at the deadline. So each deploy under load took the whole deadline, and an event stream from `eventStream()` held the drain open, although it closes at shutdown.
+  
+  Now each response that starts in the drain says `Connection: close`, and the server closes each connection when its last response ends. Bun and Deno already end the drain with the last response.
+  
+  The test ran on Node.js 26.13 with one request in flight on a keep-alive connection, a handler that answers 200 ms after the drain begins, and `shutdownDeadlineMs: 4000`. In 3 runs of each build, the drain took 4,001 to 4,002 ms before and 205 to 206 ms now.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The static stages now make the ETag of a file with no promise, and they keep the hash of more than one list of `etagPart` values. The text of each ETag stays the same, so a browser cache stays valid after the upgrade.
+  
+  - An app with a plugin that has an `etagPart` between two static stages, such as after `assets()`, gave its assets and its pages two lists of parts. The server kept the hash of one list, so each static response ran SHA-256 again. It now keeps the hash of up to 16 lists. In process, with a `ResponseEdge` as the node listener calls the server, an asset and a page in turn take 16.4 µs in place of 37.2 µs for each request (ratio 0.433; 5 processes, each with 9 rounds of 3,000 requests, the build before and this change in turn; Node.js 26.13, Apple M3 Max).
+  - With the default plugins, a hashed asset with a brotli copy takes 0.975 of its time before, a 304 0.970, and an image 0.957 (the median of 3 runs, each with 7 processes, the same method). The asset allocates 0.9 KB less on the heap for each request (45.2 KB to 44.3 KB; 3 runs of 40,000 requests in one process for each build).
+  - The ETag step of a response takes 147 ns in place of 671 ns (ratio 0.22). The time is for the functions of the built package, called as the stage calls them, for a request with two `etagPart` values (9 rounds in turn of 500,000 calls). In that step, the hex text of the modification time takes 44 ns in place of 350 ns for each file time (9 rounds in turn of 2,000,000 calls). On Bun 1.3, where one conversion of the time takes 30 ns, the hex text takes 54 ns, and the step takes 135 ns in place of 337 ns.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A `Cache-Control` in the `headers` option of `eventStream()` now goes out. Before, `eventStream()` dropped it and sent `no-cache`. A stream with no `Cache-Control` in `headers` still gets `no-cache`. If your `headers` have a `Cache-Control`, keep `no-cache` in it, or a cache can store the stream.
+  
+  So one stream can now opt out of compression: with `Cache-Control: no-cache, no-transform`, `streamingCompress()` and each proxy send the stream as it is. Why: a compressed stream holds its encoder until it ends, and a quiet feed that stays open saves few bytes for that memory.
+  
+  ```ts
+  eventStream(produce, { signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } });
+  ```
+  
+  We measured 300 open streams of 3 events each on the node host with the default plugins, on Node.js 26.13 and an Apple M3 Max, 3 times each: the resident set size (RSS) of the process with the streams open, less the RSS before, for each stream.
+  
+  | `Accept-Encoding` | Default        | `no-transform`, before | `no-transform`, now |
+  | ----------------- | -------------- | ---------------------- | ------------------- |
+  | `gzip`            | 395 to 408 KiB | 406 to 432 KiB         | 68 to 70 KiB        |
+  | `br`              | 675 to 713 KiB | 691 to 721 KiB         | 66 to 70 KiB        |
+  
+  A stream of a client that accepts no compression held 67 to 79 KiB. A quiet stream of 3 events took 751 bytes with `no-transform`, 570 bytes with gzip, and 558 bytes with brotli. The README section "Long-lived responses" now gives the memory of an open stream.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - In `eventStream()`, when the `data` of an event is not a string, `send()` now throws a `TypeError` that names the type, such as ``An event's `data` must be a string, not undefined.`` The usual cause is `JSON.stringify()`, which gives `undefined` for a value that it cannot write. Before, the error came from a string method, such as `data.split is not a function`. A `String` object went out before, and it also throws now.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `eventStream()` formats each event with less work, so `send()` takes less CPU time. On Node.js 26.13 on an Apple M3 Max, `send()` takes:
+  
+  - about 26% less time for an event with an `event` name and one line of JSON (375 ns to 276 ns)
+  - about 28% less time for an event with only `data` (323 ns to 232 ns)
+  - about 14% less time for an event with `event`, `id`, and three lines of data (484 ns to 417 ns)
+  
+  Each time is the median of 5 runs, and each percentage comes from the two times beside it. Each run has 151 interleaved rounds of 10,240 sends with the built package, against the build before the change. The bytes that go out for each event stay the same.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `eventStream()` no longer keeps the listeners that a producer leaves on `signal` after the stream ends by itself. Before, the runtime kept `signal`, each listener on it, and all that the listeners held, until the server stopped. So each stream that ended by itself, such as a progress feed, added memory that only a restart freed. In a test on Node.js 26.13, 200 streams whose producers each left one listener that held 1 mebibyte (MiB) kept 200 MiB after two garbage collections, and now keep 0 MiB (`process.memoryUsage().arrayBuffers`).
+  
+  The `signal` of a stream that ended no longer aborts when the request aborts or the server shuts down later. This shows on Deno, where the request aborts after each complete response: before, `signal` aborted after each stream that ended by itself, and now it does not. If a producer cleans up only in an `abort` listener, clean up when `produce` returns too.
+  
+  When the request aborts, a listener on `request.signal` now runs before `signal` aborts. Before, `signal` was aborted already.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `@ngrok/app-server` exports the types `StaticPage` and `CdnPage`. `staticPages()` of an `AppServerEntry` yields them, and an adapter could not name them before. The README section "Adapters" says what a host calls on the entry: `start`, `fetch`, `staticPages()`, and `stopPlugins()`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The static stages now check a request path with no `split`. `prerendered()` checks the path of each GET and HEAD before it looks for a file, so each rendered page paid for two arrays and a string for each segment. No answer changes: the old and the new check agree on 3,009,331 generated paths.
+  
+  The check takes 54 ns in place of 206 ns (ratio 0.263; Node.js 26.13, Apple M3 Max, 15 rounds in turn of 2,000,000 calls, 6 paths). In process, with a `ResponseEdge` as the node listener calls the server (5 processes, each with 9 rounds, the build before and this change in turn): a request that goes on to the framework takes 0.976 of its time before with the default plugins (15.9 µs to 15.8 µs), and 0.955 at a path of 6 segments. With only `assets()` and `prerendered()`, it takes 0.914 (5.2 µs to 4.8 µs), and 0.857 at the longer path.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Two header hooks do less work on each run. The `buildId` hook no longer parses a `Server-Timing` header that the response does not have. The `Vary` check of `streamingCompress`, the static stages, and `noindex` no longer builds a `Set` to find one name.
+  
+  On Node.js v26.13, one run of the `buildId` hook on a document costs about 60 ns less (about 15%), and one `Vary` check costs about 100 ns less (about 40%). Each leaves about 300 bytes less garbage. A hook runs one to three times for each response. The numbers come from 21 to 31 rounds that take turns between the build before and this one. For a full request, the gain is inside the noise. No header changes.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `import "@ngrok/app-server"` now works on a runtime with no `process` global. Before, the import threw `ReferenceError: process is not defined` there, because the log code of the core set a `process.on("exit")` listener at load. So a host adapter for another runtime, such as Cloudflare Workers, could not load the core.
+  
+  The code that writes the log lines to standard output (stdout) is now part of the node host. `HostRuntime` has a new optional `logWriter` member, with `write(line)` and `flush()`. `jsonSink()` with no `write`, and the text lines of `app-server start`, go to the `logWriter` of the host. The node host and the vercel host give the writer that the core had. So on Node.js, Bun, Deno, and Vercel, a server writes the same lines in the same order: one write for the lines of one event-loop turn, each line on stdout before the process exits, and each line of a request on stdout before the vercel handler returns.
+  
+  Two things change:
+  
+  - Before `createEntry` runs, no host has given a writer, so `console.log` writes each line of `jsonSink()`, with one call for each line. This applies to a line that the app logs at module load, such as from `logger()`, and to a test that calls `app.fetch` with no entry. Before, these lines went to `process.stdout.write`, in one write for each turn. A test that reads them from a spy on `process.stdout.write` must spy on `console.log`, or give `jsonSink` a `write` function. `createTestServer` uses the node host, so its lines do not change.
+  - A host adapter with no `logWriter` gets each line through `console.log` too. A host adapter on Node.js that needs the one write for each turn can give `logWriter: host.logWriter`, with the `host` of `@ngrok/app-server/node`.
+  
+  A line of the default sink on the node host costs the same: 621 ns against 628 ns for one access log line, with ratios of 0.99, 1.03, and 0.88 in three runs. Each run is the median of 5 samples of 200,000 lines for each build in turn, after one warm-up sample, with stdout to `/dev/null` (Node.js 26.13, macOS, Apple M3 Max). The spread between runs is larger than the difference.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Correct the JSDoc that an editor shows. No behavior changes.
+  
+  - `HeaderHook` and `withHeaderHook`: a hook that throws gets the answer of the app's `onError`. The JSDoc said that it always gives a 500.
+  - `requestContext`: it also gives the client address. Its example now reads the request ID, because `logger()` is the function that logs outside a request too.
+  - `contentSecurityPolicy`: the app gives `cspNonce()` from `@ngrok/app-server/client` to the framework's render.
+  - `DefaultPluginsOptions`: `requestId`, `accessLog`, and `prerendered` have a description, and `securityHeaders` has its default.
+  - `defaultPlugins` and `Plugin`: an app finds a plugin in the array by its `name`, such as `"streaming-compress"`.
+  - `TcpOptions`: a `port` or a `host` wins over `PORT`, `HOST`, and the `--port` of `app-server serve`. The examples of `tcp` and `Listener` no longer set a port.
+  - `redirects`: the default `trailingSlash` mode is `"preserve"`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On Node.js, a stop no longer cuts a large response that still goes out to a slow client. Before, the server ended a body of one or two chunks at once, such as a large `c.json()` answer or a static file that it keeps in memory. Node.js counts such a response as done, and when the server stops, Node.js closes the connection of a done response with the bytes that its socket still holds. So a deploy cut the response, although the drain deadline had time left, and the access log said `http.client_aborted`.
+  
+  Now, when a body of one or two chunks is 64 KiB or more, the server ends it only after the socket takes it, so the drain waits for it, up to `shutdownDeadlineMs`.
+  
+  The test ran on Node.js 26.13 with a 32 MiB body of one chunk, a client that reads about 16 MiB each second, and a stop 150 ms after the request. In 3 runs of each build, the client got 3.8, 2.9, and 1.5 MiB before, and the whole 32 MiB now.
+  
+  The CPU time of the server for each request shows no change above the spread of the test. The numbers are medians of `process.cpuUsage()` for each request, with `oha` on 64 keep-alive connections, and the two builds in turn. Each test has a control route with a small body, which this change does not touch:
+  
+  - The entry script of the React Router fixture app on the node host, a brotli copy of 67,658 bytes: 46.6, 44.9, 49.9, and 57.4 µs before and 49.3, 45.4, 50.0, and 55.5 µs now, in 4 runs of 15 rounds of 30,000 requests. Each run has new server processes, and the numbers are in the order of the runs. The control, a page of 771 bytes: 37.5, 36.2, 38.7, and 44.6 µs before and 38.5, 36.3, 39.5, and 44.4 µs now.
+  - A 200 KiB body of one chunk: 130.0 µs before and 132.2 µs now, in 11 rounds of 30,000 requests. The control, a body of 4 bytes: 27.5 µs before and 27.8 µs now.
+  
+  In the 4 runs of the first test, the entry script took from 3.3% less to 5.8% more CPU time than before, and its control took from 0.4% less to 2.7% more. So the test cannot show a change that is smaller than this spread.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `@ngrok/app-server/vite` no longer loads `@vercel/nft` at import. The server build loads it in the step that removes the files of a copied package that the build cannot load. So `vite dev`, `app-server start`, and a build with no package to trim do not load it. In a new Node.js 26.13 process on macOS, the import of `@ngrok/app-server/vite` now takes 18 ms in place of 49 ms, and the resident set size (RSS) grows by 9.6 MB in place of 23.9 MB. Each number is the median of 15 runs, with the two builds in turn.
+
+- [#77](https://github.com/ngrok/app-server/pull/77) [`8ece79f`](https://github.com/ngrok/app-server/commit/8ece79f91011c85c881397e9dee4b8131079642a) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `accessLog` logs a 5xx whose client went away before the app answered as `499` at `info`, not as a 5xx at `error`. Why: React Router gives an aborted request a 500, so each client abort counted as a server error and could trigger a 5xx monitor. A 5xx whose body fails after the head still logs at `error`. The response does not change. An app that changed an aborted 500 to a 499 in its own plugin can remove that plugin.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The log now says when the drain deadline cuts open requests. Before, a shutdown that cut a response, such as a streamed answer that ran past `shutdownDeadlineMs`, logged only `draining` and `stopped`.
+  
+  - When the deadline passes and a listener still has open requests, the server logs one warn line: `the drain deadline passed with open requests`, with `app_server.deadline_ms`. When you see it, raise `shutdownDeadlineMs`, or stop the long responses on `shutdownSignal()`.
+  - On Node.js, the access line of a response that the deadline cut now comes before the `stopped` line, with `http.aborted: true`. Before, the line came after `stopped`, and with the default `jsonSink()` the exit lost it.
+  
+  On Bun, a response that the deadline cuts still gets no access line. The exit code of such a shutdown is still 0.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A `log.attributes` or `log.error` hook that throws no longer stops the log call. Before, the throw left the log call: a route that called `logger().info()` answered 500, a request lost its access line, and a route that threw answered 500 with an empty body and no `unhandled error` line.
+  
+  Now the line goes out with `log.error`, such as `the attributes hook of the log option threw: <message>`, in place of the fields that the hook was to give. For `attributes`, that is each attribute of the line. For `error`, that is the fields of that error. The server does not write the fields that the hook got, because a hook can redact a value.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The production server no longer keeps the bytes of `.app-server.json` in memory after startup. It read the build manifest through the store of small files, which keeps each file up to 256 KiB for the life of the process, and no request reads the manifest again. The bytes also no longer count in the 32 MiB that the store allows.
+  
+  For a build with 302 prerendered paths, each server process and each Vercel Function instance now holds 110,250 bytes less, which is the size of that manifest. The number comes from `process.memoryUsage().arrayBuffers`, read after a garbage collection, before and after the setup, on Node.js 26.13.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The `prerendered paths with no file` warn line now has `app_server.missing_count`, and `app_server.missing_paths` names 20 of the paths at most. Before, the line had each path, so a server with no client build wrote each prerendered path of the site into one line.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The shutdown log now names the plugin whose `onShutdown` fails or hangs:
+  
+  - `plugin shutdown failed` has the name of the plugin as `app_server.plugin`, and it goes out when the hook fails. Before, a second plugin whose `onShutdown` hangs held the line back, and the exit at the deadline lost it.
+  - `plugin shutdown passed the deadline` has `app_server.plugins`, the names of the plugins whose `onShutdown` is still open.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - If a middleware returns no `Response` and does not call `await next()`, the request has no answer. Such a request now gets the answer of the app's `onError` on each host. The header hooks run on that answer, and the access log writes its line. The default `onError` answers a 500 and writes one `unhandled error` line that says what a middleware must do. The same applies to a route and to a middleware that the app adds to the server with Hono, such as with `app.get()` and `app.use()`.
+  
+  Before, the answer depended on the host and on the plugin list:
+  
+  - Node.js and Vercel sent a 500. With `defaultPlugins()`, the log got up to six `TypeError` lines and no access line.
+  - With some custom plugin lists, Bun, Deno, and `createTestServer` sent an empty 200 with no error line. An example is `[requestId(), plugin]`, in which a plugin with a header hook ran before the middleware. So a test with `createTestServer` passed for a plugin that failed each request in production.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On Node.js and Vercel, a response with no body now goes out with `Content-Length: 0`, such as each 308 of `trailingSlash` and `redirects`. Before, it went out with `Transfer-Encoding: chunked` and an empty chunk. That is 14 bytes less for each such response: the 308 of `GET /page/` is 340 bytes before and 326 bytes now, read from a raw socket. A HEAD response, a 204, and a 304 stay as they are. Bun and Deno already send `Content-Length: 0`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The package no longer publishes source maps. The packed size goes from 321.7 kB to 149.4 kB, and the size on disk from 1,067.6 kB to 481.3 kB, in 72 files in place of 112. The numbers are `size`, `unpackedSize`, and `entryCount` from `npm pack --dry-run --ignore-scripts --json` after `pnpm run build`, not gzip of single files.
+  
+  A stack trace through the package now names the file in `dist`, such as `dist/create-server-<hash>.js:1275:10`. Before, with source maps on, as `app-server serve` sets them, it named a file that the package does not contain, such as `src/core/create-server.ts:71:10`. The files in `dist` are not minified.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A plugin with no `middleware` and no `etagPart`, such as one with only `setup` and `onShutdown`, no longer costs a pipeline stage for each request. The server gave each plugin a stage, and the stage of such a plugin only passed the request on.
+  
+  Each such plugin cost about 170 ns of CPU time for each request. With 11 of them and no other plugin, a request costs 4.36 µs before and 2.47 µs after in process, and 24.4 µs before and 22.5 µs after through the node listener over HTTP. Each number is the median of 21 interleaved rounds of 20,000 requests on Node.js 26.13 and an Apple M3 Max. An app with only `defaultPlugins()` sees no change, because each default plugin has a `middleware`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - If the app's `onError` returns no `Response` for an error, such as from a handler with no last `return`, the client now gets a 500 with the body `Internal Server Error` on each host. The header hooks run on that 500, and the access log writes its line. The log gets an `unhandled error` line that names the handler, with the error in its `error.cause.*` fields. An error handler must return a `Response` for each error.
+  
+  Before, the answer depended on the host and on where the error came from:
+  
+  - For an error that a plugin or a route threw, Node.js and Vercel sent a 500 with no body and no log line, and the header hooks did not run. Bun, Deno, and `createTestServer` sent an empty 200, or failed the request.
+  - For an error that a header hook threw, each host sent an empty 200.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The build check of `vercel({ cdnPages })` now compares the two bodies of each prerendered page with a loop. Before, it called a function for each byte. The check gives the same answer for each page.
+  
+  The compare of two equal bodies takes 39 µs in place of 292 µs at 40 KB, and 366 µs in place of 2,741 µs at 400 KB (ratio 0.13; Node.js 26.13, Apple M3 Max, 9 rounds in turn of 200 calls). The whole check of one page, with the default plugins, takes 109 µs in place of 287 µs at 40 KB (ratio 0.382, 500 pages), and 1.2 ms in place of 3.1 ms at 400 KB (ratio 0.405, 200 pages; 7 rounds in turn of `staticPages()` for each build in one process).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A stage that only passes a request on no longer adds a promise to it. `withHeaderHook()` and the stages of `health`, `requestId`, `securityHeaders`, `bodyLimit`, `noindex`, `buildId`, `contentSecurityPolicy`, `trailingSlash`, and `privateDocuments` are now plain functions that return the promise of the next stage. `trailingSlash({ mode: "preserve" })` now has no `middleware`.
+  
+  On Node.js v26.13, a rendered page through the default plugins makes 98 promises, not 122, and a 404 from the framework leaves 35.7 KB of garbage, not 40.3 KB. A request that reaches the framework costs 3% to 7% less CPU time in the pipeline, and a static file 1% to 3% less. The times come from requests in one process with no socket and no compression, as on Vercel: the median of 31 rounds of 3,000 requests that take turns between the two builds, in 3 runs.
+  
+  This change alone needs no change in a plugin.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `createServer` now runs the plugins in one Hono middleware, not in one for each plugin. Each plugin, route, and error gets the same answer as before, with less work for each request. One case differs: an `etagPart` that throws a value that is not an `Error` now gets the answer of the app's `onError`, and the access log writes its line. Before, with a custom plugin list such as `[accessLog(), plugin]`, the access log wrote no line for that request, and the request failed when the plugin was the first in the list.
+  
+  Through `defaultPlugins()`, a request makes 24 fewer promises (110 before, 86 after, counted with `async_hooks`) and about 5 KB less garbage (42 KB before, 37 KB after). In process, the pipeline costs about 15% less CPU time: 8.7 µs before and 7.3 µs after with a framework that answers at once. Through the node listener over HTTP, the `/ping` route of the React Router fixture app costs 5% less server CPU time: 32.8 µs before and 31.2 µs after. A rendered page saves the same 1.4 µs, which is too small to measure: the 6 KB page of the fixture app costs 305 µs. Each time is the median of 21 or 31 interleaved rounds on Node.js 26.13 and an Apple M3 Max that ran other work at the same time.
+  
+  `matchedRoutes(c)` from `hono/route` now lists one `/*` route for all the plugins, not one for each plugin.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `prefersMarkdown()` now reads `Accept` with Hono's parser, which the server already uses for `Accept-Encoding`. For an `Accept` that names markdown, it takes about half the time: 1,421 ns to 781 ns for `text/markdown, text/html;q=0.9, */*;q=0.8`. The numbers are the medians of 11 interleaved rounds of 300,000 calls, with the build of `main` and this build in one Node.js 26.13 process. A browser's `Accept` names no markdown, so the server does not parse it, as before.
+  
+  One answer changes: a `charset` parameter with no value, such as `text/markdown;charset=""`, or with text after its closing quote, now counts as no charset, so the range matches. Before, the range did not match.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A build with a prerender pass no longer does its last step two times. With `appServer` after the framework's plugin, as the README shows, the build wrote the compressed copies of each prerendered file after the pass and again at the end. It also ran the host's `output` at both times, so `vercel({ cdnPages: true })` started the server build two times and printed its report two times. The build now does this work one time, at the end.
+  
+  For a React Router app with 301 prerendered pages on Node.js 26.13 and macOS, `react-router build` goes from 1.73 s to 1.67 s on the node host, and from 2.96 s to 2.39 s with `vercel({ cdnPages: true })`. Each number is the median of 21 builds, with the versions in turn. Each pair compares the build of the last release with a build that has three changes of this release: this one, the later load of `@vercel/nft`, and the copies of each `.data` file. Without those copies, the build takes 1.57 s on the node host and 2.20 s with `vercel({ cdnPages: true })`. The vercel numbers are from a build that wrote the gzip and the brotli copy of each file. On the vercel host, the build of this release writes fewer copies.
+  
+  On the node host, the build makes 1,210 compress calls, two for each of the 605 files that get copies, and none repeats an input. Before, the build made 1,216 calls for 304 files, so 608 calls repeated an input.
+  
+  For a host adapter: `output` of `HostBuild` now runs one time, after the build and the prerender pass. With `appServer` before the framework's plugin, the pass runs after the build, so `output` still runs after the build and again after the pass.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `prerendered({ headers })` also gets `file`, the URL path of the served file, such as `/about/index.html`. It is the path that `cacheControl` gets. `path` keeps its value: the path that names the file, such as `/about`. So a callback can now match each HTML page by its file:
+  
+  ```ts
+  prerendered({
+  	headers: ({ file }) => (file.endsWith(".html") ? { "CDN-Cache-Control": "max-age=300" } : undefined),
+  });
+  ```
+  
+  The docs of `headers`, `skip`, and `cacheControl` now say which path each one gets.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The node listener and `streamingCompress()` now look for the queued chunks of a body with a fixed wait of microtask turns, not a race of two promise chains. Each response body pays this 2 to 10 times. Each body gets the same answer at the same turn: 36 of 36 cases agree, for a read that settles or fails after 0 to 9 turns and for 16 kinds of stream. So the head, the chunks, and the time of the first byte of each response stay the same.
+  
+  Two looks at a new body with one queued chunk take 1,947 ns in place of 2,232 ns (ratio 0.872). One look adds 114 ns to a plain read in place of 257 ns, and the two looks make 24 promises in place of 28 (Node.js 26.13, Apple M3 Max, 11 rounds in turn of 200,000). In process, with the default plugins and a `ResponseEdge`, a rendered page that passes `streamingCompress()` takes 0.966 of its time before (15.3 µs to 15.2 µs in the medians; 7 processes, each with 9 rounds of 3,000 requests, the build before and this change in turn). A request with no `Accept-Encoding`, which needs no look there, takes 0.993. This run writes to no socket, so it does not hold the two looks of the node listener for each response.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Make the README agree with the code. No behavior changes.
+  
+  - The React Router example for a markdown twin gives `twinOf` the `{ path }` argument of 0.4.0. The old example had a type error. In JavaScript, it ran with no error and sent HTML for a markdown request.
+  - The requirement is Node.js 26, not Node.js 26+, as `engines.node` is `^26.0.0`.
+  - "The pipeline" gives the `name` of each default plugin, for a filter of `defaultPlugins()`, and the `ContextVariableMap` declaration that types an app's own context value.
+  - "Logs" lists each line that the server writes, with its level and its attributes.
+  - "Commands" says that a `port` or a `host` in `tcp()` wins over `--port`, `PORT`, and `HOST`.
+  - "Adapters" names `createEntry`, `runtimeOptions`, the `name` of `FrameworkRuntime`, the rules of `output`, and the measured cost of the file list of `snapshot()`.
+  - "Environment" names `env.values`, and "Long-lived responses" names the options of `eventStream()`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Fix the auth example of the README section "Protect pages". The plugin compared the path with `startsWith("/app")`, and React Router and TanStack Router match a path in any letter case. So `/APP/settings` passed the check, and the framework rendered the page for a visitor with no session.
+  
+  If your app has a copy of the example, compare the lowercase path. Also keep a session check in each loader that reads private data, because the plugin protects only the paths that it names.
+  
+  ```ts
+  // Before
+  if (!c.req.path.startsWith("/app")) {
+  // After
+  if (!c.req.path.toLowerCase().startsWith("/app")) {
+  ```
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `redirects()` no longer answers 500 when the target with the values of the request is not a URL. For example, with `{ from: "/go/*", to: "/*" }`, a request for `/go//%2F` makes the target `//%2F`, which names a host that no URL can have. Such a request now gets no redirect and goes on to the next stage, as each other request whose values break a check does.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `redirects()` costs less for a request that matches no rule, and its cost no longer grows with each pattern rule. Before, each GET parsed its URL and tested each rule with `:name` or `*` in turn. Now a request tests only the patterns that start with its first path segment, and the patterns whose first segment is `:name` or `*`. It parses its URL only when a rule can match its path, or when the path has a percent-escape or a part that a URL parse changes. The rule order and each match rule are the same.
+  
+  On Node.js v26.13, the stage for a page that matches no rule went from 305 ns to 148 ns with 200 exact rules, from 1,053 ns to 221 ns with 50 more pattern rules, and from 3,915 ns to 218 ns with 200 more. With 200 rules, a rendered page through the default plugins with no compression costs about 22% less CPU time in the pipeline. A request with a percent-escape in its path still parses its URL. With a table of exact rules only, that request costs about 30 ns more than before. The numbers come from 15 to 21 rounds that take turns between the build before and this one.
+  
+  Each redirect is the same as before for a request with a valid `Host` header. Two answers change, each for a GET or HEAD request whose URL the stage no longer parses.
+  
+  - A request whose URL does not parse, as with a `Host: 1.2.3.4.5` header, got a 500 from this stage. It now goes on to the next stage.
+  - On Deno, the URL of a request has the `Host` header as the client sent it. With a `\`, a `?`, or a `#` in that header, the parsed URL has a different path: for `GET /` with `Host: a\old`, the path `/old/`. The request got the redirect of a rule that matches the parsed path. It now goes on to the next stage.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The package now exports the `RedirectsOptions` type, the options of `redirects()`, as it exports the options type of each other plugin. The type documents `trailingSlash` and its default, `"preserve"`. The README now says how a `redirects()` in your own plugin list takes the mode.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A `beforeStatic` plugin that sets `rewritesHtml` and changes a prerendered page now sends the page whole on each host. Before, the page kept the `Content-Length` of its file, so the new body did not match it. On the node host, a page under 1 KiB got a 500, and so did each page for a client with no gzip or brotli, or its body stopped early. On the vercel host, each page failed.
+  
+  With `rewritesHtml`, the static stages now send an HTML page with no `Content-Length`. They also send it with no ETag, and they answer an `If-None-Match` with the full page. Why: the server does not know which values the change depends on, so a 304 could keep a page that the plugin made with an old value. This rule does not apply to the pages of `runtimeEnv`, which keep their ETag and their 304.
+  
+  The plugin of the changelog (`c.set("rewritesHtml", true)`, then `c.res = addBanner(c.res)`) now gives the page with the banner in 18 of 18 cases, in place of 4 of 18: the node host and the vercel host, pages of 55 bytes, 2.9 KB, and 354 KB, and a client that accepts `identity`, `gzip`, or `br`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `runtimeEnv` now adds the public values to an HTML document on its bytes. Before, it decoded each chunk of each document to text, searched all the text so far again for each chunk, and encoded the text again.
+  
+  - A document that is not UTF-8 keeps its bytes. Before, each byte that is not valid UTF-8 became U+FFFD, such as the `é` of an ISO-8859-1 page, and a UTF-8 byte order mark at the start of a document was lost.
+  - An HTML body with no `</head>` now streams. Before, the server held the body until its end, or until 1 MiB of it. The server now holds only the end of a chunk that can start `</head>`, 6 bytes at most.
+  - A UTF-8 document with no byte order mark gets the same bytes as before: 260 of 260 runs agree, for 20 documents at 13 chunk sizes. The search for `</head>` still stops after 1 MiB, which it now counts in bytes, not in characters.
+  
+  The transform alone, for one document, as the median of 3 runs of 31 rounds in turn (Node.js 26.13, Apple M3 Max, with other load on the machine):
+  
+  - A page of 40 KB in one chunk, with `é` and curly quotes in its text, takes 3.9 µs in place of 31.1 µs (ratio 0.12), and 3.6 KB of V8 heap in place of 172 KB. With only ASCII, where the decoder is fastest, it takes 4.3 µs in place of 6.7 µs (ratio 0.60).
+  - A page of 250 KB in one chunk takes 13 µs in place of 279 µs, and 3.5 KB of heap in place of 936 KB.
+  - 256 KB of HTML with no `</head>`, in chunks of 1 KB, takes 0.37 ms in place of 13.2 ms, and 0.3 MB of heap in place of 35 MB.
+  
+  In process, with the default plugins and a `ResponseEdge` as the node listener calls the server, for a first visit with public values (3 processes, each with 31 rounds in turn of 500 requests, the build before and this change):
+  
+  - With no compression streams, as on the vercel host: a prerendered page of 40 KB takes 0.89 of its time before (23.1 µs to 20.1 µs; 6 processes gave 0.84 to 0.93), a page of 400 KB 0.76, a page of 6 KB 0.96, and a rendered document of 6 KB the same time (1.00). A page of 36 KB whose head has 30 KB of inline CSS in ASCII, which is the case that helps the search least, takes 0.96.
+  - On the node host, brotli takes most of the time: a page of 40 KB takes 0.98 (119 µs to 116 µs), and a page of 6 KB and a rendered document of 6 KB take the same time (1.01 and 0.99).
+  - An asset and a data request take the same CPU time (1.00 and 1.01).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A prerendered page now keeps its ETag when `runtimeEnv` has public values, so a repeat visit gets a 304 with no body. Before, `runtimeEnv` removed the ETag of each page that it changed. A page has `Cache-Control: public, max-age=0, must-revalidate`, so each visit got the full page, and the node host compressed it again.
+  
+  - The ETag has the public values, from the `etagPart` of `runtimeEnv`, and the size and the time of the file. A server with other values, and a file that changed, answer the old ETag with a 200 and the new page.
+  - A rendered document still loses its ETag, because that ETag does not have the values.
+  - A page with public values gets the ETag of the server, also when the `headers` option of `prerendered()` sets one.
+  - `runtimeEnv` no longer sets the `rewritesHtml` request value. A page that a plugin with `rewritesHtml` also changes gets no ETag.
+  
+  In process, with the default plugins and a `ResponseEdge` as the node listener calls the server, a repeat visit to a page of 40 KB takes 12.9 µs in place of 137 µs on the node host (ratio 0.095), and sends no body in place of 2,249 bytes of brotli. With no compression streams, as on the vercel host, it takes 12.3 µs in place of 28.6 µs (ratio 0.445), and sends no body in place of 41,902 bytes. For a page of 400 KB, the ratios are 0.018 and 0.047 (16.8 µs in place of 933 µs, and 12.2 µs in place of 250 µs). Each number is the median of 3 runs of `main` and this change in turn in one process: 9 rounds of 2,000 requests, or 400 for the larger page (Node.js 26.13, Apple M3 Max, with other load on the machine).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server serve` no longer loads the CLI's own copy of the server for a build from the `appServer` plugin. Such a build runs on its own copy, so the CLI's copy only used time and memory. A plain React Router build, as in `app-server serve build/server/index.js`, still runs on the CLI's copy.
+  
+  On one build of a React Router app with 301 prerendered pages, with the CLI before and after this change, the time from the start of the process to the `listening` line goes from 104 ms to 92 ms, and the resident set size (RSS) at that time goes from 97.6 MB to 90.9 MB. `node build/server/app-server.js` takes 89 ms and 90.4 MB for that build. Each number is the median of 61 runs on Node.js 26.13 and macOS, with the commands in turn.
+  
+  An app that builds again with this release gets less of that gain. The build now writes two compressed copies of each `.data` file of 1 kibibyte or more. The node host lists each file of the client build when the server starts, so more files make the start slower. When the build also comes from the same version as the CLI, `serve` goes from 104 ms to 101 ms, and from 97.6 MB to 96.7 MB.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `app-server serve` now writes a message and the usage, with no stack trace, when no file is at the server build path. The process exits with code 1, as before.
+  
+  ```
+  $ app-server serve nope/app-server.js
+  No server build at nope/app-server.js. Build the app, or pass its path.
+  Usage: app-server start [--port <port>] | app-server serve [--port <port>] [build/server/app-server.js]
+  ```
+  
+  Before, a path with no file gave the runtime's module error with its stack, and `serve` with no path and no build gave the error message with a stack.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On a serverless host, such as Vercel, a request no longer waits for the setup after the setup ends. The entry's `fetch` waited for the promise of the setup through three promises on each request. Now the first request runs each plugin's `setup`, and each later request goes to the app at once. A `setup` that throws still runs again on the next request, and the log still gets the `setup failed` line.
+  
+  Each request makes 6 fewer promises: 165 before and 159 after through the Vercel handler with `defaultPlugins()`, counted with `async_hooks` for 5,000 requests on `node:http`. For an app with no plugins, `entry.fetch` in process costs 2.33 µs before and 2.13 µs after, as the median CPU time of 41 interleaved rounds of 30,000 requests on Node.js 26.13 and an Apple M3 Max. Through HTTP, the change in the CPU time of a request is less than the noise of the measurement, which is about 1%.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The README section "Adapters" now says how a serverless host of your own gets the log lines of a request to stdout before the platform freezes it. No behavior changes.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The server no longer keeps the setup info of the plugins in memory after setup. Before, three functions of the server kept it for the life of the process: the framework route, `trailingSlash()`, and `prerendered()`. The info holds the script hashes of each prerendered page, which only `contentSecurityPolicy()` reads, so each HTML file of the client build cost about 410 bytes of heap with no reader.
+  
+  We measured `heapUsed` after the first request and 6 garbage collections, less `heapUsed` after a warm-up setup, on the node host with `defaultPlugins()`, Node.js 26.13, and an Apple M3 Max. The client build was a build manifest with 4 hashes for each page. A new process ran each measurement, the build before the change and the build after it in turn, 3 times each. Each run gave the same number.
+  
+  | Pages  | Before   | After    |
+  | ------ | -------- | -------- |
+  | 100    | 252 KB   | 212 KB   |
+  | 1,000  | 627 KB   | 232 KB   |
+  | 10,000 | 4,381 KB | 261 KB   |
+  
+  With the `contentSecurityPolicy` option and 10,000 pages, the number goes from 7,281 KB to 3,552 KB, because that plugin keeps its own list of the hashes.
+  
+  A plugin of your own that uses `info` in its middleware keeps the info in the same way. Take the values that the middleware needs in `setup`, such as `const { files } = info`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Each app server now has its own stop state and its own `shutdownSignal()`. Before, each `createServer` app of the process shared one pair, and each start of a server replaced the signal.
+  
+  - A `shutdownSignal()` that code read before the server started to listen now aborts at shutdown, such as a signal that a route module read at module load or that a plugin read in `setup`. Before, the start of the server replaced that signal, so it never aborted, and work that waited on it ran until the drain deadline. With two app servers in one process, it is the signal of only one of them, as the next item says.
+  - In a request, and in work that the request started, `shutdownSignal()` is the signal of the app server that serves the request. Outside a request, and on a host with no request storage, it is the signal of the last `createServer` call, as the sink of `logger()` is.
+  - With two app servers in one process, the shutdown of one no longer makes `/readyz` of the other answer 503, and no longer closes the `eventStream()` responses of the other. An event stream that one server opened before the other started now closes when its own server shuts down.
+  - `app-server start` aborts the signal of each app server when it exits, also of an app server that an edit to `server.ts` replaced, as before. The edit alone aborts no signal.
+  - In a test, an app from `createServer` answers `/readyz` with 200 after another server of the process shut down. Before, it answered 503.
+  
+  An app with one server that reads `shutdownSignal()` in a request sees no change.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the node host, the server now lists the client build at start with at most 64 file system calls in flight. Before, it started a `stat` for each file and directory at one time, so a large site needed about 4 KiB of memory for each entry while it started. The list has the same entries.
+  
+  For a client build of 10,000 prerendered pages (71,004 files and directories), the list takes 497 ms in place of 582 ms (ratio 0.853), and the memory of the process grows by 92 MiB at its peak in place of 292 MiB (ratio 0.314). For 100 pages (1,704 entries), it takes 15.2 ms in place of 16.6 ms, and the memory grows by 8.3 MiB in place of 13.7 MiB. Two more runs of the 100 pages gave ratios of 1.013 and 1.014 for the time, so a small site starts as fast as before. Each number is the first `snapshot()` of a new process, as the median of 7 runs for each build in turn (Node.js 26.13, macOS, Apple M3 Max, with the files in the file cache). The time on Linux is not measured.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Two startup errors now name the file or the variable at fault:
+  
+  - **A `.app-server.json` that is not whole JSON**, such as a file that a copy cut short: `The server cannot read .app-server.json as JSON. Build the app again.` Before, the error was the one of the JSON parser, such as `Unterminated string in JSON at position 48`, with no file name.
+  - **A `HOST` that the server cannot listen on:** `The server cannot listen on host "192.0.2.1", port 3000. The host is from the HOST environment variable.` The error of the runtime is the `cause`. Before, Node.js gave `listen EADDRNOTAVAIL: address not available 192.0.2.1`, Bun gave `Failed to start server. Is port 3000 in use?`, and Deno gave `Can't assign requested address`, with no word on `HOST`.
+  
+  A port in use keeps the error of the runtime on Node.js and Deno. On Bun, a port in use gets the new error when `HOST` is set, because Bun gives one error for both faults. A `host` that the app gives to `tcp()` keeps the error of the runtime. If your code reads `error.code` of a failed `start()`, read it from `error.cause` for the new error.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A failed start now writes one `startup failed` line to the log, with the level `error` and the `error.*` fields, before `start()` of the server entry rejects. A start fails when the setup throws, such as the `setup` of a plugin, or when a listener does not start, such as for a port in use or a bad `PORT`. The line goes to the `logger` sink of the app, through its `log` hooks. Before, the error went only to stderr, as the crash output of the runtime, with no level and no time.
+  
+  The crash output and the exit code 1 do not change. If your own entry catches the error of `start()` and logs it, the log now has two lines for one failure. If you alert on `error` lines, a crash loop now raises that alert.
+  
+  For a build from the `appServer` plugin, the copy of the package in the server build writes the line, so build the app again to get it.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `assets()` and `prerendered()` now build the headers of a file response one time. Before, a response made a `Headers` object from the defaults, made a second one in `prerendered()` for the captured headers and the `headers` option, read and wrote them about 12 times, and then copied them into the response. The headers of each response stay the same. A value of the `headers` option still loses the white space at its ends, a number still becomes text, and a value that no header can hold still gives a 500.
+  
+  In process, with the default plugins and a `ResponseEdge` as the node listener calls the server (5 processes, each with 9 rounds of 3,000 requests, the build before and this change in turn; Node.js 26.13, Apple M3 Max): a prerendered page with a brotli copy takes 0.885 of its time before, its 304 0.85, a hashed asset with a copy 0.90, its 304 0.855, an image 0.910, a byte range 0.876, and a HEAD 0.902. Other work loaded the machine, so the ratio of one process went from 0.63 to 1.19. The CPU time of the same runs gives 0.84 to 0.94 for each of these requests, and 0.977 for a request that goes on to the framework. The page allocates 3.4 KB less on the heap for each request (50.5 KB to 47.1 KB), and takes 21.0 µs to 22.7 µs of CPU time in place of 23.7 µs to 28.3 µs (3 runs of 40,000 requests in one process for each build).
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - The `onShutdown` of a plugin can now return nothing, as `setup` can. Before, the type asked for a promise, so a cleanup with no `await`, such as `() => { clearInterval(timer); }`, needed `async`. The server already ran such a hook. Code that calls the `onShutdown` of another plugin must `await` the result, because it can be `undefined`.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `createTestServer` also takes the run side of a framework adapter as `framework`, such as `{ name: "test", fetch, isDataRequest: (path) => path.endsWith(".data") }`. A test can then set `isDataRequest` and `contentTypes`, so a data request gets its production headers, such as `Cache-Control: private, no-cache`. When the `buildId` option has a `value`, a data request also gets `X-Build-Id`, because a test server has no build ID of its own. Before, the test server had no data requests. The function form stays.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `trailingSlash()` costs less for a request that needs no redirect. It now tests the path before it lists the matched routes and parses the URL, which only a redirect needs. On Node.js v26.13, the stage went from about 600 ns to under 100 ns for each page request in the `never` mode, and from about 700 ns to about 150 ns in the `always` mode. A rendered page through the default plugins with no compression, as on Vercel, costs 3% to 7% less CPU time in the pipeline. The numbers come from requests in one process with no socket: the median of 21 to 31 rounds that take turns between the build before and this one.
+  
+  Each redirect is the same as before for a request with a valid `Host` header. Two answers change, each for a GET or HEAD request whose URL the stage no longer parses. That is a request whose path already has the form of the mode, and whose last path segment does not end with a `.` or a `\`.
+  
+  - A request whose URL does not parse, as with a `Host: 1.2.3.4.5` header, got a 500 from this stage. It now goes on to the next stage.
+  - On Deno, the URL of a request has the `Host` header as the client sent it. With a `\` in that header, the parsed URL has a different path: for `GET /` with `Host: a\b`, the path `/b/`. The request got the redirect for the parsed path, a 308 to `/b` in the `never` mode. It now goes on to the next stage.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the vercel host, the build now writes only the compressed copies that the deploy holds: the brotli copy of each file that the function serves, and no copy of a file that the CDN serves (a file under `cdnPaths` or Vite's `build.assetsDir`). Before, the build also made a gzip copy of each text file and both copies of each CDN file, and `vercel()` then left them out of `.vercel/output`.
+  
+  Each comparison in this note is between two builds that differ only in this change. Both builds have the compressed copies of each React Router `.data` file, which are new in this release. So no comparison in this note is with the last release.
+  
+  This change alone does not change the deploy, except in one rare case: for each file of the client build, `.vercel/output` of the two builds holds the same file or the same copy with the same bytes. `build/client` no longer holds a `.gz` copy or a copy of a CDN file.
+  
+  The rare case is a file whose brotli copy is smaller than the file and not smaller than its gzip copy. The build now keeps a brotli copy when it is smaller than the file. Before, it kept the copy only when it was also smaller than the gzip copy. So for such a file, the function now holds the brotli copy in place of the file and its gzip copy.
+  
+  For a React Router app with 1,000 prerendered pages (an HTML file of 28 KB and a `.data` file of 12 KB for each page), `react-router build` with `vercel()` spends 656 ms in `gzipSync` and `brotliCompressSync` in place of 1,162 ms, which is 0.56 of the time. So the build saves about 0.5 s for each 1,000 pages. Each number is the median of 5 builds of each version in turn, after one warm-up build, on Node.js 26.13 and macOS, from a preload script that times the two functions. `build/client` holds 2,001 copies (10.1 MB) in place of 4,008 (21.0 MB), and `.vercel/output/static` and the client build in the function have the same SHA-256 in the two builds.
+  
+  On the node host, the two builds write the same copies with the same bytes, in the same time: 1,124 ms and 1,130 ms in zlib, the median of 3 builds.
+  
+  For a host adapter: `HostBuild` has a new optional `copies` member. It gets the URL path of a file of the client build and the URL path of Vite's `build.assetsDir`, and it gives the encodings of the compressed copies that the host reads, such as `["br"]`. The build writes no other copy of that file. With no `copies`, the build writes the gzip and the brotli copy.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - On the vercel host, a cold start of the function now reads one list of the files of its client build. Before, it read each directory and called `stat` for each file, and the time grew with each prerendered page, also for a page that the CDN serves.
+  
+  `vercel()` writes the list to `.app-server-files.json` in the function's client build, in place of `.app-server-brotli.json`. The list has the size of each file that the function holds and the time of the build. The responses do not change: each file has the same headers, and its ETag still changes with each build.
+  
+  For a React Router app with 2,000 prerendered pages (4,003 files in 2,002 directories in the function), the first request of a cold start takes 20 ms in place of 82 ms, which is 0.24 of the time. The function calls `stat` 1 time in place of 6,006 times, and `readdir` 0 times in place of 2,002 times. The second request takes 1.5 ms in place of 0.7 ms, because a garbage collection that ran in the first request now runs in the second. From the third request on, a request takes the same time. Each number is the median of 11 runs of each build in turn, each run in a new process, after 2 warm-up runs (Node.js 26.13, macOS, Apple M3 Max, with the files in the file cache). Six such rounds gave ratios from 0.22 to 0.25 for the first request. The time on Vercel is not measured. The four file lookups of one page request take 235 ns in place of 985 ns. The list adds 122 KB to that function.
+  
+  The build step of `vercel()` takes each size from its own walk of the client build, so it calls `statSync` 10,055 times in place of 14,056 times for that app. Its time does not change by an amount that we can measure: 3 rounds of 15 runs of each build in turn gave ratios of 1.00, 0.97, and 0.97 for the median.
+  
+  Three things change for an app:
+  
+  - The function serves only the files that `vercel()` put in it. If a step after the build adds a file to `.vercel/output/functions/index.func`, the function does not serve that file. Before, it did.
+  - `.vc-config.json` has no `environment`, and the function no longer gets the `APP_SERVER_BUILT_AT` variable. The time of the build is in the list.
+  - The function's client build has `.app-server-files.json` and no `.app-server-brotli.json`.
+  
+  The node host does not change.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - `vercel({ cdnPages })` now writes its report of the paths that the function serves through the logger of the Vite build, so Vite's `logLevel` and `customLogger` apply to it. With a `logLevel` of `warn`, `error`, or `silent`, the report does not print. The report now names each path with its reason, as the README says. Before, it went to stdout and named the first 20 paths, so the reason for path 21 was in no file and in no log.
+  
+  With `appServer` before the framework's plugin, the build prints the report two times, as before: one time before the prerender pass, and one time after it. The last report is the correct one.
+  
+  For a host adapter: `HostOutput` has a new `logger` field, the logger of the Vite build, for what the host's `output` prints. After a prerender pass it is still the logger of the build, not the logger of the framework's preview server, which is silent for React Router.
+
+- [#78](https://github.com/ngrok/app-server/pull/78) [`88332de`](https://github.com/ngrok/app-server/commit/88332deac37444693dd4803a30418742cd146068) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - A production server whose client build is not there now says so. At startup, it writes one warn line, `client build not found`, with the directory as `app_server.client_directory`. Before, the server started with only `listening`, and each asset got a 404, such as in a Docker image that copied only the server build. The server still starts, because an app can keep its client build on a CDN. A directory with no files gives no line.
+
 ## 0.4.1
 
 ### Patch Changes
