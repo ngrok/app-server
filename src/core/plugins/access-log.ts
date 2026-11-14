@@ -64,6 +64,8 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  * with an `edge`, such as the node listener, counts the bytes.
  *
  * - A 5xx line has the level `error`, and each other line has the level `info`.
+ * - A 5xx whose client went away before the app answered has the status
+ *   `499` and the level `info`.
  * - A line has `http.route` when the framework adapter gives the route
  *   pattern that it matched, such as `/domains/:domainId`.
  * - In development, a request that Vite answers, such as a source module,
@@ -83,17 +85,16 @@ export function accessLog({
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
-			// Why a hook: it runs when the head is ready, which is the time that the header gives.
-			await (serverTiming
-				? withHeaderHook(context, next, (headers) => {
-						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
-							headers.append(
-								"Server-Timing",
-								`app;dur=${(performance.now() - started).toFixed(1)}`,
-							);
-						}
-					})
-				: next());
+			let clientLeft = false;
+			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
+			// There it reads the time for the header, and whether the client left before the answer. Why
+			// not later: the Node.js listener also aborts the signal when a body fails after the head.
+			await withHeaderHook(context, next, (headers) => {
+				clientLeft = context.req.raw.signal.aborted;
+				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
+					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
+				}
+			});
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;
@@ -101,12 +102,15 @@ export function accessLog({
 			// Why a catch: a log line must never change the response or stop its stream. The listener can
 			// call the report from an event of its socket, where a throw stops the process.
 			onResponseSent(context, (sent) => {
-				const line = lineAttributes(context, sent, started);
+				// Why 499, nginx's "Client Closed Request": React Router answers a request whose client went
+				// away with a 500, and the app did not fail.
+				const status = clientLeft && sent.status >= 500 ? 499 : sent.status;
+				const line = lineAttributes(context, { ...sent, status }, started);
 				try {
 					// Why `error` for a 5xx only: Datadog takes the status of a line from its level, and crawlers
 					// make most 4xx responses.
 					const logger = context.get("logger");
-					logger[sent.status >= 500 ? "error" : "info"](
+					logger[status >= 500 ? "error" : "info"](
 						"request",
 						attributes == null ? line : { ...line, ...attributes({ context, sent }) },
 					);

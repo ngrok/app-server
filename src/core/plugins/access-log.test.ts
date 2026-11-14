@@ -121,6 +121,34 @@ describe("accessLog", () => {
 		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
 	});
 
+	it("logs a 5xx with no body as 499 at info when the client went away before it", async () => {
+		const { request, lines } = await testServer({
+			plugins: [accessLog()],
+			render: async () => new Response(null, { status: 500 }),
+		});
+
+		await request("/", { method: "HEAD", signal: AbortSignal.abort() });
+
+		expect(lines[0]).toMatchObject({ level: "info", attributes: { "http.status_code": 499 } });
+	});
+
+	it("logs a 5xx as 499 when the client went away while an earlier stage finished", async () => {
+		const client = new AbortController();
+		const outer: Plugin = {
+			name: "outer",
+			middleware: async (context, next) => {
+				await next();
+				client.abort();
+				context.res = new Response(null, { status: 500 });
+			},
+		};
+		const { request, lines } = await testServer({ plugins: [outer, accessLog()] });
+
+		await request("/", { signal: client.signal });
+
+		expect(lines[0]).toMatchObject({ level: "info", attributes: { "http.status_code": 499 } });
+	});
+
 	it("logs a HEAD request to an app route", async () => {
 		const { request, lines } = await testServer({
 			plugins: [accessLog()],
@@ -336,6 +364,67 @@ describe("accessLog on the Node.js listener", () => {
 			"http.status_code": 200,
 			"network.bytes_written": 5,
 			"http.client_aborted": true,
+		});
+	});
+
+	it("logs a 5xx as 499 at info when the client went away before the app answered", async () => {
+		let arrived = () => {};
+		const started = new Promise<void>((resolve) => {
+			arrived = resolve;
+		});
+		const { url, requestLines } = await listening([accessLog()], async (request) => {
+			arrived();
+			await new Promise((resolve) => {
+				request.signal.addEventListener("abort", resolve, { once: true });
+			});
+			// Why: React Router answers a request whose signal aborted with a 500.
+			return new Response("Unexpected Server Error", { status: 500 });
+		});
+
+		const client = httpGet(new URL("/login", url).href).once("error", () => {});
+		await started;
+		client.destroy();
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(1);
+		});
+
+		expect(requestLines()[0]).toMatchObject({
+			level: "info",
+			attributes: { "http.status_code": 499, "http.client_aborted": true },
+		});
+	});
+
+	it("logs a 5xx at error when its body fails and the client stays", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		onTestFinished(() => {
+			vi.restoreAllMocks();
+		});
+		let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+		const { url, requestLines } = await listening(
+			[accessLog()],
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							source = controller;
+							controller.enqueue(encoder.encode("first"));
+						},
+					}),
+					{ status: 503, headers: { "Content-Type": "text/plain" } },
+				),
+		);
+
+		const response = await getRaw(new URL("/fails", url).href);
+		response.once("error", () => {});
+		await firstChunk(response);
+		source?.error(new Error("render failed"));
+		await vi.waitFor(() => {
+			expect(requestLines()).toHaveLength(1);
+		});
+
+		expect(requestLines()[0]).toMatchObject({
+			level: "error",
+			attributes: { "http.status_code": 503, "http.client_aborted": true },
 		});
 	});
 
