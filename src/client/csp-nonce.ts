@@ -21,7 +21,9 @@ import { documentNonce } from "./document-nonce.js";
  * <Scripts nonce={cspNonce()} />
  */
 export function cspNonce(): string | undefined {
-	return (
-		requestContext()?.cspNonce ?? (typeof document === "undefined" ? undefined : documentNonce())
-	);
+	const context = requestContext();
+	if (context != null) {
+		return context.cspNonce;
+	}
+	return typeof document === "undefined" ? undefined : documentNonce();
 }

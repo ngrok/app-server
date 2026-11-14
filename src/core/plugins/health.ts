@@ -42,8 +42,9 @@ function probe(text: string, status: 200 | 503): Response {
  * `defaultPlugins()` runs it first, so a probe skips the access log. Its
  * `health` option takes these options, and `false` turns it off.
  *
- * A path that does not start with `/`, or one path for both probes, stops
- * startup. For a platform with one health URL, set only `readyPath`.
+ * A path that does not start with `/`, a path with `?` or `#`, or one path
+ * for both probes stops startup. For a platform with one health URL, set only
+ * `readyPath`.
  *
  * @example
  * createServer({
@@ -60,6 +61,12 @@ export function health({
 		if (!path.startsWith("/")) {
 			throw new Error(
 				`health needs a ${option} that starts with "/", not ${JSON.stringify(path)}.`,
+			);
+		}
+		// Why: the request path has no query and no fragment, so no probe could match.
+		if (/[?#]/u.test(path)) {
+			throw new Error(
+				`health needs a ${option} with no "?" and no "#", not ${JSON.stringify(path)}. A probe path matches the path of the request only.`,
 			);
 		}
 	}

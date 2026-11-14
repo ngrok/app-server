@@ -71,6 +71,15 @@ describe("cspNonce", () => {
 		expect(browserCspNonce()).toBe("document-nonce");
 	});
 
+	it("gives no nonce for a request with no nonce, though the document has one", async () => {
+		vi.stubGlobal(
+			"document",
+			browserDocument('<!doctype html><script nonce="document-nonce"></script>'),
+		);
+
+		await expect(withRequestContext({}, () => cspNonce())).resolves.toBeUndefined();
+	});
+
 	it("exports the same names from the browser build", async () => {
 		const [browserEntry, serverEntry] = await Promise.all([
 			import("./browser.js"),

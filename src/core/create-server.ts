@@ -410,13 +410,9 @@ async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> 
  * the app's own routes, then the framework. It does not listen; the
  * `app-server` CLI starts it.
  *
- * Two plugins of one option of `defaultPlugins()`, such as two `bodyLimit()`,
- * stop startup. The exception is `redirects()`, because a second table is
- * valid. A plugin of `securityHeaders`, `noindex`, `buildId`,
- * `contentSecurityPolicy`, or `env` that comes after `prerendered()` also
- * stops startup, because the prerendered pages would not get it. So does an
- * entry of `plugins` that is not a plugin, such as a Hono middleware with no
- * plugin around it.
+ * A plugin list with an entry that is not a plugin, a second plugin of one
+ * option, or a plugin that the prerendered pages need after `prerendered()`
+ * stops startup. The README section "The pipeline" gives each rule.
  *
  * @example
  * // server.ts
@@ -710,14 +706,15 @@ export function createServer({
 		},
 		stopPlugins: async () => {
 			stoppingPlugins ??= (async () => {
-				const open = new Set<Plugin>();
+				// Why positions: a list can hold one plugin object two times.
+				const open = new Set<number>();
 				const hooks = (async () => {
 					await Promise.all(
-						plugins.map(async (plugin) => {
+						plugins.map(async (plugin, index) => {
 							if (plugin.onShutdown == null) {
 								return;
 							}
-							open.add(plugin);
+							open.add(index);
 							try {
 								await plugin.onShutdown();
 							} catch (error) {
@@ -728,7 +725,7 @@ export function createServer({
 									attributes: { "app_server.plugin": plugin.name, error: asError(error) },
 								});
 							}
-							open.delete(plugin);
+							open.delete(index);
 						}),
 					);
 				})();
@@ -738,7 +735,7 @@ export function createServer({
 						message: "plugin shutdown passed the deadline",
 						attributes: {
 							"app_server.deadline_ms": shutdownDeadlineMs,
-							"app_server.plugins": [...open].map((plugin) => plugin.name),
+							"app_server.plugins": [...open].map((index) => plugins[index]?.name),
 						},
 					});
 				}

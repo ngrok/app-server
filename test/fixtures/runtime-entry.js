@@ -126,9 +126,10 @@ const routes = {
 		),
 };
 
-// An app's own listener for a rejected promise, as an error tracker adds.
+// An app's own listener for a rejected promise, as an error tracker adds. Why `once` before
+// startup: on Bun, the listener removes itself before it runs, so the host must not count it then.
 if (process.env.OWN_REJECTION_LISTENER === "1") {
-	process.on("unhandledRejection", () => {
+	process.once("unhandledRejection", () => {
 		logger().warn("the app got the rejection");
 	});
 }

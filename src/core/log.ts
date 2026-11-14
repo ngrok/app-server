@@ -21,7 +21,7 @@ export function flushLogs(): void {
 	hostWriter?.flush();
 }
 
-/** Gives `line` to the host's log writer. Without one, `console.log` writes it, because each runtime has it. */
+/** Gives `line` to the host's log writer, else to `console.log`. */
 function writeLine(line: string): void {
 	if (hostWriter == null) {
 		// Why the slice: `console.log` adds the `\n` of the line.

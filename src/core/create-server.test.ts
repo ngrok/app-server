@@ -855,6 +855,32 @@ describe("createServer", () => {
 		]);
 	});
 
+	it("names a plugin at the deadline when one of its two places in the list hangs", async () => {
+		let calls = 0;
+		const twice = {
+			name: "twice",
+			onShutdown: async () => {
+				calls += 1;
+				if (calls === 2) {
+					await new Promise(() => {});
+				}
+			},
+		};
+		const { internals, lines } = await testServer({
+			plugins: [twice, twice],
+			options: { shutdownDeadlineMs: 50 },
+		});
+
+		await internals.stopPlugins();
+
+		expect(lines).toMatchObject([
+			{
+				message: "plugin shutdown passed the deadline",
+				attributes: { "app_server.plugins": ["twice"] },
+			},
+		]);
+	});
+
 	it("runs an onShutdown that returns no promise one time, and logs one that throws", async () => {
 		const onShutdown = vi.fn<() => void>();
 		const { internals, lines } = await testServer({

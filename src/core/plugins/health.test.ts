@@ -37,6 +37,15 @@ describe("health", () => {
 		);
 	});
 
+	it("stops startup for a path with a query or a fragment, which no request path has", () => {
+		expect(() => health({ readyPath: "/readyz?full" })).toThrow(
+			'health needs a readyPath with no "?" and no "#", not "/readyz?full".',
+		);
+		expect(() => health({ livePath: "/livez#a" })).toThrow(
+			'health needs a livePath with no "?" and no "#", not "/livez#a".',
+		);
+	});
+
 	it("stops startup for one path for both probes, which would never run the readiness check", () => {
 		expect(() => health({ livePath: "/healthz", readyPath: "/healthz" })).toThrow(
 			'health needs a livePath and a readyPath that differ. Both are "/healthz"',

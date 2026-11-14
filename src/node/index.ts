@@ -24,6 +24,27 @@ export type {
 
 const storage = new AsyncLocalStorage<RequestScope>();
 
+/** The crash handler of each stop that the host registered, for a rejection that no app listener handles on Bun. */
+const rejectionCrashes = new Set<(error: unknown, origin: string) => void>();
+
+/**
+ * Crashes each registered server for a rejection that the app does not handle.
+ * Why one listener before the others: an app's `process.once` listener
+ * removes itself before it runs, and a listener for each server would count
+ * as an app listener.
+ */
+function onRejection(reason: unknown): void {
+	if (process.listenerCount("unhandledRejection") > 1) {
+		return;
+	}
+	process.off("unhandledRejection", onRejection);
+	const crashes = [...rejectionCrashes];
+	rejectionCrashes.clear();
+	for (const crash of crashes) {
+		crash(reason, "unhandledRejection");
+	}
+}
+
 /**
  * The node host: one long-lived process on Node, Bun, or Deno, such as a
  * Docker image. It listens with `tcp()`, reads the client build from the file
@@ -67,17 +88,12 @@ export const host: HostRuntime = {
 			};
 			// Why once: an error loop gets the runtime's own stop, not a log line for each error.
 			process.once("uncaughtException", crash);
+			// Why: Bun does not send a rejection with no handler to `uncaughtException`, as Node.js and Deno do.
 			if ("Bun" in globalThis) {
-				// Why: Bun does not send a rejection with no handler to `uncaughtException`, as Node.js and Deno do.
-				const onRejection = (reason: unknown) => {
-					// Why the count: an app's own listener handles the rejection, as on Node.js and Deno.
-					if (process.listenerCount("unhandledRejection") > 1) {
-						return;
-					}
-					process.off("unhandledRejection", onRejection);
-					crash(reason, "unhandledRejection");
-				};
-				process.on("unhandledRejection", onRejection);
+				if (rejectionCrashes.size === 0) {
+					process.prependListener("unhandledRejection", onRejection);
+				}
+				rejectionCrashes.add(crash);
 			}
 		},
 	},
