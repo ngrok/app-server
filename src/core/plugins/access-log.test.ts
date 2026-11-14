@@ -158,7 +158,7 @@ describe("accessLog", () => {
 		const response = await request("/streamed");
 		await response.body?.cancel();
 
-		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
+		expect(lines[0]?.attributes["http.aborted"]).toBe(true);
 	});
 
 	it("logs a line when the response body fails", async () => {
@@ -177,7 +177,7 @@ describe("accessLog", () => {
 		const response = await request("/");
 		await expect(response.text()).rejects.toThrow("render failed");
 
-		expect(lines[0]?.attributes["http.client_aborted"]).toBe(true);
+		expect(lines[0]?.attributes["http.aborted"]).toBe(true);
 	});
 
 	it("logs a 5xx with no body as 499 at info when the client went away before it", async () => {
@@ -369,7 +369,7 @@ describe("accessLog", () => {
 		];
 		expect(lines.map((line) => Object.keys(line.attributes))).toStrictEqual([
 			[...keys, "usr.id"],
-			[...keys, "http.client_aborted", "usr.id"],
+			[...keys, "http.aborted", "usr.id"],
 		]);
 	});
 });
@@ -404,7 +404,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(response.headers["content-encoding"]).toBe("gzip");
 		expect(requestLines()[0]?.attributes["network.bytes_written"]).toBe(received);
-		expect(requestLines()[0]?.attributes["http.client_aborted"]).toBeUndefined();
+		expect(requestLines()[0]?.attributes["http.aborted"]).toBeUndefined();
 	});
 
 	it("marks the line when the client disconnects before the body ends", async () => {
@@ -422,7 +422,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"http.status_code": 200,
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -449,7 +449,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]).toMatchObject({
 			level: "info",
-			attributes: { "http.status_code": 499, "http.client_aborted": true },
+			attributes: { "http.status_code": 499, "http.aborted": true },
 		});
 	});
 
@@ -483,7 +483,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]).toMatchObject({
 			level: "error",
-			attributes: { "http.status_code": 503, "http.client_aborted": true },
+			attributes: { "http.status_code": 503, "http.aborted": true },
 		});
 	});
 
@@ -517,7 +517,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(first.toString()).toBe("first");
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -589,7 +589,7 @@ describe("accessLog on the Node.js listener", () => {
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"http.status_code": 200,
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 
@@ -609,7 +609,7 @@ describe("accessLog on the Node.js listener", () => {
 
 		expect(requestLines()[0]?.attributes).toMatchObject({
 			"network.bytes_written": size,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 

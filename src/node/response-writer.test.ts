@@ -270,7 +270,7 @@ describe("the node response writer", () => {
 		expect([
 			attributes["http.request_id"],
 			attributes["http.status_code"],
-			attributes["http.client_aborted"],
+			attributes["http.aborted"],
 		]).toStrictEqual(["abc-123", 500, undefined]);
 		expect(linesOf("unhandled error")[0]?.attributes).toMatchObject({
 			"http.request_id": "abc-123",

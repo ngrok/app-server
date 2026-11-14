@@ -217,7 +217,7 @@ describe("handler", () => {
 
 		expect(requestLine(await written.promise)).toMatchObject({
 			"network.bytes_written": 5,
-			"http.client_aborted": true,
+			"http.aborted": true,
 		});
 	});
 

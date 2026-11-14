@@ -80,6 +80,8 @@ function loggedReferer(referer: string | undefined, { redact }: { redact: boolea
  *   `499` and the level `info`.
  * - A line has `http.route` when the framework adapter gives the route
  *   pattern that it matched, such as `/domains/:domainId`.
+ * - A line has `http.aborted: true` when the body stopped before its end: the
+ *   client left, the body failed, or the server closed the connection.
  * - In development, a request that Vite answers, such as a source module,
  *   gets no line.
  * - A request of the build's check of the CDN pages gets no line.
@@ -97,17 +99,16 @@ export function accessLog({
 		name: "access-log",
 		middleware: async (context, next) => {
 			const started = performance.now();
-			// Why a hook: it runs when the head is ready, which is the time that the header gives.
-			await (serverTiming
-				? withBuiltInHeaderHook(context, next, (headers) => {
-						if (headers.get("Content-Type")?.startsWith("text/html") ?? false) {
-							headers.append(
-								"Server-Timing",
-								`app;dur=${(performance.now() - started).toFixed(1)}`,
-							);
-						}
-					})
-				: next());
+			let clientLeft = false;
+			// Why a hook: it runs where the head leaves, after each stage, also a stage before this plugin.
+			// There it reads the time for the header, and whether the client left before the answer. Why
+			// not later: the Node.js listener also aborts the signal when a body fails after the head.
+			await withBuiltInHeaderHook(context, next, (headers) => {
+				clientLeft = context.req.raw.signal.aborted;
+				if (serverTiming && (headers.get("Content-Type")?.startsWith("text/html") ?? false)) {
+					headers.append("Server-Timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
+				}
+			});
 			// Why skip the build's check of the CDN pages: its requests come from no visitor.
 			if (answeredByDevServer(context) || context.env?.onServedFile != null) {
 				return;
@@ -180,7 +181,7 @@ export function accessLog({
 			line["http.route"] = route;
 		}
 		if (aborted) {
-			line["http.client_aborted"] = true;
+			line["http.aborted"] = true;
 		}
 		return line;
 	}

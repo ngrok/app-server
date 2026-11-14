@@ -890,7 +890,7 @@ describe("createServer", () => {
 			lines.map(({ level, message, attributes }) => [
 				level,
 				message,
-				attributes["app_server.deadline_ms"] ?? attributes["http.client_aborted"],
+				attributes["app_server.deadline_ms"] ?? attributes["http.aborted"],
 			]),
 		).toStrictEqual([
 			["info", "listening", undefined],

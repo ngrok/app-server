@@ -321,7 +321,7 @@ async function check(runtime: string): Promise<void> {
 				(line) => line.message === "request" && line["http.url"] === "/stuck",
 			);
 			assert.ok(
-				cut !== -1 && cut < stopped && lines[cut]?.["http.client_aborted"] === true,
+				cut !== -1 && cut < stopped && lines[cut]?.["http.aborted"] === true,
 				"the access line of a response that the deadline cuts comes before `stopped`",
 			);
 		}
