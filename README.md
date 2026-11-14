@@ -985,17 +985,20 @@ When there are public values, the server sends each prerendered page from its fi
 
 ## Long-lived responses
 
-`eventStream()` makes a server-sent event response that sends a heartbeat every 15 s, stops when the client disconnects, and closes at shutdown so the drain does not wait for it. Its options are `signal`, `heartbeatMs` for another heartbeat interval, and `headers` for more response headers:
+`eventStream(produce, options)` makes a server-sent event response that sends a heartbeat every 15 s, stops when the client disconnects, and closes at shutdown so the drain does not wait for it. The stream ends when `produce` resolves. Its options are `signal`, `heartbeatMs` for another heartbeat interval, and `headers` for more response headers:
 
 ```ts
 import { eventStream } from "@ngrok/app-server";
 
 export async function loader({ request }: Route.LoaderArgs) {
-	return eventStream({ signal: request.signal }, async ({ send, signal }) => {
-		for await (const update of watch({ signal })) {
-			send({ event: "update", data: JSON.stringify(update) });
-		}
-	});
+	return eventStream(
+		async ({ send, signal }) => {
+			for await (const update of watch({ signal })) {
+				await send({ event: "update", data: JSON.stringify(update) });
+			}
+		},
+		{ signal: request.signal },
+	);
 }
 ```
 
@@ -1006,19 +1009,19 @@ export async function loader({ request }: Route.LoaderArgs) {
 ```ts
 export async function loader({ request }: Route.LoaderArgs) {
 	return eventStream(
-		{ signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } },
 		async ({ send, signal }) => {
 			for await (const update of watch({ signal })) {
-				send({ event: "update", data: JSON.stringify(update) });
+				await send({ event: "update", data: JSON.stringify(update) });
 			}
 		},
+		{ signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } },
 	);
 }
 ```
 
 A `Cache-Control` in `headers` takes the place of the default `no-cache`, so keep `no-cache` in it.
 
-`send()` does not wait for the client. The events that the client has not read wait in memory, with no limit. So send a long history in another response, such as a JSON response that the page gets before it opens the stream.
+Await `send()`. It waits while the client has 64 KiB or more of events that it has not read, so a slow client slows the producer and the server keeps little in memory. When the unread events pass 1 MiB, the stream stops: the response fails, and `signal` aborts. Only a producer that does not await `send()` gets there. The promise never rejects, and it resolves when the stream ends.
 
 For other long work, stop on `shutdownSignal()`. In a request, and in work that the request started, it is the signal of the app server that serves the request. Outside a request, such as at module load or in the `setup` of a plugin, it is the signal of the last `createServer` call, so it also aborts when that server shuts down. `app-server start` aborts each signal when it exits, and not when an edit to `server.ts` replaces the app server.
 

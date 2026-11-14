@@ -9,8 +9,13 @@ export type ServerSentEvent = {
 
 /** What {@link eventStream} passes to its producer. */
 export type EventStreamSink = {
-	/** Sends `event` at once. It does not wait for the client, so an event that the client has not read waits in memory. */
-	send: (event: ServerSentEvent) => void;
+	/**
+	 * Sends `event` at once. The promise resolves when the client has read
+	 * the earlier events, down to 64 KiB of unread bytes, or when the stream
+	 * ends. It never rejects. Await it, so that a slow client slows the
+	 * producer. A stream with more than 1 MiB of unread bytes stops.
+	 */
+	send: (event: ServerSentEvent) => Promise<void>;
 	/** Aborts while the stream is open: when the client disconnects or the server shuts down. Stop the work on it. */
 	signal: AbortSignal;
 };
@@ -35,6 +40,19 @@ export type EventStreamOptions = {
 
 /** Why: `setInterval` turns a longer delay, and a delay under 1, into 1 ms. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/** The unread bytes at which `send` makes the producer wait. */
+const HIGH_WATER_BYTES = 64 * 1024;
+
+/**
+ * The unread bytes at which the stream stops. Why a limit: a producer that
+ * does not await `send` would keep each event for a client that does not
+ * read in memory. A producer that awaits `send` never gets near it.
+ */
+const MAX_UNREAD_BYTES = 1024 * 1024;
+
+/** What `send` gives when the stream has room. Why one promise: a send with room allocates nothing. */
+const ROOM = Promise.resolve();
 
 /** The line of the field `name` of an event, or no text when the event does not have the field. */
 function fieldLine(name: string, value: string | undefined): string {
@@ -68,21 +86,25 @@ function formatEvent({ data, event, id }: ServerSentEvent): string {
  * closes at server shutdown so the drain does not wait for the deadline. The
  * stream closes when `produce` resolves.
  *
- * `send` does not wait for the client. The events that the client has not
- * read wait in memory, with no limit.
+ * Await `send`: it waits while the client has 64 KiB or more of events that
+ * it has not read. When the unread events pass 1 MiB, the stream stops: the
+ * response fails, and `signal` aborts.
  *
  * @example
  * export async function loader({ request }: Route.LoaderArgs) {
- * 	return eventStream({ signal: request.signal }, async ({ send, signal }) => {
- * 		for await (const update of watchUpdates({ signal })) {
- * 			send({ event: "update", data: JSON.stringify(update) });
- * 		}
- * 	});
+ * 	return eventStream(
+ * 		async ({ send, signal }) => {
+ * 			for await (const update of watchUpdates({ signal })) {
+ * 				await send({ event: "update", data: JSON.stringify(update) });
+ * 			}
+ * 		},
+ * 		{ signal: request.signal },
+ * 	);
  * }
  */
 export function eventStream(
-	{ signal, heartbeatMs = 15_000, headers }: EventStreamOptions,
 	produce: (sink: EventStreamSink) => void | Promise<void>,
+	{ signal, heartbeatMs = 15_000, headers }: EventStreamOptions = {},
 ): Response {
 	// Why negated: `NaN` fails each comparison, so it throws too.
 	if (!(heartbeatMs >= 1 && heartbeatMs <= MAX_TIMER_MS)) {
@@ -102,6 +124,8 @@ export function eventStream(
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	/** The controller of the body, until the stream ends. */
 	let open: ReadableStreamDefaultController<Uint8Array> | undefined;
+	/** What each `send` that waits gives, and the function that resolves it. */
+	let room: PromiseWithResolvers<void> | undefined;
 
 	/** Ends the stream. It gives the controller to the first call only, to close or fail the body. */
 	function end() {
@@ -109,7 +133,12 @@ export function eventStream(
 		open = undefined;
 		clearInterval(heartbeat);
 		upstream.removeEventListener("abort", stop);
+		release();
 		return controller;
+	}
+	function release() {
+		room?.resolve();
+		room = undefined;
 	}
 	function close() {
 		end()?.close();
@@ -118,35 +147,55 @@ export function eventStream(
 		close();
 		stopped.abort(upstream.reason);
 	}
-	function write(text: string) {
-		open?.enqueue(encoder.encode(text));
+	function send(event: ServerSentEvent): Promise<void> {
+		const controller = open;
+		if (controller == null) {
+			return ROOM;
+		}
+		controller.enqueue(encoder.encode(formatEvent(event)));
+		// Why `?? 0`: the size is `null` only for an errored stream, and `open` is unset by then.
+		const unread = HIGH_WATER_BYTES - (controller.desiredSize ?? 0);
+		if (unread < HIGH_WATER_BYTES) {
+			return ROOM;
+		}
+		if (unread > MAX_UNREAD_BYTES) {
+			const error = new Error(
+				`eventStream stopped: the client did not read ${unread} bytes of events. Await send().`,
+			);
+			end()?.error(error);
+			stopped.abort(error);
+			return ROOM;
+		}
+		room ??= Promise.withResolvers();
+		return room.promise;
 	}
 
-	const body = new ReadableStream<Uint8Array>({
-		start(controller) {
-			open = controller;
+	const body = new ReadableStream<Uint8Array>(
+		{
+			start(controller) {
+				open = controller;
+			},
+			// Why: the stream calls it when the unread bytes fall under the high-water mark.
+			pull: release,
+			cancel() {
+				end();
+				stopped.abort();
+			},
 		},
-		cancel() {
-			end();
-			stopped.abort();
-		},
-	});
+		{ highWaterMark: HIGH_WATER_BYTES, size: (chunk) => chunk.byteLength },
+	);
 	if (upstream.aborted) {
 		close();
 	} else {
 		heartbeat = setInterval(() => {
-			write(": ping\n\n");
+			// Why only with room: the client has events to read, and a ping would add to them.
+			if ((open?.desiredSize ?? 0) > 0) {
+				open?.enqueue(encoder.encode(": ping\n\n"));
+			}
 		}, heartbeatMs);
 		upstream.addEventListener("abort", stop);
 		Promise.resolve()
-			.then(async () =>
-				produce({
-					send: (event) => {
-						write(formatEvent(event));
-					},
-					signal: stopped.signal,
-				}),
-			)
+			.then(async () => produce({ send, signal: stopped.signal }))
 			.then(close, (error: unknown) => {
 				end()?.error(error);
 			});

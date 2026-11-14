@@ -7,7 +7,7 @@ A `Cache-Control` in the `headers` option of `eventStream()` now goes out. Befor
 So one stream can now opt out of compression: with `Cache-Control: no-cache, no-transform`, `streamingCompress()` and each proxy send the stream as it is. Why: a compressed stream holds its encoder until it ends, and a quiet feed that stays open saves few bytes for that memory.
 
 ```ts
-eventStream({ signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } }, produce);
+eventStream(produce, { signal: request.signal, headers: { "Cache-Control": "no-cache, no-transform" } });
 ```
 
 We measured 300 open streams of 3 events each on the node host with the default plugins, on Node.js 26.13 and an Apple M3 Max, 3 times each: the resident set size (RSS) of the process with the streams open, less the RSS before, for each stream.

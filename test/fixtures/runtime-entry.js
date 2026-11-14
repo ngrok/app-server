@@ -117,10 +117,13 @@ const routes = {
 		new Response("<p>page</p>".repeat(200), { headers: { "Content-Type": "text/html" } }),
 	"/upload": async (request) => new Response(String((await request.arrayBuffer()).byteLength)),
 	"/events": (request) =>
-		eventStream({ signal: request.signal }, ({ send }) => {
-			send({ data: "hello" });
-			return new Promise(() => {});
-		}),
+		eventStream(
+			({ send }) => {
+				send({ data: "hello" });
+				return new Promise(() => {});
+			},
+			{ signal: request.signal },
+		),
 };
 
 // An app's own listener for a rejected promise, as an error tracker adds.

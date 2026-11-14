@@ -638,7 +638,7 @@ describe("createServer", () => {
 		const onShutdown = vi.fn<() => Promise<void>>(async () => {});
 		const server = await listening(
 			async () =>
-				eventStream({}, async ({ send }) => {
+				eventStream(async ({ send }) => {
 					send({ data: "hello" });
 					return new Promise(() => {});
 				}),
@@ -691,7 +691,7 @@ describe("createServer", () => {
 				shutdownDeadlineMs: 2_000,
 			});
 			app.get("/events", () =>
-				eventStream({}, async ({ send }) => {
+				eventStream(async ({ send }) => {
 					send({ data: "open" });
 					await more.promise;
 					send({ data: "still open" });

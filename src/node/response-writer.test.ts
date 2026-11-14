@@ -186,7 +186,7 @@ describe("the node response writer", () => {
 	it("sends the head of an event stream through gzip before its first event", async () => {
 		const opened = Promise.withResolvers<undefined>();
 		const url = await listening(async () =>
-			eventStream({}, async ({ send }) => {
+			eventStream(async ({ send }) => {
 				await opened.promise;
 				send({ data: "hello" });
 				return new Promise(() => {});

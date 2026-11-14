@@ -28,7 +28,7 @@ async function openStream(): Promise<
 	EventStreamSink & { reader: ReadableStreamDefaultReader<Uint8Array> }
 > {
 	const sink = Promise.withResolvers<EventStreamSink>();
-	const response = eventStream({}, async (given) => {
+	const response = eventStream(async (given) => {
 		sink.resolve(given);
 		return new Promise(() => {});
 	});
@@ -47,7 +47,7 @@ async function nextTurn(): Promise<void> {
 
 describe("eventStream", () => {
 	it("writes each event in the event-stream format and ends when produce resolves", async () => {
-		const response = eventStream({}, ({ send }) => {
+		const response = eventStream(({ send }) => {
 			send({ event: "update", id: "7", data: "line one\nline two" });
 		});
 
@@ -58,11 +58,10 @@ describe("eventStream", () => {
 	});
 
 	it("sends Cache-Control: no-cache, and a Cache-Control of the headers option in its place", async () => {
-		const byDefault = eventStream({ headers: { "X-Feed": "orders" } }, () => {});
-		const withOption = eventStream(
-			{ headers: { "cache-control": "no-cache, no-transform" } },
-			() => {},
-		);
+		const byDefault = eventStream(() => {}, { headers: { "X-Feed": "orders" } });
+		const withOption = eventStream(() => {}, {
+			headers: { "cache-control": "no-cache, no-transform" },
+		});
 
 		expect(Object.fromEntries(byDefault.headers)).toStrictEqual({
 			"cache-control": "no-cache",
@@ -78,14 +77,14 @@ describe("eventStream", () => {
 			plugins: defaultPlugins(),
 			render: async (given) =>
 				eventStream(
-					given.url.endsWith("/plain")
-						? { headers: { "Cache-Control": "no-cache, no-transform" } }
-						: {},
 					// Why it stays open: the server sends a short body that ends at once with no compression.
 					async ({ send }) => {
 						send({ data: "hello" });
 						return new Promise(() => {});
 					},
+					given.url.endsWith("/plain")
+						? { headers: { "Cache-Control": "no-cache, no-transform" } }
+						: {},
 				),
 		});
 		const headers = { "Accept-Encoding": "br" };
@@ -102,7 +101,7 @@ describe("eventStream", () => {
 	});
 
 	it("splits the data on a lone carriage return, so the client cannot read it as a field", async () => {
-		const response = eventStream({}, ({ send }) => {
+		const response = eventStream(({ send }) => {
 			send({ data: "first\revent: injected" });
 		});
 
@@ -110,7 +109,7 @@ describe("eventStream", () => {
 	});
 
 	it("writes each line of the data as one line, for each kind of line break", async () => {
-		const response = eventStream({}, ({ send }) => {
+		const response = eventStream(({ send }) => {
 			send({ data: "one\r\ntwo\rthree\nfour\n" });
 			send({ id: "8", data: "" });
 		});
@@ -124,7 +123,7 @@ describe("eventStream", () => {
 		{ field: "event", event: { event: "update\ndata: injected", data: "x" } },
 		{ field: "id", event: { id: "7\rdata: injected", data: "x" } },
 	])("refuses a line break in the $field of an event", async ({ event }) => {
-		const response = eventStream({}, ({ send }) => {
+		const response = eventStream(({ send }) => {
 			send(event);
 		});
 
@@ -143,7 +142,7 @@ describe("eventStream", () => {
 		{ value: "an array with a line break", data: ["x\nevent: injected"], type: "object" },
 		{ value: "a typed array", data: new Uint8Array([97, 10, 98]), type: "object" },
 	])("refuses data that is $value", async ({ data, type }) => {
-		const response = eventStream({}, ({ send }) => {
+		const response = eventStream(({ send }) => {
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the test sends a value that its type does not allow.
 			send({ data: data as unknown as string });
 		});
@@ -155,7 +154,7 @@ describe("eventStream", () => {
 
 	it("sends a heartbeat comment while the stream is quiet", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
-		const response = eventStream({ heartbeatMs: 1_000 }, async () => new Promise(() => {}));
+		const response = eventStream(async () => new Promise(() => {}), { heartbeatMs: 1_000 });
 		const reader = response.body?.getReader();
 
 		await vi.advanceTimersByTimeAsync(1_000);
@@ -169,7 +168,7 @@ describe("eventStream", () => {
 	it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
 		"refuses a heartbeatMs of %s with a message that names it",
 		(heartbeatMs) => {
-			expect(() => eventStream({ heartbeatMs }, () => {})).toThrow(
+			expect(() => eventStream(() => {}, { heartbeatMs })).toThrow(
 				new RangeError(`eventStream needs a heartbeatMs from 1 to 2147483647, not ${heartbeatMs}.`),
 			);
 		},
@@ -177,9 +176,12 @@ describe("eventStream", () => {
 
 	// Why 1.5: a timer holds a delay with a fraction, such as the result of `seconds * 1000`.
 	it.each([1, 1.5, 2_147_483_647])("takes a heartbeatMs of %s", async (heartbeatMs) => {
-		const response = eventStream({ heartbeatMs }, ({ send }) => {
-			send({ data: "x" });
-		});
+		const response = eventStream(
+			({ send }) => {
+				send({ data: "x" });
+			},
+			{ heartbeatMs },
+		);
 
 		await expect(readAll(response)).resolves.toBe("data: x\n\n");
 	});
@@ -187,10 +189,13 @@ describe("eventStream", () => {
 	it("aborts the producer's signal and ends the stream when the request aborts", async () => {
 		const request = new AbortController();
 		let producerSignal: AbortSignal | undefined;
-		const response = eventStream({ signal: request.signal }, async ({ signal }) => {
-			producerSignal = signal;
-			return new Promise(() => {});
-		});
+		const response = eventStream(
+			async ({ signal }) => {
+				producerSignal = signal;
+				return new Promise(() => {});
+			},
+			{ signal: request.signal },
+		);
 
 		request.abort("the client left");
 
@@ -203,13 +208,13 @@ describe("eventStream", () => {
 	it.each<{ source: string; start: (produce: () => void) => Response }>([
 		{
 			source: "the request aborted",
-			start: (produce) => eventStream({ signal: AbortSignal.abort() }, produce),
+			start: (produce) => eventStream(produce, { signal: AbortSignal.abort() }),
 		},
 		{
 			source: "the server shut down",
 			start: (produce) => {
 				abortShutdownSignal();
-				return eventStream({}, produce);
+				return eventStream(produce);
 			},
 		},
 	])("ends at once and does not run produce when $source before the call", async ({ start }) => {
@@ -233,7 +238,7 @@ describe("eventStream", () => {
 	});
 
 	it("errors the stream when produce rejects", async () => {
-		const response = eventStream({}, async () => {
+		const response = eventStream(async () => {
 			throw new Error("upstream failed");
 		});
 
@@ -244,18 +249,16 @@ describe("eventStream", () => {
 		const { send, reader } = await openStream();
 		await reader.cancel();
 
-		expect(() => {
-			send({ data: "late" });
-		}).not.toThrow();
+		await expect(send({ data: "late" })).resolves.toBeUndefined();
 	});
 
-	it("sends each event of a burst of more than 1 MiB to a client that reads", async () => {
+	it("sends each event of a burst of more than 1 MiB to a client that reads, when the producer awaits send", async () => {
 		const clientRead = Promise.withResolvers<undefined>();
-		const response = eventStream({}, async ({ send }) => {
-			send({ data: "" });
+		const response = eventStream(async ({ send }) => {
+			await send({ data: "" });
 			await clientRead.promise;
 			for (let count = 0; count < 1_100; count += 1) {
-				send({ data: "x".repeat(1024 - 8) });
+				await send({ data: "x".repeat(1024 - 8) });
 			}
 		});
 		const reader = response.body?.getReader();
@@ -270,6 +273,77 @@ describe("eventStream", () => {
 		expect(bytes).toBe(1_100 * 1024);
 	});
 
+	it("makes send wait while the client has 64 KiB unread, until the client reads", async () => {
+		const { send, reader } = await openStream();
+		const data = "x".repeat(32 * 1024);
+
+		await expect(send({ data })).resolves.toBeUndefined();
+		const full = send({ data });
+		let resolved = false;
+		void full.then(() => {
+			resolved = true;
+		});
+		await nextTurn();
+		const waited = resolved;
+		await reader.read();
+		await full;
+
+		expect(waited).toBe(false);
+		await reader.cancel();
+	});
+
+	it("stops a stream with more than 1 MiB unread, and aborts the signal of the producer", async () => {
+		const { send, signal, reader } = await openStream();
+
+		for (let count = 0; count < 17; count += 1) {
+			void send({ data: "x".repeat(64 * 1024) });
+		}
+
+		expect(signal.aborted).toBe(true);
+		expect(String(signal.reason)).toContain("Await send()");
+		// Why drain first: the reader gives each queued chunk before it gives the error.
+		const drained = async (): Promise<unknown> => {
+			for (;;) {
+				// oxlint-disable-next-line no-await-in-loop -- each read depends on the one before it.
+				const chunk = await reader.read();
+				if (chunk.done) {
+					return undefined;
+				}
+			}
+		};
+		await expect(drained()).rejects.toThrow("Await send()");
+	});
+
+	it("sends 4 MiB through gzip to a client that reads, when the producer awaits send", async () => {
+		const data = Buffer.from(crypto.getRandomValues(new Uint8Array(48 * 1024))).toString("base64");
+		const { request } = await testServer({
+			plugins: defaultPlugins(),
+			render: async () =>
+				eventStream(async ({ send }) => {
+					for (let count = 0; count < 64; count += 1) {
+						await send({ data });
+					}
+				}),
+		});
+
+		const response = await request("/feed", { headers: { "Accept-Encoding": "gzip" } });
+		const body = await new Response(
+			response.body?.pipeThrough(new DecompressionStream("gzip")),
+		).text();
+
+		expect(response.headers.get("Content-Encoding")).toBe("gzip");
+		expect(body).toBe(`data: ${data}\n\n`.repeat(64));
+	});
+
+	it("resolves a send that waits when the client leaves", async () => {
+		const { send, reader } = await openStream();
+		const waiting = send({ data: "x".repeat(64 * 1024) });
+
+		await reader.cancel();
+
+		await expect(waiting).resolves.toBeUndefined();
+	});
+
 	it("sends each event at once to a client that reads, also past 1 MiB in total", async () => {
 		const data = "x".repeat(256 * 1024);
 		let sendNext = () => {};
@@ -277,7 +351,7 @@ describe("eventStream", () => {
 			new Promise<void>((resolve) => {
 				sendNext = resolve;
 			});
-		const response = eventStream({}, async ({ send }) => {
+		const response = eventStream(async ({ send }) => {
 			for (let count = 0; count < 8; count += 1) {
 				send({ data });
 				await clientRead();
@@ -310,10 +384,13 @@ describe("eventStream", () => {
 			const request = new AbortController();
 			const onAbort = vi.fn<() => void>();
 			let producerSignal: AbortSignal | undefined;
-			const response = eventStream({ signal: request.signal }, ({ signal }) => {
-				producerSignal = signal;
-				signal.addEventListener("abort", onAbort);
-			});
+			const response = eventStream(
+				({ signal }) => {
+					producerSignal = signal;
+					signal.addEventListener("abort", onAbort);
+				},
+				{ signal: request.signal },
+			);
 			await readAll(response);
 
 			abort(request);
@@ -326,7 +403,7 @@ describe("eventStream", () => {
 	// Why: a signal walks its list of listeners to add or remove one, so a listener for each open
 	// stream makes each stream cost more as more streams are open.
 	it("adds no listener to shutdownSignal() for an open stream", async () => {
-		const response = eventStream({}, async () => new Promise(() => {}));
+		const response = eventStream(async () => new Promise(() => {}));
 
 		expect(getEventListeners(shutdownSignal(), "abort")).toStrictEqual([]);
 		await response.body?.cancel();
@@ -358,10 +435,13 @@ describe("eventStream", () => {
 			const request = new AbortController();
 			const streamed = async () => {
 				const onAbort = () => {};
-				const response = eventStream({ signal: request.signal }, async (sink) => {
-					sink.signal.addEventListener("abort", onAbort);
-					return produce(sink);
-				});
+				const response = eventStream(
+					async (sink) => {
+						sink.signal.addEventListener("abort", onAbort);
+						return produce(sink);
+					},
+					{ signal: request.signal },
+				);
 				await finish(response);
 				return new WeakRef(onAbort);
 			};
