@@ -1,5 +1,11 @@
 # @ngrok/app-server
 
+## 0.5.1
+
+### Patch Changes
+
+- [#79](https://github.com/ngrok/app-server/pull/79) [`5364160`](https://github.com/ngrok/app-server/commit/5364160144387efa1e346a8918883d02dfb252f2) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Update dependencies within the 6h minimum release age.
+
 ## 0.5.0
 
 ### Minor Changes
