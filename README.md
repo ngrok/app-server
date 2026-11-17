@@ -238,7 +238,7 @@ With `vercel({ cdnPages: true })`, the CDN serves each public prerendered page w
 
 - It is a 200 from the page's file.
 - It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
-- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only the request ID header of `requestId()` and `Date` can change.
+- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown but with `text/event-stream`, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only the request ID header of `requestId()` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 
 The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason. The report goes through the logger of the Vite build at the `info` level, so Vite's `logLevel` and `customLogger` apply to it. With `appServer` before the framework's plugin, the build prints the report two times, and the report after the prerender pass is the correct one.
@@ -338,6 +338,17 @@ A function is not a plugin. To use a Hono middleware, such as `basicAuth()` from
 import { basicAuth } from "hono/basic-auth";
 
 const auth: Plugin = { name: "basic-auth", middleware: basicAuth({ username, password }) };
+```
+
+For the CORS headers of the routes under one path, add `cors()` to the app, not to the plugin list. A plugin runs for each path. To serve a protocol endpoint and a page at one URL, use `protocolRoute()`. See [A protocol endpoint and a page at one URL](#a-protocol-endpoint-and-a-page-at-one-url).
+
+```ts
+import { createServer } from "@ngrok/app-server";
+import { cors } from "hono/cors";
+
+const app = createServer();
+app.use("/api/*", cors({ origin: "https://example.com" }));
+export default app;
 ```
 
 `createServer` stops startup for an entry of the plugin list that is not a plugin, with an error that names the entry and the fix. The `Plugin` type also rejects each of these entries:
@@ -819,6 +830,58 @@ export default async function handleRequest(
 ```
 
 A resource route, or a TanStack Start server route, gets the same `Request`. Call `prefersMarkdown(request)` there.
+
+### A protocol endpoint and a page at one URL
+
+One URL can answer a protocol client and a browser, such as `/mcp` for Model Context Protocol (MCP) clients and for the setup steps. The framework cannot do this alone. React Router picks a resource route or a page route from the route module, not from the request. On a page route, it answers `OPTIONS` with a 405 before any route middleware runs, and it rejects a cross-origin `POST`.
+
+`protocolRoute()` does the job. A page request at `path` goes on to the framework. Each other request at `path` goes to `handle`, with the CORS headers of `cors`. A page request is a `GET` or a `HEAD` that does not accept `text/event-stream`:
+
+- Each other method, such as `POST` or `OPTIONS`, goes to `handle`.
+- Only an explicit `text/event-stream` range with a `q` more than 0 sends a `GET` to `handle`. A wildcard, such as `*/*`, does not, so a browser gets the page.
+
+In this example, `mcpHandler` is the app's own MCP handler:
+
+```ts
+import { createServer, defaultPlugins, protocolRoute } from "@ngrok/app-server";
+
+const mcp = protocolRoute({
+	path: "/mcp",
+	handle: async (request) => mcpHandler.fetch(request),
+	cors: { origin: "*" },
+});
+
+export default createServer({ plugins: defaultPlugins({ beforeStatic: [mcp] }) });
+```
+
+- `path` matches the exact path of the request. A framework data request, such as `/mcp.data`, has another path, so it goes to the framework. A `path` that does not start with `/`, or that has a `?` or a `#`, stops startup.
+- `cors` takes the options of `cors()` from `hono/cors`. With them, an `OPTIONS` request gets the CORS answer, a 204, and does not reach `handle`. Without them, `handle` gets the `OPTIONS` request, and its answers get no CORS headers.
+- A `GET` and a `HEAD` at `path` get `Vary: Accept` on both answers. Else a shared cache can give the page to a protocol client.
+- Put the plugin in `beforeStatic`. Then a prerendered page at `path` also gets `Vary: Accept`.
+- A thrown error in `handle` gets the answer of the app's `onError`.
+
+`server.ts` and the framework's server module share one copy of each module, in development and in the build. So `handle` can call the app's own functions and caches, the same that the loaders use. To get the answer of one of the app's routes, use `appFetch()`. See [Requests to the app's own routes](#requests-to-the-apps-own-routes).
+
+## Requests to the app's own routes
+
+`appFetch(request)` sends a request through the framework in the same process, and gives the framework's response. Use it in a plugin, a route, or a loader to get the answer of another route of the app, such as the markdown of a page. It adds no network round trip, and the app needs no table of its routes.
+
+```ts
+import { appFetch } from "@ngrok/app-server";
+
+export async function loader({ request }: Route.LoaderArgs) {
+	const twin = await appFetch(
+		new Request(new URL("/docs/button.md", request.url), { headers: request.headers }),
+	);
+	return { markdown: await twin.text() };
+}
+```
+
+- The request skips each plugin and each Hono route of the app. So it gets no access log line, no compression, no auth plugin, and no prerendered file. Keep the access check of a private route in the route, or check access before the call.
+- The framework runs its route middleware.
+- The request shares the request ID, the logger, and the client address of the request that runs, so `requestContext()` gives the same values. The access log line of that request keeps its own `http.route`.
+- Build the URL from the URL of the request that runs. Copy each header that the route needs, such as `Cookie`.
+- It throws outside a request of the app server, such as in a prerender pass or after the response is sent, and on a host with no request storage.
 
 ## Prerendered headers
 

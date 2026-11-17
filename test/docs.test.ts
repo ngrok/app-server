@@ -119,6 +119,7 @@ declare function watch(options: { signal: AbortSignal }): AsyncIterable<unknown>
 declare function route(path: string, file: string): unknown;
 declare const datadogRum: { addAction: (name: string, context: object) => void };
 declare const db: { ping: () => Promise<boolean> };
+declare const mcpHandler: { fetch: (request: Request) => Promise<Response> };
 declare const error: Error;
 declare const policy: (document: { scriptSrc: string }) => string;
 declare const routeTree: import("@tanstack/react-router").AnyRoute;

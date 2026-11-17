@@ -1,4 +1,4 @@
-import type { Context } from "hono";
+import { Context } from "hono";
 import { hookSink, jsonSink, sinkLogger } from "./log.js";
 import type { ShutdownState } from "./shutdown.js";
 import type {
@@ -161,6 +161,52 @@ export function currentShutdown(): ShutdownState | undefined {
 		return context.get("shutdown");
 	}
 	return scope?.values instanceof SentValues ? scope.values.shutdown : undefined;
+}
+
+/**
+ * Sends `request` through the framework in the same process, and gives the
+ * framework's response.
+ *
+ * Use it in a plugin, a route, or a loader to get the answer of another of
+ * the app's routes, such as the markdown of a page, with no network round
+ * trip and no table of the app's routes.
+ *
+ * The request skips each plugin and each Hono route of the app: it gets no
+ * access log line, no compression, no auth plugin, and no prerendered file.
+ * The framework runs its route middleware. The request shares the request ID,
+ * the logger, and the client address of the request that runs. Build the URL
+ * from the URL of that request, and copy each header that the route needs,
+ * such as `Cookie`.
+ *
+ * It throws outside a request of the app server, such as in a prerender pass
+ * or after the response is sent, and on a host with no request storage.
+ *
+ * @example
+ * export async function loader({ request }: Route.LoaderArgs) {
+ * 	const twin = await appFetch(new Request(new URL("/docs/button.md", request.url)));
+ * }
+ */
+export async function appFetch(request: Request): Promise<Response> {
+	const context: Context<ServerEnv> | undefined = currentScope()?.context;
+	if (context == null) {
+		throw new Error(
+			"appFetch() runs only while the app server answers a request, on a host with request storage, such as node or vercel.",
+		);
+	}
+	// Why a context of its own: the framework sets the route pattern of the request that it renders,
+	// and the access log line of the request that runs must keep its own.
+	const inner = new Context<AppServerEnv>(request, { env: context.env });
+	const {
+		requestId,
+		logger: requestLogger,
+		cspNonce,
+		clientAddress,
+	} = requestContextValues(context);
+	inner.set("requestId", requestId);
+	inner.set("logger", requestLogger);
+	inner.set("cspNonce", cspNonce);
+	inner.set("clientAddress", clientAddress);
+	return context.env.framework.fetch(request, inner);
 }
 
 /** The sink of the process. `createServer` sets it to its own sink, with its hooks. */

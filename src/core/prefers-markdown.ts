@@ -23,7 +23,7 @@ const CHARSET = "utf-8";
  * the media type. Hono drops a parameter with no value or with text after its
  * closing quote, so such a `charset` counts as no charset.
  */
-function mediaRanges(accept: string): MediaRange[] {
+export function mediaRanges(accept: string): MediaRange[] {
 	return parseAccept(accept).map(({ type, params }) => {
 		let quality = "1";
 		let charset: string | undefined;
@@ -50,7 +50,7 @@ function mediaRanges(accept: string): MediaRange[] {
  * another charset does not match. Other parameters, such as `variant`, do not
  * change the match.
  */
-function qualityOf(ranges: readonly MediaRange[], type: string): number | undefined {
+export function qualityOf(ranges: readonly MediaRange[], type: string): number | undefined {
 	const matches = ranges.filter(
 		(range) => range.type === type && (range.charset == null || range.charset === CHARSET),
 	);

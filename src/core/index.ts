@@ -45,6 +45,10 @@ export {
 } from "./plugins/private-documents.js";
 export {
 	//,
+	protocolRoute,
+} from "./plugins/protocol-route.js";
+export {
+	//,
 	redirects,
 } from "./plugins/redirects.js";
 export {
@@ -79,6 +83,7 @@ export {
 } from "./prefers-markdown.js";
 export {
 	//,
+	appFetch,
 	logger,
 	requestContext,
 } from "./request-context.js";
@@ -137,6 +142,10 @@ export type {
 	//,
 	HealthOptions,
 } from "./plugins/health.js";
+export type {
+	//,
+	ProtocolRouteOptions,
+} from "./plugins/protocol-route.js";
 export type {
 	//,
 	RedirectRule,

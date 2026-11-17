@@ -7,6 +7,7 @@ import { createServer, defaultPlugins } from "./create-server.js";
 import type { DefaultPluginsOptions } from "./create-server.js";
 import { createEntry } from "./entry.js";
 import { withHeaderHook } from "./header-hook.js";
+import { protocolRoute } from "./plugins/protocol-route.js";
 import type { StaticPage } from "./static-pages.js";
 import type { Plugin } from "./types.js";
 
@@ -279,7 +280,9 @@ describe("staticPages", () => {
 				prerendered: {
 					markdownTwins: true,
 					rewrite: ({ path, context }) =>
-						context.req.header("Accept") === "application/json" ? "/about.json" : path,
+						context.req.header("Accept")?.includes("application/json") === true
+							? "/about.json"
+							: path,
 				},
 			},
 			["/about"],
@@ -343,6 +346,21 @@ describe("staticPages", () => {
 		expect(pages.map((each) => ("cdn" in each ? [each.path, each.cdn.twin] : each))).toStrictEqual([
 			["/about", "/about.md"],
 			["/about.md", undefined],
+		]);
+	});
+
+	it("keeps a page with a markdown twin on the server when a protocol endpoint shares its path", async () => {
+		const pages = await pagesOf(
+			{
+				beforeStatic: [protocolRoute({ path: "/about", handle: () => new Response("endpoint") })],
+				prerendered: { markdownTwins: true },
+			},
+			["/about"],
+			{ files: { "about/index.html": page, "about.md": "# About" } },
+		);
+
+		expect(pages).toStrictEqual([
+			{ path: "/about", reason: "the status or the file changes with the request" },
 		]);
 	});
 
