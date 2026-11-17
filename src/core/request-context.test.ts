@@ -1,6 +1,6 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "./create-server.js";
-import { logger, requestContext } from "./request-context.js";
+import { appFetch, logger, requestContext } from "./request-context.js";
 import { onResponseSent } from "./response-edge.js";
 import { host } from "../node/index.js";
 import { tcp } from "../node/tcp.js";
@@ -285,5 +285,46 @@ describe("logger", () => {
 		const inside = await withRequestContext({ logger: requestLog }, () => logger());
 
 		expect(inside).toBe(requestLog);
+	});
+});
+
+describe("appFetch", () => {
+	it("sends a request through the framework with the values of the request that runs, and one log line", async () => {
+		const lines: LogLine[] = [];
+		const seen: (string | undefined)[] = [];
+		const server = await createTestServer({
+			app: createServer({
+				plugins: defaultPlugins(),
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+			}),
+			framework: async (request, context) => {
+				const { pathname } = new URL(request.url);
+				context.set("routePattern", pathname);
+				seen.push(requestContext()?.requestId);
+				if (pathname === "/inner") {
+					return new Response("inner");
+				}
+				const inner = await appFetch(new Request(new URL("/inner", request.url)));
+				return new Response(`outer, ${await inner.text()}`);
+			},
+		});
+		onTestFinished(server.close);
+
+		const response = await server.request("/outer", { headers: { "X-Request-Id": "outer-id" } });
+
+		await expect(response.text()).resolves.toBe("outer, inner");
+		expect(seen).toStrictEqual(["outer-id", "outer-id"]);
+		const requestLines = lines.filter((line) => line.attributes["http.status_code"] != null);
+		expect(requestLines.map((line) => line.attributes["http.route"])).toStrictEqual(["/outer"]);
+	});
+
+	it("throws outside a request of the app server", async () => {
+		await expect(appFetch(new Request("https://example.com/"))).rejects.toThrow(
+			"appFetch() runs only while the app server answers a request",
+		);
 	});
 });

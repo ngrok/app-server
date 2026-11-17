@@ -86,7 +86,7 @@ For each app:
 pnpm add -E @ngrok/app-server hono
 ```
 
-Hono is a peer dependency, so the app and the package share one copy of it. A middleware of the app's Hono, such as `cors()` from `hono/cors`, then fits the `middleware` of a plugin.
+Hono is a peer dependency, so the app and the package share one copy of it. A middleware of the app's Hono, such as `basicAuth()` from `hono/basic-auth`, then fits the `middleware` of a plugin. The package also exports `cors()`, the CORS middleware of Hono, and its `CORSOptions` type, so an app imports them from `@ngrok/app-server`.
 
 ## Set up
 
@@ -338,6 +338,16 @@ A function is not a plugin. To use a Hono middleware, such as `basicAuth()` from
 import { basicAuth } from "hono/basic-auth";
 
 const auth: Plugin = { name: "basic-auth", middleware: basicAuth({ username, password }) };
+```
+
+For the CORS headers of the routes under one path, add `cors()` to the app, not to the plugin list. A plugin runs for each path. To serve a protocol endpoint and a page at one URL, use `protocolRoute()`. See [A protocol endpoint and a page at one URL](#a-protocol-endpoint-and-a-page-at-one-url).
+
+```ts
+import { cors, createServer } from "@ngrok/app-server";
+
+const app = createServer();
+app.use("/api/*", cors({ origin: "https://example.com" }));
+export default app;
 ```
 
 `createServer` stops startup for an entry of the plugin list that is not a plugin, with an error that names the entry and the fix. The `Plugin` type also rejects each of these entries:
@@ -819,6 +829,58 @@ export default async function handleRequest(
 ```
 
 A resource route, or a TanStack Start server route, gets the same `Request`. Call `prefersMarkdown(request)` there.
+
+### A protocol endpoint and a page at one URL
+
+One URL can answer a protocol client and a browser, such as `/mcp` for MCP clients and for the setup steps. The framework cannot do this alone. React Router picks a resource route or a page route from the route module, not from the request. On a page route, it answers `OPTIONS` with a 405 before any route middleware runs, and it rejects a cross-origin `POST`.
+
+`isPageRequest(request)` decides which answer a request gets. Use it in the server, in a plugin, and in the app, so each place answers one request the same way. It returns `true` for a `GET` or a `HEAD` that does not accept `text/event-stream`:
+
+- Each other method, such as `POST` or `OPTIONS`, is not a page request.
+- Only an explicit `text/event-stream` range with a `q` more than 0 makes a `GET` a protocol request. A wildcard, such as `*/*`, does not, so a browser gets the page.
+
+`protocolRoute()` does the job. A page request at `path` goes on to the framework. Each other request at `path` goes to `handle`, with the CORS headers of `cors`. `mcpHandler` stands for the app's own MCP handler:
+
+```ts
+import { createServer, defaultPlugins, protocolRoute } from "@ngrok/app-server";
+
+const mcp = protocolRoute({
+	path: "/mcp",
+	handle: async (request) => mcpHandler.fetch(request),
+	cors: { origin: "*" },
+});
+
+export default createServer({ plugins: defaultPlugins({ beforeStatic: [mcp] }) });
+```
+
+- `path` matches the exact path of the request. A framework data request, such as `/mcp.data`, has another path, so it goes to the framework. A `path` that does not start with `/`, or that has a `?` or a `#`, stops startup.
+- `cors` takes the options of `cors()`. With them, an `OPTIONS` request gets the CORS answer, a 204, and does not reach `handle`. Without them, `handle` gets the `OPTIONS` request, and its answers get no CORS headers.
+- A `GET` and a `HEAD` at `path` get `Vary: Accept` on both answers. Else a shared cache can give the page to a protocol client.
+- Put the plugin in `beforeStatic`. Then a prerendered page at `path` also gets `Vary: Accept`.
+- A thrown error in `handle` gets the answer of the app's `onError`.
+
+`server.ts` and the framework's server module share one copy of each module, in development and in the build. So `handle` can call the app's own functions and caches, the same that the loaders use. To get the answer of one of the app's routes, use `appFetch()`. See [Requests to the app's own routes](#requests-to-the-apps-own-routes).
+
+## Requests to the app's own routes
+
+`appFetch(request)` sends a request through the framework in the same process, and gives the framework's response. Use it in a plugin, a route, or a loader to get the answer of another route of the app, such as the markdown of a page. It adds no network round trip, and the app needs no table of its routes.
+
+```ts
+import { appFetch } from "@ngrok/app-server";
+
+export async function loader({ request }: Route.LoaderArgs) {
+	const twin = await appFetch(
+		new Request(new URL("/docs/button.md", request.url), { headers: request.headers }),
+	);
+	return { markdown: await twin.text() };
+}
+```
+
+- The request skips each plugin and each Hono route of the app. So it gets no access log line, no compression, no auth plugin, and no prerendered file. Keep the access check of a private route in the route, or check access before the call.
+- The framework runs its route middleware.
+- The request shares the request ID, the logger, and the client address of the request that runs, so `requestContext()` gives the same values. The access log line of that request keeps its own `http.route`.
+- Build the URL from the URL of the request that runs. Copy each header that the route needs, such as `Cookie`.
+- It throws outside a request of the app server, such as in a prerender pass or after the response is sent, and on a host with no request storage.
 
 ## Prerendered headers
 

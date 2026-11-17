@@ -1,5 +1,9 @@
 export {
 	//,
+	cors,
+} from "hono/cors";
+export {
+	//,
 	createServer,
 	defaultPlugins,
 } from "./create-server.js";
@@ -41,8 +45,16 @@ export {
 } from "./plugins/noindex.js";
 export {
 	//,
+	isPageRequest,
+} from "./page-request.js";
+export {
+	//,
 	privateDocuments,
 } from "./plugins/private-documents.js";
+export {
+	//,
+	protocolRoute,
+} from "./plugins/protocol-route.js";
 export {
 	//,
 	redirects,
@@ -79,6 +91,7 @@ export {
 } from "./prefers-markdown.js";
 export {
 	//,
+	appFetch,
 	logger,
 	requestContext,
 } from "./request-context.js";
@@ -137,6 +150,11 @@ export type {
 	//,
 	HealthOptions,
 } from "./plugins/health.js";
+export type {
+	//,
+	CORSOptions,
+	ProtocolRouteOptions,
+} from "./plugins/protocol-route.js";
 export type {
 	//,
 	RedirectRule,
