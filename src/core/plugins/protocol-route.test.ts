@@ -111,6 +111,21 @@ describe("protocolRoute", () => {
 		expect((await request("/mcp", { method: "POST" })).status).toBe(500);
 	});
 
+	it("adds Vary: Origin to the error answer of the handler, with the CORS headers of an allowed origin", async () => {
+		const { request } = await mcpServer({
+			cors: { origin: [SITE] },
+			handle: () => {
+				throw new Error("the handler failed");
+			},
+		});
+
+		const response = await request("/mcp", { method: "POST", headers: { Origin: SITE } });
+
+		expect(response.status).toBe(500);
+		expect(response.headers.get("Access-Control-Allow-Origin")).toBe(SITE);
+		expect(response.headers.get("Vary")).toContain("Origin");
+	});
+
 	it("stops startup for a path that does not start with a slash, or that has a query or a fragment", () => {
 		const handle = () => new Response();
 

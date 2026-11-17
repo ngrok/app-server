@@ -322,6 +322,45 @@ describe("appFetch", () => {
 		expect(requestLines.map((line) => line.attributes["http.route"])).toStrictEqual(["/outer"]);
 	});
 
+	it("keeps the route of the request that runs when two calls overlap", async () => {
+		const lines: LogLine[] = [];
+		const gates = {
+			"/a": Promise.withResolvers<undefined>(),
+			"/b": Promise.withResolvers<undefined>(),
+		};
+		const server = await createTestServer({
+			app: createServer({
+				plugins: defaultPlugins(),
+				logger: {
+					log: (line) => {
+						lines.push(line);
+					},
+				},
+			}),
+			framework: async (request, context) => {
+				const { pathname } = new URL(request.url);
+				context.set("routePattern", pathname);
+				if (pathname === "/a" || pathname === "/b") {
+					await gates[pathname].promise;
+					return new Response(pathname);
+				}
+				const a = appFetch(new Request(new URL("/a", request.url)));
+				const b = appFetch(new Request(new URL("/b", request.url)));
+				gates["/a"].resolve(undefined);
+				await a;
+				gates["/b"].resolve(undefined);
+				await b;
+				return new Response("outer");
+			},
+		});
+		onTestFinished(server.close);
+
+		await (await server.request("/outer")).text();
+
+		const requestLines = lines.filter((line) => line.attributes["http.status_code"] != null);
+		expect(requestLines.map((line) => line.attributes["http.route"])).toStrictEqual(["/outer"]);
+	});
+
 	it("throws outside a request of the app server", async () => {
 		await expect(appFetch(new Request("https://example.com/"))).rejects.toThrow(
 			"appFetch() runs only while the app server answers a request",

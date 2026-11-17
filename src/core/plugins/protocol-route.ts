@@ -38,11 +38,13 @@ const varyOnAccept: HeaderHook = (headers) => {
 const noCors: MiddlewareHandler<AppServerEnv> = async (_context, next) => next();
 
 /**
- * Serves a protocol endpoint and a page at one URL, such as `/mcp` for MCP
- * clients and for a browser. A page request, as {@link isPageRequest} decides
- * it, goes on to the framework. Each other request at `path` goes to `handle`,
- * with the CORS headers of `cors`. A `GET` and a `HEAD` at `path` get
- * `Vary: Accept` on both answers, so a shared cache keeps them apart.
+ * Serves a protocol endpoint and a page at one URL, such as `/mcp` for Model
+ * Context Protocol (MCP) clients and for a browser.
+ *
+ * A page request, as {@link isPageRequest} decides it, goes on to the
+ * framework. Each other request at `path` goes to `handle`, with the CORS
+ * headers of `cors`. A `GET` and a `HEAD` at `path` get `Vary: Accept` on
+ * both answers, so a shared cache keeps them apart.
  *
  * Put it in `beforeStatic`, so a prerendered page at `path` also gets
  * `Vary: Accept`. A framework data request, such as `/mcp.data`, has another
@@ -74,9 +76,18 @@ export function protocolRoute({ path, handle, cors: corsOptions }: ProtocolRoute
 		corsOptions == null ? noCors : cors(corsOptions);
 	/** Sends the request to `handle`, with CORS. The CORS answer of a preflight replaces it. */
 	const toHandler = async (context: Context<AppServerEnv, string>) => {
+		let failure: { error: unknown } | undefined;
 		const preflight = await withCors(context, async () => {
-			context.res = await handle(context.req.raw);
+			// Why catch: `cors()` adds `Vary: Origin` only after `next` returns, and the error answer keeps its CORS headers.
+			try {
+				context.res = await handle(context.req.raw);
+			} catch (error) {
+				failure = { error };
+			}
 		});
+		if (failure != null) {
+			throw failure.error;
+		}
 		if (preflight != null) {
 			context.res = preflight;
 		}

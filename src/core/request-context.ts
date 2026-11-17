@@ -163,11 +163,19 @@ export function currentShutdown(): ShutdownState | undefined {
 	return scope?.values instanceof SentValues ? scope.values.shutdown : undefined;
 }
 
+/** The count of the {@link appFetch} calls that run in each request, and the route pattern of that request. */
+const runningFetches = new WeakMap<
+	Context<ServerEnv>,
+	{ count: number; routePattern: string | undefined }
+>();
+
 /**
  * Sends `request` through the framework in the same process, and gives the
- * framework's response. Use it in a plugin, a route, or a loader to get the
- * answer of another of the app's routes, such as the markdown of a page,
- * with no network round trip and no table of the app's routes.
+ * framework's response.
+ *
+ * Use it in a plugin, a route, or a loader to get the answer of another of
+ * the app's routes, such as the markdown of a page, with no network round
+ * trip and no table of the app's routes.
  *
  * The request skips each plugin and each Hono route of the app: it gets no
  * access log line, no compression, no auth plugin, and no prerendered file.
@@ -191,13 +199,22 @@ export async function appFetch(request: Request): Promise<Response> {
 			"appFetch() runs only while the app server answers a request, on a host with request storage, such as node or vercel.",
 		);
 	}
-	const routePattern = context.get("routePattern");
+	// Why: the framework sets the route pattern of the request that it renders, and the access log
+	// line of the request that runs must keep its own. Why a count: the last of overlapping calls restores it.
+	const outer = runningFetches.get(context) ?? {
+		count: 0,
+		routePattern: context.get("routePattern"),
+	};
+	outer.count += 1;
+	runningFetches.set(context, outer);
 	try {
 		return await context.env.framework.fetch(request, context);
 	} finally {
-		// Why: the framework sets the route pattern of the request that it renders, and the access log
-		// line of the request that runs must keep its own.
-		context.set("routePattern", routePattern);
+		outer.count -= 1;
+		if (outer.count === 0) {
+			runningFetches.delete(context);
+			context.set("routePattern", outer.routePattern);
+		}
 	}
 }
 

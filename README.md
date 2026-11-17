@@ -238,7 +238,7 @@ With `vercel({ cdnPages: true })`, the CDN serves each public prerendered page w
 
 - It is a 200 from the page's file.
 - It has no `Set-Cookie`. It has no `private`, `no-store`, or `no-cache`, in any case, in `Cache-Control` or in a CDN field such as `Vercel-CDN-Cache-Control`.
-- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only the request ID header of `requestId()` and `Date` can change.
+- It is the same for a second client with another host, client address, user agent, query, `Accept` with no markdown but with `text/event-stream`, and value of the `unlessHeader` header. The second client also sends a cookie, `Authorization`, `Referer`, `Accept-Language`, and Vercel's `X-Vercel-IP-Country`, `X-Vercel-IP-Country-Region`, and `X-Vercel-IP-City`. So a plugin that sends a signed-in visitor or a country to another answer keeps its pages in the function. Only the request ID header of `requestId()` and `Date` can change.
 - It varies only on `Accept-Encoding`, on `Accept` for a [markdown twin](#content-negotiation), and on the header of `noindex: { unlessHeader }`.
 
 The CDN then sends the pipeline's body and headers: the security headers, the CSP, the build ID, and the `runtimeEnv` values. The function also keeps the page's file, for a request that no CDN route matches, such as `/about/` for `/about`. A browser gets `Cache-Control: public, max-age=0, must-revalidate` and the CDN's ETag, so it revalidates each page. Vercel keeps the CDN's copies for one deployment, so a deploy never serves an old page. The build log names each path that the function serves, with the reason. The report goes through the logger of the Vite build at the `info` level, so Vite's `logLevel` and `customLogger` apply to it. With `appServer` before the framework's plugin, the build prints the report two times, and the report after the prerender pass is the correct one.
@@ -832,7 +832,7 @@ A resource route, or a TanStack Start server route, gets the same `Request`. Cal
 
 ### A protocol endpoint and a page at one URL
 
-One URL can answer a protocol client and a browser, such as `/mcp` for MCP clients and for the setup steps. The framework cannot do this alone. React Router picks a resource route or a page route from the route module, not from the request. On a page route, it answers `OPTIONS` with a 405 before any route middleware runs, and it rejects a cross-origin `POST`.
+One URL can answer a protocol client and a browser, such as `/mcp` for Model Context Protocol (MCP) clients and for the setup steps. The framework cannot do this alone. React Router picks a resource route or a page route from the route module, not from the request. On a page route, it answers `OPTIONS` with a 405 before any route middleware runs, and it rejects a cross-origin `POST`.
 
 `isPageRequest(request)` decides which answer a request gets. Use it in the server, in a plugin, and in the app, so each place answers one request the same way. It returns `true` for a `GET` or a `HEAD` that does not accept `text/event-stream`:
 

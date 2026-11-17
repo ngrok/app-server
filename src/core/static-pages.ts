@@ -82,7 +82,9 @@ type Answer = {
  * headers that a plugin reads most often to choose an answer. Why a cookie
  * and `Authorization`: a plugin that sends a signed-in visitor to another
  * page must keep its pages on the server. Why the geo headers: Vercel adds
- * them, and a plugin can redirect by country.
+ * them, and a plugin can redirect by country. Why `text/event-stream`: a
+ * protocol endpoint at the path of a page, such as `protocolRoute()`, answers
+ * it, and no CDN route sends it to the server.
  */
 const CLIENTS = [
 	{
@@ -98,7 +100,7 @@ const CLIENTS = [
 		address: "198.51.100.2",
 		presentValue: "2",
 		headers: {
-			Accept: "application/json",
+			Accept: "application/json, text/event-stream",
 			"Accept-Language": "de-DE",
 			Authorization: "Bearer app-server-check",
 			Cookie: "session=app-server-check",
