@@ -6,7 +6,7 @@ import type { AppServerEnv, HeaderHook, Plugin } from "../types.js";
 import { withVary } from "../vary.js";
 
 /** Options for `cors()`, the CORS middleware of Hono. */
-export type CORSOptions = NonNullable<Parameters<typeof cors>[0]>;
+type CORSOptions = NonNullable<Parameters<typeof cors>[0]>;
 
 /** Options for {@link protocolRoute}. */
 export type ProtocolRouteOptions = {
@@ -19,7 +19,7 @@ export type ProtocolRouteOptions = {
 	handle: (request: Request) => Response | Promise<Response>;
 	/**
 	 * The CORS options of the answers of `handle`, as `cors()` from
-	 * `@ngrok/app-server` takes them. With them, an `OPTIONS` request gets the
+	 * `hono/cors` takes them. With them, an `OPTIONS` request gets the
 	 * CORS answer and does not reach `handle`. Without them, the answers get no
 	 * CORS headers.
 	 */

@@ -1,9 +1,5 @@
 export {
 	//,
-	cors,
-} from "hono/cors";
-export {
-	//,
 	createServer,
 	defaultPlugins,
 } from "./create-server.js";
@@ -43,10 +39,6 @@ export {
 	//,
 	noindex,
 } from "./plugins/noindex.js";
-export {
-	//,
-	isPageRequest,
-} from "./page-request.js";
 export {
 	//,
 	privateDocuments,
@@ -152,7 +144,6 @@ export type {
 } from "./plugins/health.js";
 export type {
 	//,
-	CORSOptions,
 	ProtocolRouteOptions,
 } from "./plugins/protocol-route.js";
 export type {

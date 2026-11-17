@@ -1,4 +1,4 @@
-import type { Context } from "hono";
+import { Context } from "hono";
 import { hookSink, jsonSink, sinkLogger } from "./log.js";
 import type { ShutdownState } from "./shutdown.js";
 import type {
@@ -163,12 +163,6 @@ export function currentShutdown(): ShutdownState | undefined {
 	return scope?.values instanceof SentValues ? scope.values.shutdown : undefined;
 }
 
-/** The count of the {@link appFetch} calls that run in each request, and the route pattern of that request. */
-const runningFetches = new WeakMap<
-	Context<ServerEnv>,
-	{ count: number; routePattern: string | undefined }
->();
-
 /**
  * Sends `request` through the framework in the same process, and gives the
  * framework's response.
@@ -199,23 +193,20 @@ export async function appFetch(request: Request): Promise<Response> {
 			"appFetch() runs only while the app server answers a request, on a host with request storage, such as node or vercel.",
 		);
 	}
-	// Why: the framework sets the route pattern of the request that it renders, and the access log
-	// line of the request that runs must keep its own. Why a count: the last of overlapping calls restores it.
-	const outer = runningFetches.get(context) ?? {
-		count: 0,
-		routePattern: context.get("routePattern"),
-	};
-	outer.count += 1;
-	runningFetches.set(context, outer);
-	try {
-		return await context.env.framework.fetch(request, context);
-	} finally {
-		outer.count -= 1;
-		if (outer.count === 0) {
-			runningFetches.delete(context);
-			context.set("routePattern", outer.routePattern);
-		}
-	}
+	// Why a context of its own: the framework sets the route pattern of the request that it renders,
+	// and the access log line of the request that runs must keep its own.
+	const inner = new Context<AppServerEnv>(request, { env: context.env });
+	const {
+		requestId,
+		logger: requestLogger,
+		cspNonce,
+		clientAddress,
+	} = requestContextValues(context);
+	inner.set("requestId", requestId);
+	inner.set("logger", requestLogger);
+	inner.set("cspNonce", cspNonce);
+	inner.set("clientAddress", clientAddress);
+	return context.env.framework.fetch(request, inner);
 }
 
 /** The sink of the process. `createServer` sets it to its own sink, with its hooks. */

@@ -4,9 +4,6 @@ import { mediaRanges, qualityOf } from "./prefers-markdown.js";
  * Whether a request asks for a page: a `GET` or a `HEAD` that does not
  * accept `text/event-stream`.
  *
- * Use it when one URL has a page and a protocol endpoint, such as `/mcp`, so
- * the server, a plugin, and the app decide one request the same way.
- *
  * The rules:
  *
  * - Each other method, such as `POST` or `OPTIONS`, is not a page request.
