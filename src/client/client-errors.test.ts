@@ -137,7 +137,7 @@ describe("clientErrorsReactRouter", () => {
 		]);
 	});
 
-	it("keeps the frames of an error with a long message, in a body of 16 KiB or less", () => {
+	it("keeps the frames of an error with a long message, in a body of 6 KiB or less", () => {
 		const { send, reports } = page();
 		clientErrorsReactRouter();
 
@@ -155,8 +155,36 @@ describe("clientErrorsReactRouter", () => {
 		for (const [, init] of send.mock.calls) {
 			const body = typeof init?.body === "string" ? init.body : "";
 
-			expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(16 * 1024);
+			expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(6 * 1024);
 		}
+	});
+
+	it("reports a Chromium error whose message ends as a frame of another origin does", () => {
+		const { reports } = page();
+		clientErrorsReactRouter();
+
+		dispatchEvent(errorEvent(ownError("failed at https://cdn.example.net/a.js:1:2")));
+
+		expect(reports().map((report) => report.stack)).toStrictEqual([
+			"    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+		]);
+	});
+
+	it("sends 64 KiB or less in the 10 reports of a page load, the limit of keepalive", () => {
+		const { send } = page();
+		clientErrorsReactRouter();
+
+		for (let count = 0; count < 10; count += 1) {
+			const deep = ownError(`deep ${count}`);
+			deep.stack += "\n    at 界 (http://localhost:3000/assets/界.js:1:2)".repeat(400);
+			dispatchEvent(errorEvent(deep));
+		}
+		const bytes = send.mock.calls.map(([, init]) =>
+			typeof init?.body === "string" ? new TextEncoder().encode(init.body).length : 0,
+		);
+
+		expect(bytes).toHaveLength(10);
+		expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(64 * 1024);
 	});
 
 	it("keeps 100 events at most in the inline script", () => {

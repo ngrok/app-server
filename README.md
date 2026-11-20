@@ -695,7 +695,7 @@ What the module sends:
 
 - It keeps an error only when the frame that threw is a script of the page's origin. So it drops the errors of a browser extension and of a third-party script, an error with no stack, such as the masked `Script error.` and the `ResizeObserver` loop messages, and each thrown value that is not an `Error`.
 - It sends each error once, and 10 reports at most for each page load.
-- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the stack of the error, the pathname of the page with no query, the route pattern, and the build. The body is 16 KiB at most. For a larger report, the module makes the message shorter, and then it removes frames from the end of the stack.
+- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the stack of the error, the pathname of the page with no query, the route pattern, and the build. The body is 6 KiB at most. For a larger report, the module makes the message shorter, and then it removes frames from the end of the stack.
 
 ### Errors before the entry chunk
 
@@ -719,7 +719,7 @@ With [a CSP for each document](#a-csp-for-each-document), a rendered page trusts
 The plugin answers a `POST` to its path before the framework runs, so the origin check of React Router's actions does not apply. For each report:
 
 1. A page of another origin gets a 403. The plugin reads `Sec-Fetch-Site`, and for a browser that does not send it, it compares `Origin` with the host of the request.
-2. A body of more than 16 KiB gets a 413, and a body that is not a report gets a 400.
+2. A body of more than 6 KiB gets a 413, and a body that is not a report gets a 400.
 3. A report from a bot, by its `User-Agent`, gets a 204, and the plugin drops it.
 4. After `maxPerMinute` reports in one minute, 60 by default, each report gets a 429.
 5. The plugin reads the stack into frames, in the formats of Chromium, Firefox, and Safari. It drops a report with no frame. In production, it also drops a report whose first frame is not a file of Vite's `build.assetsDir`, such as an inline script that a browser extension adds to the page.

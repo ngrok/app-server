@@ -242,7 +242,7 @@ function logEvent(logger: RequestLogger, event: ClientErrorEvent): void {
  * plugin takes it or drops it, and:
  *
  * - a 403 from a page of another origin,
- * - a 413 for a body of more than 16 KiB,
+ * - a 413 for a body of more than 6 KiB,
  * - a 400 for a body that is not a report,
  * - a 429 after `maxPerMinute` reports in one minute.
  *
@@ -292,6 +292,13 @@ export function clientErrors({
 	const receive = async (context: Context<AppServerEnv>): Promise<Response> => {
 		if (!isSameOrigin(context)) {
 			return empty(403);
+		}
+		// Why before the read: a body that is too large by its length gets the answer with no wait.
+		if (
+			Number(context.req.header("Content-Length")) > MAX_REPORT_BYTES &&
+			context.req.header("Transfer-Encoding") == null
+		) {
+			return empty(413);
 		}
 		// Why an empty text for a body that fails: a client that leaves gets the 400 of a bad report.
 		const text = await bodyOf(context.req.raw).catch(() => "");

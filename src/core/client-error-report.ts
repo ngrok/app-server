@@ -10,9 +10,11 @@ export const CLIENT_ERRORS_PATH = "/_app/issues";
 
 /**
  * The largest body of a report, in bytes. The client module sends no more,
- * and the endpoint takes no more.
+ * and the endpoint takes no more. Why 6 KiB: a browser refuses a `keepalive`
+ * request when the bodies in flight pass 64 KiB, and a page sends 10 reports
+ * at most.
  */
-export const MAX_REPORT_BYTES = 16 * 1024;
+export const MAX_REPORT_BYTES = 6 * 1024;
 
 /** The values of `source` in a {@link ClientErrorReport}. */
 export const CLIENT_ERROR_SOURCES = [

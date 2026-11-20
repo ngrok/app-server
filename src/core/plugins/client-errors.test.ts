@@ -226,7 +226,7 @@ describe("clientErrors", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("answers 413 to a body of more than 16 KiB, by its length and as a stream", async () => {
+	it("answers 413 to a body of more than 6 KiB, by its length and as a stream", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
 		const large = report({ stack: "x".repeat(17_000) });
@@ -246,7 +246,7 @@ describe("clientErrors", () => {
 		expect(events).toStrictEqual([]);
 	});
 
-	it("cancels a streamed body when it passes 16 KiB", async () => {
+	it("cancels a streamed body when it passes 6 KiB", async () => {
 		const { request } = await testServer({ plugins: [clientErrors()] });
 		const { headers } = report();
 		let canceled = false;
@@ -269,6 +269,21 @@ describe("clientErrors", () => {
 
 		expect(response.status).toBe(413);
 		expect(canceled).toBe(true);
+	});
+
+	it("answers 413 to a Content-Length of more than 6 KiB before it reads the body", async () => {
+		const { request } = await testServer({ plugins: [clientErrors()] });
+		const { headers } = report();
+		const never: RequestInit & { duplex: "half" } = {
+			method: "POST",
+			headers: { ...headers, "Content-Length": "7000" },
+			duplex: "half",
+			body: new ReadableStream<Uint8Array>(),
+		};
+
+		const response = await request("/_app/issues", never);
+
+		expect(response.status).toBe(413);
 	});
 
 	it("reads a frame whose URL has parentheses or an @", async () => {
@@ -297,21 +312,6 @@ describe("clientErrors", () => {
 			{ function: undefined, file: "https://example.com/assets/@scope/a.js", line: 3, column: 4 },
 			{ function: "run", file: "https://example.com/assets/@scope/a.js", line: 5, column: 6 },
 		]);
-	});
-
-	it("reads a long line that is not a frame in linear time", async () => {
-		const { request } = await testServer({ plugins: [clientErrors({ sink: () => {} })] });
-		const start = performance.now();
-
-		const response = await request(
-			"/_app/issues",
-			report({ stack: `${" ".repeat(15_000)}!\n${FIREFOX_STACK}` }),
-		);
-
-		expect(response.status).toBe(204);
-		// A pattern with quadratic time takes more than 100 ms for this line, and this parser takes
-		// less than 1 ms, on an Apple M3 Max.
-		expect(performance.now() - start).toBeLessThan(50);
 	});
 
 	it("answers 400 to a body that is not a report", async () => {

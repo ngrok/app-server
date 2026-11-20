@@ -79,13 +79,14 @@ function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOption
 			return;
 		}
 		const { name, message, stack } = thrown;
-		// Why only the lines that end with a line and a column: Chromium starts the stack with the
-		// name and the message, and the message can hold a URL and can be long. Firefox and Safari
-		// give the frames only.
-		const frames = stack
-			.split("\n")
-			.filter((line) => /:\d+:\d+\)?$/u.test(line))
-			.join("\n");
+		// Why only the frame lines: Chromium starts the stack with the name and the message, and the
+		// message can hold a URL and can be long. Its frames start with `at`. Firefox and Safari give
+		// only frames, and each ends with a line and a column.
+		const lines = stack.split("\n");
+		const atLines = lines.filter((line) => line.startsWith("    at "));
+		const frames = (
+			atLines.length > 0 ? atLines : lines.filter((line) => /:\d+:\d+$/u.test(line))
+		).join("\n");
 		// Why the first URL: it is the frame that threw. A browser extension and a script of another
 		// origin give another origin, and an error with no stack, such as `Script error.`, gives none.
 		const thrownAt = /[a-z-]+:\/\/[^\s)]+/iu.exec(frames)?.[0];
@@ -97,7 +98,7 @@ function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOption
 		const body: ClientErrorReport = {
 			name,
 			message: message.slice(0, 1000),
-			stack: frames.slice(0, 10_000),
+			stack: frames.slice(0, MAX_REPORT_BYTES),
 			source,
 			path: location.pathname,
 			route,
