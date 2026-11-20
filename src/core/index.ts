@@ -33,6 +33,10 @@ export {
 } from "./plugins/build-id.js";
 export {
 	//,
+	clientErrors,
+} from "./plugins/client-errors.js";
+export {
+	//,
 	health,
 } from "./plugins/health.js";
 export {
@@ -134,6 +138,16 @@ export type {
 	//,
 	BuildIdOptions,
 } from "./plugins/build-id.js";
+export type {
+	//,
+	ClientErrorEvent,
+	ClientErrorFrame,
+	ClientErrorsOptions,
+} from "./plugins/client-errors.js";
+export type {
+	//,
+	ClientErrorSource,
+} from "./client-error-report.js";
 export type {
 	//,
 	NoindexOptions,

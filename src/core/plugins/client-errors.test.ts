@@ -1,0 +1,410 @@
+import { describe, expect, it, vi } from "vitest";
+import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
+import { clientErrorsReactRouter } from "../../client/client-errors.js";
+import { productionSetup, stubFramework, testServer } from "../../test-server.js";
+import type { LogSink } from "../types.js";
+import { assets } from "./static.js";
+import { clientErrors } from "./client-errors.js";
+import type { ClientErrorEvent } from "./client-errors.js";
+
+const CHROMIUM_STACK = [
+	"TypeError: Cannot read properties of undefined (reading 'id')",
+	"    at Usage (https://example.com/assets/usage-3f9a1c.js:12:34)",
+	"    at async https://example.com/assets/entry-8c2e1d.js:5:6",
+	"    at async load (https://example.com/assets/chart-aa11bb.js:1:2)",
+].join("\n");
+
+const FIREFOX_STACK = [
+	"Usage@https://example.com/assets/usage-3f9a1c.js:12:34",
+	"@https://example.com/assets/entry-8c2e1d.js:5:6",
+	"https://example.com/assets/chart-aa11bb.js:1:2",
+].join("\n");
+
+const USER_AGENT = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/141.0 Safari/537.36";
+
+/** A report as the client module posts it, with `fields` in place of the defaults. */
+function report(fields: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
+	return {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"Sec-Fetch-Site": "same-origin",
+			"User-Agent": USER_AGENT,
+			...headers,
+		},
+		body: JSON.stringify({
+			name: "TypeError",
+			message: "Cannot read properties of undefined (reading 'id')",
+			stack: CHROMIUM_STACK,
+			source: "router",
+			path: "/domains/42",
+			route: "/domains/:domainId",
+			build: "v41",
+			...fields,
+		}),
+	};
+}
+
+/** A sink that keeps each event. */
+function recordingSink() {
+	const events: ClientErrorEvent[] = [];
+	return {
+		events,
+		sink: (event: ClientErrorEvent) => {
+			events.push(event);
+		},
+	};
+}
+
+describe("clientErrors", () => {
+	it("gives the sink one event with the frames of a Chromium stack, and answers 204", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		const response = await request("/_app/issues", report());
+
+		expect(response.status).toBe(204);
+		expect(events).toStrictEqual([
+			{
+				name: "TypeError",
+				message: "Cannot read properties of undefined (reading 'id')",
+				frames: [
+					{
+						function: "Usage",
+						file: "https://example.com/assets/usage-3f9a1c.js",
+						line: 12,
+						column: 34,
+					},
+					{
+						function: undefined,
+						file: "https://example.com/assets/entry-8c2e1d.js",
+						line: 5,
+						column: 6,
+					},
+					{
+						function: "load",
+						file: "https://example.com/assets/chart-aa11bb.js",
+						line: 1,
+						column: 2,
+					},
+				],
+				source: "router",
+				route: "/domains/:domainId",
+				path: "/domains/42",
+				userAgent: USER_AGENT,
+				buildId: "v41",
+			},
+		]);
+	});
+
+	it("takes the report that the client module sends", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		// The browser globals that the client module reads.
+		const send = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", send);
+		vi.stubGlobal("location", { origin: "https://example.com", pathname: "/domains/42" });
+		vi.stubGlobal("addEventListener", () => {});
+		const error = new TypeError("no id");
+		error.stack =
+			"TypeError: no id\n    at Usage (https://example.com/assets/usage-3f9a1c.js:12:34)";
+
+		clientErrorsReactRouter().onError(error, { pattern: "/domains/:domainId" });
+		const [path, init] = send.mock.calls[0] ?? [];
+		const headers = new Headers(init?.headers);
+		// The headers that a browser adds to the request.
+		headers.set("Sec-Fetch-Site", "same-origin");
+		headers.set("User-Agent", USER_AGENT);
+		const response = await request("/_app/issues", { ...init, headers });
+
+		expect(path).toBe("/_app/issues");
+		expect(response.status).toBe(204);
+		expect(events).toStrictEqual([
+			{
+				name: "TypeError",
+				message: "no id",
+				frames: [
+					{
+						function: "Usage",
+						file: "https://example.com/assets/usage-3f9a1c.js",
+						line: 12,
+						column: 34,
+					},
+				],
+				source: "router",
+				route: "/domains/:domainId",
+				path: "/domains/42",
+				userAgent: USER_AGENT,
+				buildId: undefined,
+			},
+		]);
+	});
+
+	it("reads the frames of a Firefox or Safari stack", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		await request(
+			"/_app/issues",
+			report({ stack: FIREFOX_STACK, source: "error", route: undefined, build: undefined }),
+		);
+
+		expect(events[0]?.frames).toStrictEqual([
+			{
+				function: "Usage",
+				file: "https://example.com/assets/usage-3f9a1c.js",
+				line: 12,
+				column: 34,
+			},
+			{
+				function: undefined,
+				file: "https://example.com/assets/entry-8c2e1d.js",
+				line: 5,
+				column: 6,
+			},
+			{
+				function: undefined,
+				file: "https://example.com/assets/chart-aa11bb.js",
+				line: 1,
+				column: 2,
+			},
+		]);
+		expect([events[0]?.route, events[0]?.buildId]).toStrictEqual([undefined, undefined]);
+	});
+
+	it("logs one error line for a report when the app gives no sink", async () => {
+		const { request, lines } = await testServer({ plugins: [clientErrors()] });
+
+		await request("/_app/issues", report());
+
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatchObject({
+			level: "error",
+			message: "client error",
+			attributes: {
+				"error.kind": "TypeError",
+				"error.message": "Cannot read properties of undefined (reading 'id')",
+				"error.stack": [
+					"Usage (https://example.com/assets/usage-3f9a1c.js:12:34)",
+					"https://example.com/assets/entry-8c2e1d.js:5:6",
+					"load (https://example.com/assets/chart-aa11bb.js:1:2)",
+				].join("\n"),
+				"app_server.client.source": "router",
+				"app_server.client.route": "/domains/:domainId",
+				"app_server.client.path": "/domains/42",
+				"app_server.client.build_id": "v41",
+			},
+		});
+	});
+
+	it("answers 403 to a page of another origin, and gives the sink nothing", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		const crossSite = await request("/_app/issues", report({}, { "Sec-Fetch-Site": "cross-site" }));
+		const otherOrigin = await request(
+			"http://localhost/_app/issues",
+			report({}, { "Sec-Fetch-Site": "", Origin: "https://evil.example" }),
+		);
+
+		expect([crossSite.status, otherOrigin.status]).toStrictEqual([403, 403]);
+		expect(events).toStrictEqual([]);
+	});
+
+	it("takes a report with a matching Origin from a browser that sends no Sec-Fetch-Site", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const init = report({}, { Origin: "http://localhost" });
+		const headers = new Headers(init.headers);
+		headers.delete("Sec-Fetch-Site");
+
+		const taken = await request("http://localhost/_app/issues", { ...init, headers });
+		headers.delete("Origin");
+		const noOrigin = await request("http://localhost/_app/issues", { ...init, headers });
+
+		expect([taken.status, noOrigin.status]).toStrictEqual([204, 403]);
+		expect(events).toHaveLength(1);
+	});
+
+	it("answers 413 to a body of more than 16 KiB, by its length and as a stream", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const large = report({ stack: "x".repeat(17_000) });
+		const streamed: RequestInit & { duplex: "half" } = {
+			...large,
+			duplex: "half",
+			body: new Response(large.body).body,
+		};
+
+		const byLength = await request("/_app/issues", {
+			...large,
+			headers: { ...large.headers, "Content-Length": String(large.body.length) },
+		});
+		const asStream = await request("/_app/issues", streamed);
+
+		expect([byLength.status, asStream.status]).toStrictEqual([413, 413]);
+		expect(events).toStrictEqual([]);
+	});
+
+	it("answers 400 to a body that is not a report", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		const statuses = [];
+		for (const init of [
+			{ ...report(), body: "not json" },
+			{ ...report(), body: "null" },
+			report({ name: 1 }),
+			report({ source: "server" }),
+			report({ path: "https://example.com/" }),
+			report({ route: 4 }),
+		]) {
+			statuses.push((await request("/_app/issues", init)).status);
+		}
+
+		expect(statuses).toStrictEqual([400, 400, 400, 400, 400, 400]);
+		expect(events).toStrictEqual([]);
+	});
+
+	it("drops a report from a bot, one with no frame, and one that a file outside the assets threw", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		const statuses = [];
+		for (const init of [
+			report({}, { "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)" }),
+			report({}, { "User-Agent": "" }),
+			report({ stack: "Error: Script error." }),
+			// An inline script that a browser extension adds to the page.
+			report({ stack: "Error: x\n    at https://example.com/domains/42:1:100" }),
+			report({ stack: "Error: x\n    at go (<anonymous>:1:1)" }),
+		]) {
+			statuses.push((await request("/_app/issues", init)).status);
+		}
+
+		expect(statuses).toStrictEqual([204, 204, 204, 204, 204]);
+		expect(events).toStrictEqual([]);
+	});
+
+	it("takes a report whose first frame is a source module in development", async () => {
+		const { events, sink } = recordingSink();
+		const logger: LogSink = { log: () => {} };
+		const app = createServer({ plugins: [clientErrors({ sink }), assets()], logger });
+		await serverInternals(app)?.prepare({
+			...(await productionSetup({ logger })),
+			mode: "development",
+			devServer: async (_context, next) => next(),
+			prerenderedPaths: [],
+		});
+
+		const response = await app.request(
+			"/_app/issues",
+			report({ stack: "Error: x\n    at Home (http://localhost:5173/app/routes/home.tsx:3:9)" }),
+			{ framework: stubFramework() },
+		);
+
+		expect(response.status).toBe(204);
+		expect(events[0]?.frames[0]?.file).toBe("http://localhost:5173/app/routes/home.tsx");
+	});
+
+	it("gives the sink no event that the filter refuses", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({
+			plugins: [clientErrors({ sink, filter: (event) => event.name !== "AbortError" })],
+		});
+
+		await request("/_app/issues", report({ name: "AbortError" }));
+		await request("/_app/issues", report());
+
+		expect(events.map((event) => event.name)).toStrictEqual(["TypeError"]);
+	});
+
+	it("answers 429 after maxPerMinute reports, and takes reports again in the next minute", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink, maxPerMinute: 2 })] });
+
+		const statuses = [];
+		for (let sent = 0; sent < 3; sent += 1) {
+			statuses.push((await request("/_app/issues", report())).status);
+		}
+		vi.advanceTimersByTime(60_000);
+		statuses.push((await request("/_app/issues", report())).status);
+		vi.useRealTimers();
+
+		expect(statuses).toStrictEqual([204, 204, 429, 204]);
+		expect(events).toHaveLength(3);
+	});
+
+	it("answers 204 and logs one error line when the sink fails", async () => {
+		const { request, lines } = await testServer({
+			plugins: [
+				clientErrors({
+					sink: async () => {
+						await Promise.reject(new Error("tracker is down"));
+					},
+				}),
+			],
+		});
+
+		const response = await request("/_app/issues", report());
+
+		expect(response.status).toBe(204);
+		expect(
+			lines.map((line) => [line.level, line.message, line.attributes["error.message"]]),
+		).toStrictEqual([["error", "client error sink failed", "tracker is down"]]);
+	});
+
+	it("answers after 3 seconds and logs one warn line when the sink hangs", async () => {
+		vi.useFakeTimers();
+		const { request, lines } = await testServer({
+			plugins: [clientErrors({ sink: async () => new Promise<void>(() => {}) })],
+		});
+
+		const answer = request("/_app/issues", report());
+		await vi.advanceTimersByTimeAsync(3000);
+		const response = await answer;
+		vi.useRealTimers();
+
+		expect(response.status).toBe(204);
+		expect(lines.map((line) => [line.level, line.message])).toStrictEqual([
+			["warn", "client error sink passed the deadline"],
+		]);
+	});
+
+	it("answers at the path option, and sends each other request on to the framework", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink, path: "/_x" })] });
+
+		const taken = await request("/_x", report());
+		const defaultPath = await request("/_app/issues", report());
+		const get = await request("/_x");
+
+		expect(taken.status).toBe(204);
+		await expect(defaultPath.text()).resolves.toBe("rendered");
+		await expect(get.text()).resolves.toBe("rendered");
+		expect(events).toHaveLength(1);
+	});
+
+	it("stops startup for a bad path or a bad maxPerMinute", () => {
+		expect(() => clientErrors({ path: "issues" })).toThrow(
+			'clientErrors needs a path that starts with "/", not "issues".',
+		);
+		expect(() => clientErrors({ path: "/issues?x" })).toThrow('with no "?" and no "#"');
+		expect(() => clientErrors({ maxPerMinute: 1.5 })).toThrow(
+			"The maxPerMinute of clientErrors must be an integer of 0 or more, not 1.5.",
+		);
+	});
+
+	it("is off in defaultPlugins() until the app sets the option", async () => {
+		const off = await testServer({ plugins: defaultPlugins() });
+		const on = await testServer({ plugins: defaultPlugins({ clientErrors: true }) });
+
+		await expect((await off.request("/_app/issues", report())).text()).resolves.toBe("rendered");
+		const response = await on.request("/_app/issues", report());
+
+		expect(response.status).toBe(204);
+		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(on.lines.map((line) => line.message)).toStrictEqual(["client error", "request"]);
+	});
+});

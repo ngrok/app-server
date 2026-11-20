@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { withBuiltInHeaderHook } from "../header-hook.js";
 import { isPageRequest } from "../page-request.js";
+import { checkRequestPath } from "../plugin-options.js";
 import type { AppServerEnv, HeaderHook, Plugin } from "../types.js";
 import { withVary } from "../vary.js";
 
@@ -61,17 +62,7 @@ const noCors: MiddlewareHandler<AppServerEnv> = async (_context, next) => next()
  * });
  */
 export function protocolRoute({ path, handle, cors: corsOptions }: ProtocolRouteOptions): Plugin {
-	if (!path.startsWith("/")) {
-		throw new Error(
-			`protocolRoute needs a path that starts with "/", not ${JSON.stringify(path)}.`,
-		);
-	}
-	// Why: the request path has no query and no fragment, so no request could match.
-	if (/[?#]/u.test(path)) {
-		throw new Error(
-			`protocolRoute needs a path with no "?" and no "#", not ${JSON.stringify(path)}. It matches the path of the request only.`,
-		);
-	}
+	checkRequestPath({ plugin: "protocolRoute", option: "path", path });
 	const withCors: MiddlewareHandler<AppServerEnv> =
 		corsOptions == null ? noCors : cors(corsOptions);
 	/** Sends the request to `handle`, with CORS. The CORS answer of a preflight replaces it. */

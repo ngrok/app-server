@@ -264,6 +264,7 @@ describe("the README and the code", () => {
 
 	it("names each default plugin in the pipeline section, in order", () => {
 		const names = defaultPlugins({
+			clientErrors: true,
 			noindex: true,
 			contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 			env: runtimeEnv({

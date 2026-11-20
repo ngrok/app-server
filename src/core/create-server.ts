@@ -5,6 +5,8 @@ import { asError, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
+import { clientErrors } from "./plugins/client-errors.js";
+import type { ClientErrorsOptions } from "./plugins/client-errors.js";
 import { buildId } from "./plugins/build-id.js";
 import type { BuildIdOptions } from "./plugins/build-id.js";
 import { health } from "./plugins/health.js";
@@ -31,6 +33,7 @@ import { checkOptionPlugins, perRequestHeadersOf, presenceHeadersOf } from "./pl
 import { checkCount, MAX_TIMER_MS } from "./check-count.js";
 import { releaseContext, setProcessSink, withRequestContext } from "./request-context.js";
 import { finishResponse } from "./response-edge.js";
+import { settlesWithin } from "./settles-within.js";
 import { createShutdownState } from "./shutdown.js";
 import type {
 	AppServerEnv,
@@ -235,6 +238,13 @@ export type DefaultPluginsOptions = {
 	 */
 	buildId?: BuildIdOptions | false;
 	/**
+	 * Takes the reports of the errors of the client code, from the client
+	 * module, and gives each one to a sink. `true` uses the default options.
+	 * See {@link clientErrors}.
+	 * @default false
+	 */
+	clientErrors?: boolean | ClientErrorsOptions;
+	/**
 	 * The options of the `Content-Security-Policy` of each HTML document. It
 	 * has no default. See {@link contentSecurityPolicy}.
 	 */
@@ -254,8 +264,8 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `health`, `requestId`, `accessLog`,
- * `streamingCompress`, `securityHeaders`, `bodyLimit`, `noindex` (when
- * set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
+ * `streamingCompress`, `securityHeaders`, `bodyLimit`, `clientErrors` (when
+ * set), `noindex` (when set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
  * `beforeStatic` plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
  * array, so an app can filter it or splice into it. To find a plugin in the
@@ -284,6 +294,11 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		// Why before `bodyLimit`: its 413 must also get the security headers.
 		...(options.securityHeaders === false ? [] : [securityHeaders(options.securityHeaders)]),
 		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
+		// Why here: its answers get the request ID, the access log line, and the security headers,
+		// and a report runs no later stage.
+		...(options.clientErrors == null || options.clientErrors === false
+			? []
+			: [options.clientErrors === true ? clientErrors() : clientErrors(options.clientErrors)]),
 		// Why before the static stages: these plugins must see the prerendered pages. Why before
 		// `beforeStatic`: an app plugin, such as an auth check, then gets the CSP nonce, and its own
 		// responses get these headers. Their order among themselves changes no response.
@@ -390,19 +405,6 @@ export function withForwardedProto(request: Request): Request {
 		Object.defineProperty(copy, "method", { value: request.method });
 	}
 	return copy;
-}
-
-/** Whether `work` settles before `ms` pass. */
-async function settlesWithin(work: Promise<void>, ms: number): Promise<boolean> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const settled = await Promise.race([
-		work.then(() => true),
-		new Promise<boolean>((resolve) => {
-			timer = setTimeout(resolve, ms, false);
-		}),
-	]);
-	clearTimeout(timer);
-	return settled;
 }
 
 /**
