@@ -68,8 +68,7 @@ describe("clientErrorsReactRouter", () => {
 			{
 				name: "TypeError",
 				message: "no id",
-				stack:
-					"TypeError: no id\n    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+				stack: "    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
 				source: "error",
 				path: "/domains/42",
 			},
@@ -123,6 +122,58 @@ describe("clientErrorsReactRouter", () => {
 		}
 
 		expect(send).not.toHaveBeenCalled();
+	});
+
+	it("reports a Firefox or Safari error whose message is a part of the URL of its frame", () => {
+		const { reports } = page();
+		clientErrorsReactRouter();
+		const error = new Error("localhost");
+		error.stack = "load@http://localhost:3000/assets/usage-3f9a1c.js:1:2";
+
+		dispatchEvent(errorEvent(error));
+
+		expect(reports().map((report) => report.stack)).toStrictEqual([
+			"load@http://localhost:3000/assets/usage-3f9a1c.js:1:2",
+		]);
+	});
+
+	it("keeps the frames of an error with a long message, in a body of 16 KiB or less", () => {
+		const { send, reports } = page();
+		clientErrorsReactRouter();
+
+		dispatchEvent(errorEvent(ownError("x".repeat(11_000))));
+		dispatchEvent(errorEvent(ownError("界".repeat(6000))));
+		const deep = ownError("deep");
+		deep.stack += "\n    at 界 (http://localhost:3000/assets/界.js:1:2)".repeat(400);
+		dispatchEvent(errorEvent(deep));
+
+		expect(reports().map((report) => String(report.stack).split("\n")[0])).toStrictEqual([
+			"    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+			"    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+			"    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+		]);
+		for (const [, init] of send.mock.calls) {
+			const body = typeof init?.body === "string" ? init.body : "";
+
+			expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(16 * 1024);
+		}
+	});
+
+	it("keeps 100 events at most in the inline script", () => {
+		page();
+		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
+		globalThis.eval(clientErrorsScript);
+		const buffer: { events: Event[]; keep: (event: Event) => void } = Reflect.get(
+			globalThis,
+			"__appServerErrors",
+		);
+		added.push(["error", buffer.keep], ["unhandledrejection", buffer.keep]);
+
+		for (let count = 0; count < 150; count += 1) {
+			dispatchEvent(errorEvent(ownError(`loop ${count}`)));
+		}
+
+		expect(buffer.events).toHaveLength(100);
 	});
 
 	it("sends each error once, and 10 reports at most for a page load", () => {

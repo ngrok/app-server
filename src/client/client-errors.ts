@@ -1,4 +1,4 @@
-import { CLIENT_ERRORS_PATH } from "../core/client-error-report.js";
+import { CLIENT_ERRORS_PATH, MAX_REPORT_BYTES } from "../core/client-error-report.js";
 import type { ClientErrorReport, ClientErrorSource } from "../core/client-error-report.js";
 import { timingBuild } from "./stale-build-navigation.js";
 
@@ -11,7 +11,10 @@ export type ClientErrorsReporterOptions = {
 	path?: string;
 };
 
-/** The options of `hydrateRoot` that report the errors of a React root. */
+/**
+ * The options of `hydrateRoot` that report the errors of a React root.
+ * `onUncaughtError` and `onCaughtError` need React 19. React 18 ignores them.
+ */
 export type ClientErrorsRootOptions = {
 	onUncaughtError: (error: unknown) => void;
 	onCaughtError: (error: unknown) => void;
@@ -39,10 +42,22 @@ const EVENTS = ["error", "unhandledrejection"] as const;
 const MAX_REPORTS = 10;
 
 /**
+ * Why 100: a page whose entry chunk never runs can throw in a loop, and the
+ * script must not keep each event. The reporter sends {@link MAX_REPORTS} at
+ * most, and it drops the events of other origins first.
+ */
+const MAX_KEPT = 100;
+
+/** The least of a long message that a report keeps when its body is too large. */
+const MIN_MESSAGE = 100;
+
+/**
  * The text of an inline script that keeps the `error` and
  * `unhandledrejection` events of the page until the client module loads.
  * Without it, the app gets no report of an error that comes before the entry
- * chunk runs, such as a chunk that throws while it loads.
+ * chunk runs, such as a chunk that throws while it loads. It keeps 100
+ * events at most, and it sends no report: if the entry chunk does not run,
+ * the app gets none.
  *
  * Render it in the `<head>` of the document, before the framework's scripts,
  * with the CSP nonce. A prerendered page needs no nonce: the `appServer`
@@ -51,7 +66,7 @@ const MAX_REPORTS = 10;
  * @example
  * <script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript }} />
  */
-export const clientErrorsScript = `(function(w,b){b=w.${BUFFER}={events:[]};b.keep=function(e){b.events.push(e)};${EVENTS.map((type) => `w.addEventListener("${type}",b.keep)`).join(";")}})(window)`;
+export const clientErrorsScript = `(function(w,b){b=w.${BUFFER}={events:[]};b.keep=function(e){b.events.length<${MAX_KEPT}&&b.events.push(e)};${EVENTS.map((type) => `w.addEventListener("${type}",b.keep)`).join(";")}})(window)`;
 
 /**
  * Starts the reporter of a page: it listens on `window`, takes the events of
@@ -64,10 +79,16 @@ function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOption
 			return;
 		}
 		const { name, message, stack } = thrown;
+		// Why only the lines that end with a line and a column: Chromium starts the stack with the
+		// name and the message, and the message can hold a URL and can be long. Firefox and Safari
+		// give the frames only.
+		const frames = stack
+			.split("\n")
+			.filter((line) => /:\d+:\d+\)?$/u.test(line))
+			.join("\n");
 		// Why the first URL: it is the frame that threw. A browser extension and a script of another
 		// origin give another origin, and an error with no stack, such as `Script error.`, gives none.
-		// Why remove the message: Chromium starts the stack with it, and it can hold a URL.
-		const thrownAt = /[a-z-]+:\/\/[^\s)]+/iu.exec(stack.replace(message, ""))?.[0];
+		const thrownAt = /[a-z-]+:\/\/[^\s)]+/iu.exec(frames)?.[0];
 		const key = `${message}\n${stack}`;
 		if (thrownAt?.startsWith(`${location.origin}/`) !== true || sent.has(key)) {
 			return;
@@ -76,12 +97,27 @@ function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOption
 		const body: ClientErrorReport = {
 			name,
 			message: message.slice(0, 1000),
-			stack: stack.slice(0, 10_000),
+			stack: frames.slice(0, 10_000),
 			source,
 			path: location.pathname,
 			route,
 			build: timingBuild(performance.getEntriesByType("navigation")),
 		};
+		// Why bytes: the endpoint limits the bytes of the body, and one character can be 6 bytes
+		// of JSON. Why the message first, and then the last frames: the first frame shows the cause.
+		const encoder = new TextEncoder();
+		let json = JSON.stringify(body);
+		while (encoder.encode(json).length > MAX_REPORT_BYTES) {
+			const lastFrame = body.stack.lastIndexOf("\n");
+			if (body.message.length > MIN_MESSAGE) {
+				body.message = body.message.slice(0, Math.max(MIN_MESSAGE, body.message.length / 2));
+			} else if (lastFrame === -1) {
+				return;
+			} else {
+				body.stack = body.stack.slice(0, lastFrame);
+			}
+			json = JSON.stringify(body);
+		}
 		// Why `keepalive`: the report goes out when the page unloads. Why `omit`: the report needs no
 		// cookie, so the server gets no session with it.
 		void fetch(path, {
@@ -89,7 +125,7 @@ function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOption
 			keepalive: true,
 			credentials: "omit",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
+			body: json,
 		}).catch(() => undefined);
 	};
 	const onEvent = (event: Event): void => {

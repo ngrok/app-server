@@ -1,7 +1,10 @@
 import type { Context } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { checkCount } from "../check-count.js";
-import { CLIENT_ERROR_SOURCES, CLIENT_ERRORS_PATH } from "../client-error-report.js";
+import {
+	CLIENT_ERROR_SOURCES,
+	CLIENT_ERRORS_PATH,
+	MAX_REPORT_BYTES,
+} from "../client-error-report.js";
 import type { ClientErrorReport, ClientErrorSource } from "../client-error-report.js";
 import { asError } from "../log.js";
 import { checkRequestPath, optionPlugin } from "../plugin-options.js";
@@ -60,9 +63,6 @@ export type ClientErrorsOptions = {
 	maxPerMinute?: number;
 };
 
-/** Why 16 KiB: the client module sends 11,000 characters of message and stack at most. */
-const MAX_REPORT_BYTES = 16 * 1024;
-
 /** How long the server waits for the sink. */
 const SINK_DEADLINE_MS = 3000;
 
@@ -72,33 +72,96 @@ const MAX_FRAMES = 50;
 /** The user agent of a client that is not a visitor, such as a crawler or a headless browser. */
 const BOT = /bot|crawl|spider|headless|lighthouse/iu;
 
-/**
- * One line of a stack: `at name (file:1:2)` and `at file:1:2` of Chromium,
- * each with or without `async`, and `name@file:1:2` and `file:1:2` of
- * Firefox and Safari.
- */
-const FRAME =
-	/^\s*(?:at (?:async )?(?:(?<chromium>.*?) \()?|(?<gecko>[^@()]*)@)?(?<file>[^\s()]+):(?<line>\d+):(?<column>\d+)\)?$/u;
+/** The file, the line, and the column at the end of a frame. */
+const LOCATION = /^(?<file>\S+):(?<line>\d+):(?<column>\d+)$/u;
 
-/** The frames of `stack`, {@link MAX_FRAMES} at most. A line that is not a frame, such as the message, gives none. */
-function framesOf(stack: string): ClientErrorFrame[] {
-	const frames: ClientErrorFrame[] = [];
-	for (const line of stack.split("\n")) {
-		const groups = FRAME.exec(line)?.groups;
-		if (groups?.file != null) {
-			const name = groups.chromium ?? groups.gecko ?? "";
-			frames.push({
+/**
+ * The frame of one line of a stack: `at name (file:1:2)` and `at file:1:2`
+ * of Chromium, each with or without `async`, and `name@file:1:2` and
+ * `file:1:2` of Firefox and Safari. A line that is not a frame, such as the
+ * message, gives `undefined`.
+ *
+ * Why no single pattern: a client writes the stack, and a pattern with an
+ * optional name takes quadratic time on a long line that is not a frame.
+ */
+function frameOf(line: string): ClientErrorFrame | undefined {
+	let location = line.trim();
+	let name = "";
+	if (location.startsWith("at ")) {
+		location = location.slice(3).replace(/^async /u, "");
+		// Why the first ` (`: the URL of a file can have parentheses, such as `/assets/(group)-3f9a1c.js`.
+		const open = location.indexOf(" (");
+		if (open !== -1 && location.endsWith(")")) {
+			name = location.slice(0, open);
+			location = location.slice(open + 2, -1);
+		}
+	} else {
+		// Why not after `://`: the URL of a file can have an `@`, such as `/assets/@scope/a.js`.
+		const at = location.indexOf("@");
+		if (at !== -1 && !location.slice(0, at).includes("://")) {
+			name = location.slice(0, at);
+			location = location.slice(at + 1);
+		}
+	}
+	const groups = LOCATION.exec(location)?.groups;
+	return groups?.file == null
+		? undefined
+		: {
 				function: name === "" ? undefined : name,
 				file: groups.file,
 				line: Number(groups.line),
 				column: Number(groups.column),
-			});
+			};
+}
+
+/** The frames of `stack`, {@link MAX_FRAMES} at most. */
+function framesOf(stack: string): ClientErrorFrame[] {
+	const frames: ClientErrorFrame[] = [];
+	for (const line of stack.split("\n")) {
+		const frame = frameOf(line);
+		if (frame != null) {
+			frames.push(frame);
 			if (frames.length === MAX_FRAMES) {
 				break;
 			}
 		}
 	}
 	return frames;
+}
+
+/**
+ * The text of the body of `request`, or `undefined` for a body of more than
+ * {@link MAX_REPORT_BYTES}. Why not `hono/body-limit`: it does not cancel a
+ * streamed body that it refuses, so the source of the stream stays open.
+ */
+async function bodyOf(request: Request): Promise<string | undefined> {
+	const reader = request.body?.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	let bytes = 0;
+	for (;;) {
+		// oxlint-disable-next-line no-await-in-loop -- each chunk comes after the one before it.
+		const chunk = await reader?.read();
+		if (chunk == null || chunk.done) {
+			return text + decoder.decode();
+		}
+		bytes += chunk.value.byteLength;
+		if (bytes > MAX_REPORT_BYTES) {
+			// oxlint-disable-next-line no-await-in-loop -- the loop ends here.
+			await reader?.cancel();
+			return undefined;
+		}
+		text += decoder.decode(chunk.value, { stream: true });
+	}
+}
+
+/** `text` as JSON, or `undefined` when it is not JSON. */
+function parsed(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
 }
 
 /** `value` as a report, or `undefined` when a field has a wrong type. */
@@ -230,7 +293,12 @@ export function clientErrors({
 		if (!isSameOrigin(context)) {
 			return empty(403);
 		}
-		const report = asReport(await context.req.json().catch(() => undefined));
+		// Why an empty text for a body that fails: a client that leaves gets the 400 of a bad report.
+		const text = await bodyOf(context.req.raw).catch(() => "");
+		if (text == null) {
+			return empty(413);
+		}
+		const report = asReport(parsed(text));
 		if (report == null) {
 			return empty(400);
 		}
@@ -278,8 +346,6 @@ export function clientErrors({
 		}
 		return empty(204);
 	};
-	// Why Hono's limit: it reads the body into memory, and a report is small.
-	const limit = bodyLimit({ maxSize: MAX_REPORT_BYTES, onError: () => empty(413) });
 	return optionPlugin("clientErrors", {
 		name: "client-errors",
 		setup: (info) => {
@@ -289,10 +355,6 @@ export function clientErrors({
 		},
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
 		middleware: (context, next) =>
-			context.req.method === "POST" && context.req.path === path
-				? limit(context, async () => {
-						context.res = await receive(context);
-					})
-				: next(),
+			context.req.method === "POST" && context.req.path === path ? receive(context) : next(),
 	});
 }

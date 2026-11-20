@@ -646,7 +646,7 @@ The client module sends no request of its own and adds no wait. A client navigat
 
 ## Client errors
 
-`clientErrors()` and the client module tell the app when its own client code breaks, with no vendor script in the browser. The client module sends each error to the server, and the server gives it to a sink that the app supplies. The module adds 1.1 KB of gzip to the client bundle (Vite 8, minified), and a test fails above 1.5 KB.
+`clientErrors()` and the client module tell the app when its own client code breaks, with no vendor script in the browser. The client module sends each error to the server, and the server gives it to a sink that the app supplies. The module adds 1.3 KB of gzip to the client bundle (Vite 8, minified), and a test fails above 1.5 KB.
 
 Turn the plugin on in the server. With no `sink`, each error is one `client error` line of the [log](#logs):
 
@@ -688,18 +688,18 @@ startTransition(() => {
 The module reports:
 
 - the `error` and `unhandledrejection` events of the page,
-- the errors of the React root: `onUncaughtError`, `onCaughtError`, and `onRecoverableError`. After each report, the hook does what React does with no hook, so the console shows the same lines.
+- the errors of the React root: `onUncaughtError`, `onCaughtError`, and `onRecoverableError`. After each report, the hook does what React does with no hook, so the console shows the same lines. `onUncaughtError` and `onCaughtError` need React 19. React 18 ignores them, so an error that an error boundary catches gives no report there.
 - with React Router, the errors that the router gets from a loader, an action, or a route render, with the route pattern. The render error of a route is one report, from the router. TanStack Router throws a loader error in the render of its route, so the React root reports it.
 
 What the module sends:
 
 - It keeps an error only when the frame that threw is a script of the page's origin. So it drops the errors of a browser extension and of a third-party script, an error with no stack, such as the masked `Script error.` and the `ResizeObserver` loop messages, and each thrown value that is not an `Error`.
 - It sends each error once, and 10 reports at most for each page load.
-- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the stack of the error, the pathname of the page with no query, the route pattern, and the build.
+- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the stack of the error, the pathname of the page with no query, the route pattern, and the build. The body is 16 KiB at most. For a larger report, the module makes the message shorter, and then it removes frames from the end of the stack.
 
 ### Errors before the entry chunk
 
-The module starts when the entry chunk runs. To also get an error that comes before that, such as a chunk that throws while it loads, render `clientErrorsScript` as an inline script in the `<head>` of the document. It is 178 bytes. It keeps the events until the module takes them:
+The module starts when the entry chunk runs. To also get an error that comes before that, such as a chunk that throws while it loads, render `clientErrorsScript` as an inline script in the `<head>` of the document. It is 199 bytes. It keeps the events, 100 at most, until the module takes them:
 
 ```tsx
 // app/root.tsx
@@ -709,6 +709,8 @@ import { clientErrorsScript, cspNonce } from "@ngrok/app-server/client";
 	<script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript }} />
 </head>;
 ```
+
+The script sends no report. If the entry chunk does not run, such as when one of its static imports throws, the module does not start, and the app gets no report.
 
 With [a CSP for each document](#a-csp-for-each-document), a rendered page trusts the script by its nonce, and a prerendered page by its hash, which the `appServer` Vite plugin records with the other inline scripts.
 

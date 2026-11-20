@@ -246,6 +246,74 @@ describe("clientErrors", () => {
 		expect(events).toStrictEqual([]);
 	});
 
+	it("cancels a streamed body when it passes 16 KiB", async () => {
+		const { request } = await testServer({ plugins: [clientErrors()] });
+		const { headers } = report();
+		let canceled = false;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				controller.enqueue(new Uint8Array(17_000));
+			},
+			cancel() {
+				canceled = true;
+			},
+		});
+		const streamed: RequestInit & { duplex: "half" } = {
+			method: "POST",
+			headers,
+			duplex: "half",
+			body,
+		};
+
+		const response = await request("/_app/issues", streamed);
+
+		expect(response.status).toBe(413);
+		expect(canceled).toBe(true);
+	});
+
+	it("reads a frame whose URL has parentheses or an @", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+
+		await request(
+			"/_app/issues",
+			report({
+				stack: [
+					"Error: failed",
+					"    at load (https://example.com/assets/(group)-3f9a1c.js:1:2)",
+					"https://example.com/assets/@scope/a.js:3:4",
+					"run@https://example.com/assets/@scope/a.js:5:6",
+				].join("\n"),
+			}),
+		);
+
+		expect(events[0]?.frames).toStrictEqual([
+			{
+				function: "load",
+				file: "https://example.com/assets/(group)-3f9a1c.js",
+				line: 1,
+				column: 2,
+			},
+			{ function: undefined, file: "https://example.com/assets/@scope/a.js", line: 3, column: 4 },
+			{ function: "run", file: "https://example.com/assets/@scope/a.js", line: 5, column: 6 },
+		]);
+	});
+
+	it("reads a long line that is not a frame in linear time", async () => {
+		const { request } = await testServer({ plugins: [clientErrors({ sink: () => {} })] });
+		const start = performance.now();
+
+		const response = await request(
+			"/_app/issues",
+			report({ stack: `${" ".repeat(15_000)}!\n${FIREFOX_STACK}` }),
+		);
+
+		expect(response.status).toBe(204);
+		// A pattern with quadratic time takes more than 100 ms for this line, and this parser takes
+		// less than 1 ms, on an Apple M3 Max.
+		expect(performance.now() - start).toBeLessThan(50);
+	});
+
 	it("answers 400 to a body that is not a report", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
