@@ -14,7 +14,6 @@ export {
 export type {
 	//,
 	ClientErrorsReactRouter,
-	ClientErrorsReporterOptions,
 	ClientErrorsRootOptions,
 } from "./client-errors.js";
 export type {

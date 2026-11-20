@@ -1,15 +1,6 @@
-import { CLIENT_ERRORS_PATH, MAX_REPORT_BYTES } from "../core/client-error-report.js";
+import { clientErrorsPath, MAX_REPORT_BYTES } from "../core/client-error-report.js";
 import type { ClientErrorReport, ClientErrorSource } from "../core/client-error-report.js";
 import { timingBuild } from "./stale-build-navigation.js";
-
-/** Options for {@link clientErrorsReactRouter} and {@link clientErrorsTanStack}. */
-export type ClientErrorsReporterOptions = {
-	/**
-	 * The path of the endpoint: the `path` of `clientErrors()`.
-	 * @default "/_app/issues"
-	 */
-	path?: string;
-};
 
 /**
  * The options of `hydrateRoot` that report the errors of a React root.
@@ -55,24 +46,35 @@ const MIN_MESSAGE = 100;
  * The text of an inline script that keeps the `error` and
  * `unhandledrejection` events of the page until the client module loads.
  * Without it, the app gets no report of an error that comes before the entry
- * chunk runs, such as a chunk that throws while it loads. It keeps 100
- * events at most, and it sends no report: if the entry chunk does not run,
- * the app gets none.
+ * chunk runs, such as a chunk that throws while it loads.
+ *
+ * The script keeps 100 events at most. If the client module does not take
+ * them, such as when an import of the entry chunk throws, the script sends
+ * the first 10 itself when the page hides. Those reports have no route and
+ * no build, and the script does not check the origin of an error.
  *
  * Render it in the `<head>` of the document, before the framework's scripts,
  * with the CSP nonce. A prerendered page needs no nonce: the `appServer`
  * Vite plugin records the hash of the script.
  *
  * @example
- * <script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript }} />
+ * <script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript() }} />
  */
-export const clientErrorsScript = `(function(w,b){b=w.${BUFFER}={events:[]};b.keep=function(e){b.events.length<${MAX_KEPT}&&b.events.push(e)};${EVENTS.map((type) => `w.addEventListener("${type}",b.keep)`).join(";")}})(window)`;
+export function clientErrorsScript(): string {
+	// Why `\u003c`: a path with `</script>` must not end the inline script.
+	const url = JSON.stringify(clientErrorsPath()).replaceAll("<", String.raw`\u003c`);
+	// Why 500 and 4,000 characters: the report stays below the limit of the endpoint.
+	const send = `function(e){var x=e.reason||e.error;x&&x.stack&&fetch(${url},{method:"POST",keepalive:!0,credentials:"omit",body:JSON.stringify({name:x.name,message:(""+x.message).slice(0,500),stack:x.stack.slice(0,4e3),source:e.type,path:location.pathname})}).catch(function(){})}`;
+	const listen = EVENTS.map((type) => `w.addEventListener("${type}",b.keep)`).join(";");
+	return `(function(w,b){b=w.${BUFFER}={events:[]};b.keep=function(e){b.events.length<${MAX_KEPT}&&b.events.push(e)};${listen};w.addEventListener("pagehide",function(){b.events.splice(0).slice(0,${MAX_REPORTS}).forEach(${send})})})(window)`;
+}
 
 /**
  * Starts the reporter of a page: it listens on `window`, takes the events of
  * {@link clientErrorsScript}, and gives the function that reports one error.
  */
-function startReporter({ path = CLIENT_ERRORS_PATH }: ClientErrorsReporterOptions) {
+function startReporter() {
+	const path = clientErrorsPath();
 	const sent = new Set<string>();
 	const report = (thrown: unknown, source: ClientErrorSource, route?: string): void => {
 		if (!(thrown instanceof Error) || thrown.stack == null || sent.size >= MAX_REPORTS) {
@@ -193,10 +195,8 @@ function rootOptionsOf(report: ReturnType<typeof startReporter>): ClientErrorsRo
  * 	hydrateRoot(document, <HydratedRouter onError={clientErrors.onError} />, clientErrors.rootOptions);
  * });
  */
-export function clientErrorsReactRouter(
-	options: ClientErrorsReporterOptions = {},
-): ClientErrorsReactRouter {
-	const report = startReporter(options);
+export function clientErrorsReactRouter(): ClientErrorsReactRouter {
+	const report = startReporter();
 	return {
 		onError: (error, { pattern }) => {
 			report(error, "router", pattern);
@@ -219,8 +219,6 @@ export function clientErrorsReactRouter(
  * 	hydrateRoot(document, <StartClient />, clientErrors.rootOptions);
  * });
  */
-export function clientErrorsTanStack(options: ClientErrorsReporterOptions = {}): {
-	rootOptions: ClientErrorsRootOptions;
-} {
-	return { rootOptions: rootOptionsOf(startReporter(options)) };
+export function clientErrorsTanStack(): { rootOptions: ClientErrorsRootOptions } {
+	return { rootOptions: rootOptionsOf(startReporter()) };
 }

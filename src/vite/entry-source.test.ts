@@ -86,6 +86,22 @@ describe("environmentOptions", () => {
 	);
 });
 
+describe("the server entry of a build with a clientErrorsPath", () => {
+	it("sets the path as a global before each import, and only when the app set one", () => {
+		const entry = {
+			framework: { serverModule: "./adapter.js", runtimeModule: "./adapter.js" },
+			host: { runtimeModule: "./adapter.js" },
+			appModule: undefined,
+			clientDirectory: '"build/client"',
+		};
+
+		expect(serverEntrySource({ ...entry, clientErrorsPath: "/_x" }).split("\n")[0]).toBe(
+			'globalThis.__APP_SERVER_CLIENT_ERRORS_PATH__ = "/_x";',
+		);
+		expect(serverEntrySource(entry)).not.toContain("__APP_SERVER_CLIENT_ERRORS_PATH__");
+	});
+});
+
 describe("the server entry of a build with no server.ts", () => {
 	it("makes the default app with the trust options of the environment", () => {
 		expect(importEntry({ TRUST_FORWARDED_PROTO: "1", TRUSTED_PROXY_HOPS: "2" })).toStrictEqual({

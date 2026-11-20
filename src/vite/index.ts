@@ -30,6 +30,8 @@ import {
 	SERVER_ENTRY_FILE,
 } from "../core/build-manifest.js";
 import type { BuildManifest } from "../core/build-manifest.js";
+import { CLIENT_ERRORS_PATH_CONSTANT } from "../core/client-error-report.js";
+import { checkRequestPath } from "../core/plugin-options.js";
 import {
 	COPY_ENCODINGS,
 	copyName,
@@ -202,6 +204,13 @@ export type AppServerOptions = {
 		 */
 		omit?: readonly string[];
 	};
+	/**
+	 * The path of the endpoint of `clientErrors()`. The plugin writes it into
+	 * the client build and gives it to the server, so the client module, the
+	 * inline script, and the endpoint use one path. It must start with `/`.
+	 * @default "/_app/issues"
+	 */
+	clientErrorsPath?: string;
 };
 
 /** The built-in framework adapters, each with the name of the Vite plugin that marks its framework. */
@@ -951,6 +960,10 @@ function filesInside(directory: string): string[] {
  */
 export function appServer(options: AppServerOptions = {}): Plugin[] {
 	const host = options.host ?? node();
+	const { clientErrorsPath } = options;
+	if (clientErrorsPath != null) {
+		checkRequestPath({ plugin: "appServer", option: "clientErrorsPath", path: clientErrorsPath });
+	}
 	// Why one value: `configResolved` sets all three, so no hook sees a config with no framework.
 	let resolved:
 		| { config: ResolvedConfig; framework: FrameworkBuild; appModule: string | undefined }
@@ -982,6 +995,12 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 	};
 	const main: Plugin = {
 		name: "@ngrok/app-server",
+		// Why a `define`: Vite then writes the path into the client module of each build, and gives it
+		// to the page in development.
+		config: () =>
+			clientErrorsPath == null
+				? undefined
+				: { define: { [CLIENT_ERRORS_PATH_CONSTANT]: JSON.stringify(clientErrorsPath) } },
 		configResolved: (config) => {
 			const framework = options.framework ?? detectFramework(config.plugins);
 			// Why here and not in an adapter: the server serves at "/" with each framework.
@@ -1071,6 +1090,7 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 				framework,
 				host,
 				appModule,
+				clientErrorsPath,
 				clientDirectory:
 					this.environment.mode === "build"
 						? `new URL(${JSON.stringify(`${fromEntry}/`)}, import.meta.url).href`

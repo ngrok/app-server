@@ -404,6 +404,28 @@ describe("clientErrors", () => {
 		expect(events).toHaveLength(3);
 	});
 
+	it("does not count a report that it drops in maxPerMinute", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({
+			plugins: [
+				clientErrors({ sink, maxPerMinute: 1, filter: (event) => event.message !== "noise" }),
+			],
+		});
+
+		const statuses = [];
+		for (const init of [
+			report({ stack: "Error: Script error." }),
+			report({ message: "noise" }),
+			report(),
+			report(),
+		]) {
+			statuses.push((await request("/_app/issues", init)).status);
+		}
+
+		expect(statuses).toStrictEqual([204, 204, 204, 429]);
+		expect(events).toHaveLength(1);
+	});
+
 	it("answers 204 and logs one error line when the sink fails", async () => {
 		const { request, lines } = await testServer({
 			plugins: [
@@ -440,9 +462,11 @@ describe("clientErrors", () => {
 		]);
 	});
 
-	it("answers at the path option, and sends each other request on to the framework", async () => {
+	it("answers at the clientErrorsPath of the Vite plugin, and sends each other request on to the framework", async () => {
+		// The server entry that the Vite plugin generates sets this global.
+		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink, path: "/_x" })] });
+		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
 
 		const taken = await request("/_x", report());
 		const defaultPath = await request("/_app/issues", report());
@@ -454,11 +478,7 @@ describe("clientErrors", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("stops startup for a bad path or a bad maxPerMinute", () => {
-		expect(() => clientErrors({ path: "issues" })).toThrow(
-			'clientErrors needs a path that starts with "/", not "issues".',
-		);
-		expect(() => clientErrors({ path: "/issues?x" })).toThrow('with no "?" and no "#"');
+	it("stops startup for a bad maxPerMinute", () => {
 		expect(() => clientErrors({ maxPerMinute: 1.5 })).toThrow(
 			"The maxPerMinute of clientErrors must be an integer of 0 or more, not 1.5.",
 		);

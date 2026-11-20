@@ -5,11 +5,11 @@ import { describe, expect, it } from "vitest";
 import { clientErrorsScript } from "./client-errors.js";
 
 describe("the size of the client error reporter", () => {
-	it("has an inline script of 300 bytes or less", () => {
-		expect(new TextEncoder().encode(clientErrorsScript).byteLength).toBeLessThanOrEqual(300);
+	it("has an inline script of 600 bytes or less", () => {
+		expect(new TextEncoder().encode(clientErrorsScript()).byteLength).toBeLessThanOrEqual(600);
 	});
 
-	it("adds 1.5 KB or less of gzip to an app's client bundle", async () => {
+	it("adds 1.7 KB or less of gzip to an app's client bundle", async () => {
 		const output = await build({
 			configFile: false,
 			logLevel: "silent",
@@ -27,7 +27,7 @@ describe("the size of the client error reporter", () => {
 		expect(chunk?.type === "chunk" ? chunk.imports : undefined).toStrictEqual([]);
 		expect(gzipSync(chunk?.type === "chunk" ? chunk.code : "").byteLength).toBeGreaterThan(300);
 		expect(gzipSync(chunk?.type === "chunk" ? chunk.code : "").byteLength).toBeLessThanOrEqual(
-			1500,
+			1700,
 		);
 	});
 });

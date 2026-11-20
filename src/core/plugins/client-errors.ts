@@ -2,12 +2,12 @@ import type { Context } from "hono";
 import { checkCount } from "../check-count.js";
 import {
 	CLIENT_ERROR_SOURCES,
-	CLIENT_ERRORS_PATH,
+	clientErrorsPath,
 	MAX_REPORT_BYTES,
 } from "../client-error-report.js";
 import type { ClientErrorReport, ClientErrorSource } from "../client-error-report.js";
 import { asError } from "../log.js";
-import { checkRequestPath, optionPlugin } from "../plugin-options.js";
+import { optionPlugin } from "../plugin-options.js";
 import { settlesWithin } from "../settles-within.js";
 import type { AppServerEnv, Plugin, RequestLogger } from "../types.js";
 
@@ -41,12 +41,6 @@ export type ClientErrorEvent = {
 /** Options for {@link clientErrors}. */
 export type ClientErrorsOptions = {
 	/**
-	 * The path of the endpoint. Give the same path to the client module. It
-	 * must start with `/`.
-	 * @default "/_app/issues"
-	 */
-	path?: string;
-	/**
 	 * Takes each event, such as to send it to an error tracker. The server
 	 * waits for it for 3 seconds at most before it answers, so a serverless
 	 * host does not stop it. A sink that throws or rejects logs one error line.
@@ -56,8 +50,9 @@ export type ClientErrorsOptions = {
 	/** Whether the sink gets an event. Give `false` for noise that the app knows. */
 	filter?: (event: ClientErrorEvent) => boolean;
 	/**
-	 * How many reports this process takes in one minute. Each report after
-	 * them gets a 429. `0` takes none.
+	 * How many events the sink gets in one minute, in this process. Each
+	 * report after them gets a 429. A report that the plugin or the `filter`
+	 * drops does not count. `0` gives the sink none.
 	 * @default 60
 	 */
 	maxPerMinute?: number;
@@ -236,7 +231,8 @@ function logEvent(logger: RequestLogger, event: ClientErrorEvent): void {
  * Takes the reports of the errors of the client code and gives each one to a
  * sink, so an app sees a broken page with no vendor script in the browser.
  * The client module of `@ngrok/app-server/client`, such as
- * `clientErrorsReactRouter()`, sends the reports as a `POST` to `path`.
+ * `clientErrorsReactRouter()`, sends the reports as a `POST` to the path: `/_app/issues`, or the
+ * `clientErrorsPath` of the `appServer` Vite plugin.
  *
  * The plugin answers before the framework runs. A report gets a 204 when the
  * plugin takes it or drops it, and:
@@ -244,17 +240,19 @@ function logEvent(logger: RequestLogger, event: ClientErrorEvent): void {
  * - a 403 from a page of another origin,
  * - a 413 for a body of more than 6 KiB,
  * - a 400 for a body that is not a report,
- * - a 429 after `maxPerMinute` reports in one minute.
+ * - a 429 after the sink got `maxPerMinute` events in one minute.
  *
  * The plugin drops a report from a bot, and one whose stack has no frame. In
  * production, it also drops one whose first frame is not a file of Vite's
  * `build.assetsDir`, such as an inline script that a browser extension adds.
- * Then the `filter` decides, and the `sink` gets the event.
+ * Then the `filter` decides, and the `sink` gets the event. Each field of an
+ * event comes from the client, and a client that is not a browser can send
+ * any value, so a sink must not trust it.
  *
  * The limit counts in the memory of one process. On a serverless host, each
  * instance has its own count, so the limit of the sink's service is the hard
- * limit there. A `path` that does not start with `/`, or a `maxPerMinute`
- * that is not a whole number of 0 or more, stops startup.
+ * limit there. A `maxPerMinute` that is not a whole number of 0 or more
+ * stops startup.
  *
  * @example
  * createServer({
@@ -269,12 +267,12 @@ function logEvent(logger: RequestLogger, event: ClientErrorEvent): void {
  * });
  */
 export function clientErrors({
-	path = CLIENT_ERRORS_PATH,
 	sink,
 	filter,
 	maxPerMinute = 60,
 }: ClientErrorsOptions = {}): Plugin {
-	checkRequestPath({ plugin: "clientErrors", option: "path", path });
+	/** Why in `setup`: the server entry sets the path before the setup, and can set it after this call. */
+	let path = "";
 	checkCount("The maxPerMinute of clientErrors", maxPerMinute);
 	/** In development, each file is an app file: Vite serves source modules from many paths. */
 	let assetsPath = "/";
@@ -313,9 +311,6 @@ export function clientErrors({
 		if (userAgent === "" || BOT.test(userAgent)) {
 			return empty(204);
 		}
-		if (isOverLimit()) {
-			return empty(429);
-		}
 		const frames = framesOf(report.stack);
 		const event: ClientErrorEvent = {
 			name: report.name,
@@ -332,6 +327,10 @@ export function clientErrors({
 			filter?.(event) === false
 		) {
 			return empty(204);
+		}
+		// Why after the drops: a report that the sink does not get must not use the limit.
+		if (isOverLimit()) {
+			return empty(429);
 		}
 		const logger = context.get("logger");
 		if (sink == null) {
@@ -356,6 +355,7 @@ export function clientErrors({
 	return optionPlugin("clientErrors", {
 		name: "client-errors",
 		setup: (info) => {
+			path = clientErrorsPath();
 			if (info.mode === "production") {
 				({ assetsPath } = info);
 			}

@@ -869,6 +869,29 @@ describe("appServer", () => {
 		).rejects.toThrow('serves a build at "/" only, and this config has the base "/docs/"');
 	});
 
+	it("gives the clientErrorsPath to Vite as a constant, and stops for a bad path", async () => {
+		const options = { framework: reactRouterAdapter(), host: node() };
+		const withPath = await resolveConfig(
+			{
+				root,
+				configFile: false,
+				logLevel: "silent",
+				plugins: appServer({ ...options, clientErrorsPath: "/_x" }),
+			},
+			"build",
+		);
+		const withNone = await resolveConfig(
+			{ root, configFile: false, logLevel: "silent", plugins: appServer(options) },
+			"build",
+		);
+
+		expect(withPath.define).toMatchObject({ __APP_SERVER_CLIENT_ERRORS_PATH__: '"/_x"' });
+		expect(withNone.define ?? {}).not.toHaveProperty("__APP_SERVER_CLIENT_ERRORS_PATH__");
+		expect(() => appServer({ ...options, clientErrorsPath: "issues" })).toThrow(
+			'appServer needs a clientErrorsPath that starts with "/", not "issues".',
+		);
+	});
+
 	it("writes a gzip and a brotli copy of each text file of 1 KiB or more after the build", async () => {
 		const client = join(root, "gzip-build");
 		const text = "export const value = 1;\n".repeat(100);

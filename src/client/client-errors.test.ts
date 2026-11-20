@@ -75,9 +75,11 @@ describe("clientErrorsReactRouter", () => {
 		]);
 	});
 
-	it("posts a report for a rejected promise with no handler, to the path option", () => {
+	it("posts a report for a rejected promise with no handler, to the clientErrorsPath of the Vite plugin", () => {
 		const { send, reports } = page();
-		clientErrorsReactRouter({ path: "/_x" });
+		// Vite writes this constant into the client build.
+		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
+		clientErrorsReactRouter();
 
 		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("rejected") }));
 
@@ -187,10 +189,54 @@ describe("clientErrorsReactRouter", () => {
 		expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(64 * 1024);
 	});
 
+	it("sends the first 10 kept events when the page hides and the module did not start", () => {
+		const { send, reports } = page();
+		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
+		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
+		globalThis.eval(clientErrorsScript());
+		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("early") }));
+		dispatchEvent(errorEvent("a string"));
+		for (let count = 0; count < 12; count += 1) {
+			dispatchEvent(errorEvent(ownError(`loop ${count}`)));
+		}
+
+		expect(send).not.toHaveBeenCalled();
+
+		dispatchEvent(new Event("pagehide"));
+		// A page that the browser shows again from its cache, and then hides again.
+		dispatchEvent(new Event("pagehide"));
+
+		// The string is one of the first 10 events, and it gives no report.
+		expect(send).toHaveBeenCalledTimes(9);
+		expect(send.mock.calls[0]).toStrictEqual([
+			"/_x",
+			{ method: "POST", keepalive: true, credentials: "omit", body: expect.any(String) },
+		]);
+		expect(reports()[0]).toStrictEqual({
+			name: "TypeError",
+			message: "early",
+			stack: "TypeError: early\n    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+			source: "unhandledrejection",
+			path: "/domains/42",
+		});
+	});
+
+	it("sends nothing from the inline script after the module took the events", () => {
+		const { send } = page();
+		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
+		globalThis.eval(clientErrorsScript());
+		dispatchEvent(errorEvent(ownError("before the entry")));
+		clientErrorsReactRouter();
+
+		dispatchEvent(new Event("pagehide"));
+
+		expect(send).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps 100 events at most in the inline script", () => {
 		page();
 		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript);
+		globalThis.eval(clientErrorsScript());
 		const buffer: { events: Event[]; keep: (event: Event) => void } = Reflect.get(
 			globalThis,
 			"__appServerErrors",
@@ -224,7 +270,7 @@ describe("clientErrorsReactRouter", () => {
 	it("reports the events that the inline script kept before the module ran", () => {
 		const { reports } = page();
 		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript);
+		globalThis.eval(clientErrorsScript());
 		dispatchEvent(errorEvent(ownError("before the entry")));
 		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("early") }));
 

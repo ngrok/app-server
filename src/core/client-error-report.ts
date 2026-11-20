@@ -9,6 +9,28 @@
 export const CLIENT_ERRORS_PATH = "/_app/issues";
 
 /**
+ * The name of the constant that holds the `clientErrorsPath` of the
+ * `appServer` Vite plugin. The plugin gives it to Vite as a `define`, so the
+ * client build holds the path, and the server entry that the plugin
+ * generates sets it as a global, so the server reads the same path.
+ */
+export const CLIENT_ERRORS_PATH_CONSTANT = "__APP_SERVER_CLIENT_ERRORS_PATH__";
+
+// oxlint-disable-next-line no-underscore-dangle -- the name of a Vite `define` constant, which no name of an app must equal.
+declare const __APP_SERVER_CLIENT_ERRORS_PATH__: string | undefined;
+
+/**
+ * The path of the endpoint of `clientErrors()`: the `clientErrorsPath` of
+ * the `appServer` Vite plugin, else {@link CLIENT_ERRORS_PATH}. Why a
+ * function: the server entry sets the global after this module loads.
+ */
+export function clientErrorsPath(): string {
+	return typeof __APP_SERVER_CLIENT_ERRORS_PATH__ === "string"
+		? __APP_SERVER_CLIENT_ERRORS_PATH__
+		: CLIENT_ERRORS_PATH;
+}
+
+/**
  * The largest body of a report, in bytes. The client module sends no more,
  * and the endpoint takes no more. Why 6 KiB: a browser refuses a `keepalive`
  * request when the bodies in flight pass 64 KiB, and a page sends 10 reports
