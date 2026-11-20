@@ -206,8 +206,8 @@ export type AppServerOptions = {
 	};
 	/**
 	 * The path of the endpoint of `clientErrors()`. The plugin writes it into
-	 * the client build and gives it to the server, so the client module, the
-	 * inline script, and the endpoint use one path. It must start with `/`.
+	 * each build and gives it to the server, so the inline script and the
+	 * endpoint use one path. It must start with `/`.
 	 * @default "/_app/issues"
 	 */
 	clientErrorsPath?: string;
@@ -995,8 +995,8 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 	};
 	const main: Plugin = {
 		name: "@ngrok/app-server",
-		// Why a `define`: Vite then writes the path into the client module of each build, and gives it
-		// to the page in development.
+		// Why a `define`: Vite then writes the path into each build, so the server build has it in a
+		// prerender pass, which runs with no server entry.
 		config: () =>
 			clientErrorsPath == null
 				? undefined

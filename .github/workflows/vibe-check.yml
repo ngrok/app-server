@@ -150,6 +150,42 @@ jobs:
       - name: Runtime check 🧪
         run: pnpm run test:runtimes
 
+  # Runs the client error reports in Chromium, Firefox, and WebKit against one
+  # fixture, so the stack format of each browser stays supported.
+  browsers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Use pnpm version from root package.json#packageManager
+      - name: Install pnpm 📦
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+          cache-dependency-path: "pnpm-lock.yaml"
+
+      - name: Install Dependencies 📥
+        run: pnpm install --frozen-lockfile
+
+      - name: Build 🏗️
+        run: pnpm run build
+
+      - name: Install browsers 🌐
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Browser check 🧪
+        run: pnpm run test:browsers
+
   vibe-check:
     name: vibe-check
     runs-on: ubuntu-latest
@@ -158,6 +194,7 @@ jobs:
       - mise-lock-check
       - checks
       - runtimes
+      - browsers
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all vibe check jobs passed
@@ -165,12 +202,14 @@ jobs:
           MISE_LOCK_CHECK_RESULT: ${{ needs.mise-lock-check.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           RUNTIMES_RESULT: ${{ needs.runtimes.result }}
+          BROWSERS_RESULT: ${{ needs.browsers.result }}
         run: |
           echo "mise-lock-check: $MISE_LOCK_CHECK_RESULT"
           echo "checks: $CHECKS_RESULT"
           echo "runtimes: $RUNTIMES_RESULT"
+          echo "browsers: $BROWSERS_RESULT"
 
-          if [[ "$MISE_LOCK_CHECK_RESULT" != "success" || "$CHECKS_RESULT" != "success" || "$RUNTIMES_RESULT" != "success" ]]; then
+          if [[ "$MISE_LOCK_CHECK_RESULT" != "success" || "$CHECKS_RESULT" != "success" || "$RUNTIMES_RESULT" != "success" || "$BROWSERS_RESULT" != "success" ]]; then
             echo "One or more vibe check jobs did not succeed."
             exit 1
           fi

@@ -25,6 +25,7 @@ Read the files for your task before the first edit. Work is incomplete until you
 - **`src/core`:** it runs on each host and with each framework. Apply [pure core, effects at the edges](./docs/principles/pure-core-effects-at-the-edges.md), [stream, don't buffer](./docs/principles/stream-dont-buffer.md), and [keep the hot path lean](./docs/principles/keep-the-hot-path-lean.md).
 - **A host or framework adapter:** `HostRuntime` and `FrameworkRuntime` in `src/core/types.ts`, and `HostBuild` and `FrameworkBuild` in `src/vite/index.ts`, are the contract.
 - **A listener, shutdown, a stream, the CLI, or the build:** also run `pnpm run build` and `pnpm run test:runtimes`.
+- **The client error script or its hooks (`src/client/client-errors*`):** also run `pnpm run build` and `pnpm run test:browsers`.
 - **An export, an option, a default, a header, or a status:** update the README section that documents it. Apply [experience first](./docs/principles/experience-first.md). `test/docs.test.ts` checks the README against the code: each `ts` example, the log table, the plugin names, and the install line.
 - **A custom lint rule:** `scripts/oxlint-rules/`, one file for each rule, with tests in `scripts/oxlint-plugin-app-server.test.ts`.
 - **A performance change or claim:** apply [explain the number](./docs/principles/explain-the-number.md) and [redesign before you cache](./docs/principles/redesign-before-you-cache.md).
@@ -94,6 +95,7 @@ pnpm run typecheck
 pnpm run test         # vitest
 pnpm run build        # tsdown into dist/
 pnpm run test:runtimes # the built CLI on Node, Bun, and Deno; build first
+pnpm run test:browsers # the client error reports in Chromium, Firefox, and WebKit; build first, needs `playwright install`
 pnpm run bench        # requests per second of the fixture apps on each runtime; build first, needs oha from mise
 ```
 

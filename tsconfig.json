@@ -35,5 +35,9 @@
   },
   "include": ["src/**/*", "test/**/*", "scripts/**/*", "*.config.ts"],
   // Why: the framework fixture apps build with their own tools, and React's types are not installed.
-  "exclude": ["test/fixtures/react-router", "test/fixtures/tanstack-start"]
+  "exclude": [
+    "test/fixtures/client-errors",
+    "test/fixtures/react-router",
+    "test/fixtures/tanstack-start"
+  ]
 }

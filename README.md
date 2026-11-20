@@ -132,7 +132,7 @@ export default defineConfig({
 - `host`: the host adapter. Default: `node()` from `@ngrok/app-server/node/vite`.
 - `app`: the module whose default export is the app, relative to the Vite root. Default: `server.ts`, else `server.js`, in the Vite root. If neither file exists, the server uses the default plugins. An `app` path with no module stops `app-server start` and the build, with an error that names the path.
 - `externals`: how the server build copies the packages that stay external. `whole` lists packages that keep each file, and `omit` lists packages that the build does not copy. Default: no package in either list. See [Deploy](#deploy).
-- `clientErrorsPath`: the path of the endpoint of [`clientErrors()`](#client-errors). Default `/_app/issues`. The plugin writes it into the client build and gives it to the server.
+- `clientErrorsPath`: the path of the endpoint of [`clientErrors()`](#client-errors). Default `/_app/issues`. The plugin writes it into each build and gives it to the server.
 
 An option that you set replaces its default. Set it for a third-party adapter or for an app in another file:
 
@@ -647,9 +647,9 @@ The client module sends no request of its own and adds no wait. A client navigat
 
 ## Client errors
 
-`clientErrors()` and the client module tell the app when its own client code breaks, with no vendor script in the browser. The client module sends each error to the server, and the server gives it to a sink that the app supplies. The module and the inline script add 1.6 KB of gzip to the client bundle (Vite 8, minified), and a test fails above 1.7 KB.
+`clientErrors()` and the client module tell the app when its own client code breaks, with no vendor script in the browser. An inline script in the document sends each error to the server, and the server gives it to a sink that the app supplies. The setup has three parts, and each part is in the app's own code.
 
-Turn the plugin on in the server. With no `sink`, each error is one `client error` line of the [log](#logs):
+1. Turn the plugin on in the server. With no `sink`, each error is one `client error` line of the [log](#logs):
 
 ```ts
 // server.ts
@@ -658,7 +658,18 @@ createServer({
 });
 ```
 
-Then create the module in the client entry, and give its hooks to React and the router:
+2. Render the inline script in the `<head>` of the document, before the framework's scripts:
+
+```tsx
+// app/root.tsx
+import { clientErrorsScript, cspNonce } from "@ngrok/app-server/client";
+
+<head>
+	<script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript() }} />
+</head>;
+```
+
+3. Give the hooks of the client module to React and the router, in the client entry:
 
 ```tsx
 // app/entry.client.tsx (React Router)
@@ -686,32 +697,29 @@ startTransition(() => {
 });
 ```
 
-The module reports:
+A part that is absent does not fail in silence:
 
-- the `error` and `unhandledrejection` events of the page,
+- With no inline script in the page, the client module logs one error line in the browser console, and the app sends no report.
+- With the plugin off, the endpoint answers 404, and the inline script logs one warning in the browser console.
+
+### What the app gets
+
+The inline script reports the `error` and `unhandledrejection` events of the page. It starts before each chunk of the app. So the app also gets the error of a chunk that throws while it loads, when the client entry does not run.
+
+The hooks give the script the errors that never reach `window`:
+
 - the errors of the React root: `onUncaughtError`, `onCaughtError`, and `onRecoverableError`. After each report, the hook does what React does with no hook, so the console shows the same lines. `onUncaughtError` and `onCaughtError` need React 19. React 18 ignores them, so an error that an error boundary catches gives no report there. An app with its own root options calls the hook of the module from its own, such as `onCaughtError: (error, info) => { clientErrors.rootOptions.onCaughtError(error); mine(error, info); }`.
-- with React Router, the errors that the router gets from a loader, an action, or a route render, with the route pattern. The render error of a route is one report, from the router. TanStack Router throws a loader error in the render of its route, so the React root reports it.
+- with React Router, the errors that the router gets from a loader, an action, or a route render, with the route pattern. The pattern is the `http.route` of the access log, such as `/domains/:domainId`. The render error of a route is one report, from the router. TanStack Router throws a loader error in the render of its route, so the React root reports it.
 
-What the module sends:
+What the script sends:
 
 - It keeps an error only when the frame that threw is a script of the page's origin. So it drops the errors of a browser extension and of a third-party script, an error with no stack, such as the masked `Script error.` and the `ResizeObserver` loop messages, and each thrown value that is not an `Error`.
 - It sends each error once, and 10 reports at most for each page load.
-- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the stack of the error, the pathname of the page with no query, the route pattern, and the build. The body is 6 KiB at most. For a larger report, the module makes the message shorter, and then it removes frames from the end of the stack.
+- It posts JSON to `/_app/issues` with `keepalive` and `credentials: "omit"`. It sets no cookie, reads no storage, and sends no user identifier. A report has the name, the message, and the frames of the stack of the error, the pathname of the page with no query, the route pattern, and the build. The body is 6 KiB at most. For a larger report, the script makes the message shorter, and then it removes frames from the end of the stack.
 
-### Errors before the entry chunk
+### The cost
 
-The module starts when the entry chunk runs. To also get an error that comes before that, such as a chunk that throws while it loads, render `clientErrorsScript()` as an inline script in the `<head>` of the document. It is 556 bytes. It keeps the events, 100 at most, until the module takes them:
-
-```tsx
-// app/root.tsx
-import { clientErrorsScript, cspNonce } from "@ngrok/app-server/client";
-
-<head>
-	<script nonce={cspNonce()} dangerouslySetInnerHTML={{ __html: clientErrorsScript() }} />
-</head>;
-```
-
-If the entry chunk does not run, such as when one of its static imports throws, the module does not start. The script then sends the first 10 events itself when the page hides. Such a report has no route and no build, and the script does not check the origin of the error. The endpoint applies its checks as for each other report.
+The inline script is 2.3 KB in each HTML document, and 1.0 KB as brotli. The client module adds 0.5 KB of gzip to the client bundle (Vite 8, minified). A test fails above 1.3 KB of gzip for the script and above 0.6 KB for the module. In the browser, `clientErrorsScript()` gives the text of the script that the document has, so the client bundle holds no copy of it, and React finds no change when it hydrates.
 
 With [a CSP for each document](#a-csp-for-each-document), a rendered page trusts the script by its nonce, and a prerendered page by its hash, which the `appServer` Vite plugin records with the other inline scripts.
 
@@ -730,7 +738,7 @@ The plugin answers a `POST` to its path before the framework runs, so the origin
 `defaultPlugins()` puts the plugin after `bodyLimit`, so each answer has a request ID, a line in the access log, and the security headers.
 
 - Each field of an event comes from the client. A client that is not a browser can send any header and any value, so the origin check is not authentication. Do not trust a field in the sink.
-- `appServer({ clientErrorsPath })` in the Vite config sets another path. The Vite plugin writes it into the client build and gives it to the server, so the client module, the inline script, and the endpoint use one path. An app with no `appServer` Vite plugin has the default path. The default has no word such as `error` or `log`, because an ad blocker blocks a request by such a word. A path that does not start with `/` stops the build and `app-server start`.
+- `appServer({ clientErrorsPath })` in the Vite config sets another path. The Vite plugin writes it into each build and gives it to the server, so the inline script and the endpoint use one path, also in a prerendered page. An app with no `appServer` Vite plugin has the default path. The default has no word such as `error` or `log`, because an ad blocker blocks a request by such a word. A path that does not start with `/` stops the build and `app-server start`.
 - The limit counts in the memory of one process. On a serverless host, each instance has its own count, so the limit of the sink's service is the hard limit there.
 - In development, the endpoint works the same, and Vite's source modules count as files of the app.
 

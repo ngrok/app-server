@@ -1,8 +1,8 @@
 export { cspNonce } from "./csp-nonce.js";
+export { clientErrorsScript } from "./client-errors-script.js";
 export {
 	//,
 	clientErrorsReactRouter,
-	clientErrorsScript,
 	clientErrorsTanStack,
 } from "./client-errors.js";
 export {

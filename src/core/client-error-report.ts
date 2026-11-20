@@ -10,9 +10,10 @@ export const CLIENT_ERRORS_PATH = "/_app/issues";
 
 /**
  * The name of the constant that holds the `clientErrorsPath` of the
- * `appServer` Vite plugin. The plugin gives it to Vite as a `define`, so the
- * client build holds the path, and the server entry that the plugin
- * generates sets it as a global, so the server reads the same path.
+ * `appServer` Vite plugin. The plugin gives it to Vite as a `define`, so
+ * each build holds the path, also for a prerender pass, which has no server.
+ * The server entry that the plugin generates also sets it as a global, for a
+ * copy of this package that no build holds, as in development.
  */
 export const CLIENT_ERRORS_PATH_CONSTANT = "__APP_SERVER_CLIENT_ERRORS_PATH__";
 
@@ -70,4 +71,15 @@ export type ClientErrorReport = {
 	route?: string | undefined;
 	/** The build that the document runs, when `buildId()` sent one. */
 	build?: string | undefined;
+};
+
+/** The name of the global that the inline script of `clientErrorsScript()` sets. */
+export const CLIENT_ERRORS_GLOBAL = "__appServerErrors";
+
+/** What the inline script of `clientErrorsScript()` puts in the {@link CLIENT_ERRORS_GLOBAL} global. */
+export type ClientErrorsGlobal = {
+	/** Reports one error. The script sends it when a script of the page's origin threw it. */
+	report: (thrown: unknown, source: ClientErrorSource, route?: string) => void;
+	/** The text of the script, for `clientErrorsScript()` in the browser. */
+	text: string;
 };

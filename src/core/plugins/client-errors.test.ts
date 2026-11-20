@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
+import { clientErrorsScript } from "../../client/client-errors-script.js";
 import { clientErrorsReactRouter } from "../../client/client-errors.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import type { LogSink } from "../types.js";
@@ -97,14 +98,17 @@ describe("clientErrors", () => {
 		]);
 	});
 
-	it("takes the report that the client module sends", async () => {
+	it("takes the report that the inline script sends for the client module", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
-		// The browser globals that the client module reads.
+		// The browser globals that the inline script reads.
 		const send = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
 		vi.stubGlobal("fetch", send);
 		vi.stubGlobal("location", { origin: "https://example.com", pathname: "/domains/42" });
 		vi.stubGlobal("addEventListener", () => {});
+		vi.stubGlobal("document", { currentScript: null });
+		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
+		globalThis.eval(clientErrorsScript());
 		const error = new TypeError("no id");
 		error.stack =
 			"TypeError: no id\n    at Usage (https://example.com/assets/usage-3f9a1c.js:12:34)";
@@ -116,6 +120,7 @@ describe("clientErrors", () => {
 		headers.set("Sec-Fetch-Site", "same-origin");
 		headers.set("User-Agent", USER_AGENT);
 		const response = await request("/_app/issues", { ...init, headers });
+		Reflect.deleteProperty(globalThis, "__appServerErrors");
 
 		expect(path).toBe("/_app/issues");
 		expect(response.status).toBe(204);

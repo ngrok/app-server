@@ -1,11 +1,9 @@
 // @vitest-environment happy-dom
 // @vitest-environment-options {"url":"http://localhost:3000/domains/42?tab=usage"}
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	clientErrorsReactRouter,
-	clientErrorsScript,
-	clientErrorsTanStack,
-} from "./client-errors.js";
+import { documentClientErrorsScript } from "./client-errors-document.js";
+import { clientErrorsScript, clientErrorsScriptOf } from "./client-errors-script.js";
+import { clientErrorsReactRouter, clientErrorsTanStack } from "./client-errors.js";
 
 /** An error whose stack says that a chunk of this page threw it, as Chromium writes it. */
 function ownError(message: string, file = "http://localhost:3000/assets/usage-3f9a1c.js"): Error {
@@ -22,9 +20,12 @@ function errorEvent(error: unknown): Event {
 /** The listeners that a test added to `window`, so the next test starts with none. */
 const added: [string, EventListenerOrEventListenerObject][] = [];
 
-/** Stubs `fetch`, and gives the body of each report that the page sends. */
-function page() {
-	const send = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+/**
+ * Stubs `fetch`, runs the inline script as the browser does, and gives the
+ * body of each report that the page sends.
+ */
+function page({ script = clientErrorsScript(), status = 204 } = {}) {
+	const send = vi.fn<typeof fetch>(async () => new Response(null, { status }));
 	vi.stubGlobal("fetch", send);
 	const add = globalThis.addEventListener.bind(globalThis);
 	vi.spyOn(globalThis, "addEventListener").mockImplementation(
@@ -33,6 +34,8 @@ function page() {
 			add(type, listener);
 		},
 	);
+	// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
+	globalThis.eval(script);
 	return {
 		send,
 		reports: (): Record<string, unknown>[] =>
@@ -76,9 +79,9 @@ describe("clientErrorsReactRouter", () => {
 	});
 
 	it("posts a report for a rejected promise with no handler, to the clientErrorsPath of the Vite plugin", () => {
-		const { send, reports } = page();
-		// Vite writes this constant into the client build.
+		// Vite writes this constant into each build, and the server entry sets it.
 		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
+		const { send, reports } = page();
 		clientErrorsReactRouter();
 
 		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("rejected") }));
@@ -189,67 +192,6 @@ describe("clientErrorsReactRouter", () => {
 		expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(64 * 1024);
 	});
 
-	it("sends the first 10 kept events when the page hides and the module did not start", () => {
-		const { send, reports } = page();
-		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
-		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript());
-		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("early") }));
-		dispatchEvent(errorEvent("a string"));
-		for (let count = 0; count < 12; count += 1) {
-			dispatchEvent(errorEvent(ownError(`loop ${count}`)));
-		}
-
-		expect(send).not.toHaveBeenCalled();
-
-		dispatchEvent(new Event("pagehide"));
-		// A page that the browser shows again from its cache, and then hides again.
-		dispatchEvent(new Event("pagehide"));
-
-		// The string is one of the first 10 events, and it gives no report.
-		expect(send).toHaveBeenCalledTimes(9);
-		expect(send.mock.calls[0]).toStrictEqual([
-			"/_x",
-			{ method: "POST", keepalive: true, credentials: "omit", body: expect.any(String) },
-		]);
-		expect(reports()[0]).toStrictEqual({
-			name: "TypeError",
-			message: "early",
-			stack: "TypeError: early\n    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
-			source: "unhandledrejection",
-			path: "/domains/42",
-		});
-	});
-
-	it("sends nothing from the inline script after the module took the events", () => {
-		const { send } = page();
-		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript());
-		dispatchEvent(errorEvent(ownError("before the entry")));
-		clientErrorsReactRouter();
-
-		dispatchEvent(new Event("pagehide"));
-
-		expect(send).toHaveBeenCalledTimes(1);
-	});
-
-	it("keeps 100 events at most in the inline script", () => {
-		page();
-		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript());
-		const buffer: { events: Event[]; keep: (event: Event) => void } = Reflect.get(
-			globalThis,
-			"__appServerErrors",
-		);
-		added.push(["error", buffer.keep], ["unhandledrejection", buffer.keep]);
-
-		for (let count = 0; count < 150; count += 1) {
-			dispatchEvent(errorEvent(ownError(`loop ${count}`)));
-		}
-
-		expect(buffer.events).toHaveLength(100);
-	});
-
 	it("sends each error once, and 10 reports at most for a page load", () => {
 		const { send } = page();
 		clientErrorsReactRouter();
@@ -267,34 +209,57 @@ describe("clientErrorsReactRouter", () => {
 		expect(send).toHaveBeenCalledTimes(10);
 	});
 
-	it("reports the events that the inline script kept before the module ran", () => {
+	it("reports an error that comes before the client module starts, such as a chunk that throws while it loads", () => {
 		const { reports } = page();
-		// oxlint-disable-next-line no-eval -- the browser runs this text as an inline script.
-		globalThis.eval(clientErrorsScript());
-		dispatchEvent(errorEvent(ownError("before the entry")));
-		dispatchEvent(Object.assign(new Event("unhandledrejection"), { reason: ownError("early") }));
 
-		clientErrorsReactRouter();
-		dispatchEvent(errorEvent(ownError("after the entry")));
+		dispatchEvent(errorEvent(ownError("before the entry")));
 
 		expect(reports().map((report) => [report.message, report.source])).toStrictEqual([
 			["before the entry", "error"],
-			["early", "unhandledrejection"],
-			["after the entry", "error"],
 		]);
-		// The inline script listens no more, so the page keeps no event.
-		expect(Reflect.get(globalThis, "__appServerErrors")).toMatchObject({ events: [] });
+	});
+
+	it("logs one error line, and sends nothing, when the page has no inline script", () => {
+		const send = vi.fn<typeof fetch>();
+		vi.stubGlobal("fetch", send);
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { onError } = clientErrorsReactRouter();
+		onError(ownError("loader failed"), { pattern: "/domains/:domainId" });
+
+		expect(log).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("Render clientErrorsScript() in the <head>"),
+		);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it("warns one time when the endpoint answers 404, because the plugin is off", async () => {
+		page({ status: 404 });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		dispatchEvent(errorEvent(ownError("first")));
+		dispatchEvent(errorEvent(ownError("second")));
+		await vi.waitFor(() => {
+			expect(warn).toHaveBeenCalledExactlyOnceWith(
+				expect.stringContaining("/_app/issues answered 404"),
+			);
+		});
 	});
 
 	it("reports an error of the router with its route pattern", () => {
 		const { reports } = page();
 		const { onError } = clientErrorsReactRouter();
 
-		onError(ownError("loader failed"), { pattern: "/domains/:domainId" });
+		// React Router gives the pattern with no `/` at its start, and an empty one with no route.
+		onError(ownError("loader failed"), { pattern: "domains/:domainId" });
+		onError(ownError("action failed"), { pattern: "/domains/:domainId" });
+		onError(ownError("no route"), { pattern: "" });
 		onError({ status: 404, data: "Not Found" }, { pattern: "/domains/:domainId" });
 
 		expect(reports().map((report) => [report.source, report.route])).toStrictEqual([
 			["router", "/domains/:domainId"],
+			["router", "/domains/:domainId"],
+			["router", undefined],
 		]);
 	});
 
@@ -351,5 +316,24 @@ describe("clientErrorsTanStack", () => {
 			["event", "error"],
 			["loader failed", "caught"],
 		]);
+	});
+});
+
+describe("clientErrorsScript", () => {
+	it("gives a text that cannot end the script element, also for a path with a tag", () => {
+		const text = clientErrorsScriptOf("/</script><!--");
+
+		expect(text).not.toContain("</");
+		expect(text).not.toContain("<!--");
+	});
+
+	it("gives the text of the document's script in the browser, so React finds no change", () => {
+		const script = document.createElement("script");
+		script.textContent = clientErrorsScript();
+		// The script that runs, as the browser gives it.
+		vi.spyOn(document, "currentScript", "get").mockReturnValue(script);
+		page();
+
+		expect(documentClientErrorsScript()).toBe(clientErrorsScript());
 	});
 });

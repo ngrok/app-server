@@ -55,7 +55,7 @@ function isOwn(url: string): boolean {
 }
 
 /** The build in the `Server-Timing` of the first of `entries` that has one, from this origin only. */
-export function timingBuild(entries: PerformanceEntryList): string | undefined {
+function timingBuild(entries: PerformanceEntryList): string | undefined {
 	return (
 		entries
 			.filter(
