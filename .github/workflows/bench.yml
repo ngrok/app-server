@@ -68,32 +68,38 @@ jobs:
           cache: "pnpm"
           cache-dependency-path: "pnpm-lock.yaml"
 
-      - if: matrix.runtime == 'bun'
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-
-      - if: matrix.runtime == 'deno'
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: 2.9.8
-
       - name: Cache mise binary 🗃️
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/bin/mise
           key: mise-${{ runner.os }}-${{ hashFiles('scripts/install-mise') }}
 
-      # Why mise: mise.lock pins oha and the checksum of each of its downloads.
-      - name: Install oha 🔧
+      # Why the same paths and key as in vibe-check.yml: the two workflows then share one cache.
+      - name: Cache Bun and Deno 🗃️
+        if: matrix.runtime != 'node'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local/share/mise/installs/aqua-oven-sh-bun
+            ~/.local/share/mise/installs/aqua-denoland-deno
+          key: mise-runtimes-${{ runner.os }}-${{ hashFiles('mise.lock') }}
+
+      # Why mise: mise.lock pins oha, Bun, and Deno, and the checksum of each of their downloads.
+      # Why both runtimes in a Bun or Deno job: the job that saves the shared cache must hold both.
+      - name: Install oha and the runtimes 🔧
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RUNTIME: ${{ matrix.runtime }}
         run: |
           export PATH="${HOME}/.local/bin:${PATH}"
           ./scripts/install-mise
           mise trust ./mise.toml
           mise install aqua:hatoo/oha
           dirname "$(mise which oha)" >> "${GITHUB_PATH}"
+          if [ "${RUNTIME}" != node ]; then
+            mise install aqua:oven-sh/bun aqua:denoland/deno
+            dirname "$(mise which "${RUNTIME}")" >> "${GITHUB_PATH}"
+          fi
 
       - name: Build 🏗️
         run: |
