@@ -254,6 +254,13 @@ export type ListenerBindings = {
 	 * listener. See {@link ResponseEdge}.
 	 */
 	edge?: ResponseEdge | undefined;
+	/**
+	 * Given by a host that can stop the process after the response, such as
+	 * the vercel handler. It keeps the process until `work` settles. Work
+	 * that a request starts after its answer, such as the `errors` sink for a
+	 * server error, passes its promise here.
+	 */
+	waitUntil?: ((work: Promise<void>) => void) | undefined;
 	[binding: string]: unknown;
 };
 
@@ -294,6 +301,14 @@ export type AppServerEnv = {
 		 * writes it as `http.route`.
 		 */
 		routePattern?: string;
+		/**
+		 * The errors that the framework caught and answered itself, such as a
+		 * loader error that React Router renders in an error boundary. The
+		 * framework adapter adds to it, and the `errors` plugin reads it.
+		 */
+		frameworkErrors?: readonly Error[];
+		/** The build that the `buildId` plugin sends. The plugin sets it before its `next()`. */
+		buildId?: string | undefined;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */

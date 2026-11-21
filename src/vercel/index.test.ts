@@ -151,6 +151,56 @@ describe("handler", () => {
 		await expect(written.promise).resolves.toContain('"message":"hello"');
 	});
 
+	it("returns after the work that the request gives to waitUntil settles", async () => {
+		const work = Promise.withResolvers<undefined>();
+		const app = createServer({ plugins: [] });
+		app.get("/later", (context) => {
+			context.env.waitUntil?.(work.promise);
+			return context.text("answered");
+		});
+		const listener = handler(
+			createEntry({ app, host, clientDirectory, framework: () => stubFramework() }),
+		);
+		let returned = false;
+		let closed = false;
+		const server = createHttpServer((incoming, outgoing) => {
+			outgoing.once("close", () => {
+				closed = true;
+			});
+			void listener(incoming, outgoing).finally(() => {
+				returned = true;
+			});
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", resolve);
+		});
+		onTestFinished(async () => {
+			await new Promise<void>((resolve) => {
+				server.close(() => {
+					resolve();
+				});
+			});
+		});
+
+		const response = await fetch(
+			`http://127.0.0.1:${(server.address() as AddressInfo).port}/later`,
+		);
+		await expect(response.text()).resolves.toBe("answered");
+		await vi.waitFor(() => {
+			expect(closed).toBe(true);
+		});
+		// Why a check turn: with no wait for the work, the handler returns in this turn.
+		await new Promise<void>((resolve) => {
+			setImmediate(resolve);
+		});
+
+		expect(returned).toBe(false);
+		work.resolve(undefined);
+		await vi.waitFor(() => {
+			expect(returned).toBe(true);
+		});
+	});
+
 	it("writes the access log line of a request before it returns", async () => {
 		const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		onTestFinished(() => {

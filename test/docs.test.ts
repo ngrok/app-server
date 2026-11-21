@@ -119,6 +119,11 @@ declare function watch(options: { signal: AbortSignal }): AsyncIterable<unknown>
 declare function route(path: string, file: string): unknown;
 declare const datadogRum: { addAction: (name: string, context: object) => void };
 declare const db: { ping: () => Promise<boolean> };
+declare const Sentry: {
+	captureException: (error: unknown, context?: { tags?: Record<string, string> }) => string;
+	captureEvent: (event: Record<string, unknown>) => string;
+	flush: (timeout: number) => Promise<boolean>;
+};
 declare const mcpHandler: { fetch: (request: Request) => Promise<Response> };
 declare const error: Error;
 declare const policy: (document: { scriptSrc: string }) => string;
@@ -264,6 +269,7 @@ describe("the README and the code", () => {
 
 	it("names each default plugin in the pipeline section, in order", () => {
 		const names = defaultPlugins({
+			errors: true,
 			noindex: true,
 			contentSecurityPolicy: { policy: ({ scriptSrc }) => `script-src ${scriptSrc}` },
 			env: runtimeEnv({

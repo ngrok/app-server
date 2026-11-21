@@ -192,3 +192,32 @@ export function checkHeaderValue({
 		);
 	}
 }
+
+/**
+ * Throws when `path`, the `option` of the plugin factory `plugin`, is not a
+ * path that a request path can equal, so a bad option stops startup.
+ *
+ * @example
+ * checkRequestPath({ plugin: "health", option: "livePath", path: "livez" }); // throws
+ */
+export function checkRequestPath({
+	plugin,
+	option,
+	path,
+}: {
+	plugin: string;
+	option: string;
+	path: string;
+}): void {
+	if (!path.startsWith("/")) {
+		throw new Error(
+			`${plugin} needs a ${option} that starts with "/", not ${JSON.stringify(path)}.`,
+		);
+	}
+	// Why: the request path has no query and no fragment, so no request could match.
+	if (/[?#]/u.test(path)) {
+		throw new Error(
+			`${plugin} needs a ${option} with no "?" and no "#", not ${JSON.stringify(path)}. It matches the path of the request only.`,
+		);
+	}
+}

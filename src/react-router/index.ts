@@ -1,6 +1,12 @@
 import type { Context } from "hono";
-import { createContext, createRequestHandler, RouterContextProvider } from "react-router";
-import type { MiddlewareFunction, ServerBuild } from "react-router";
+import {
+	createContext,
+	createRequestHandler,
+	isRouteErrorResponse,
+	RouterContextProvider,
+} from "react-router";
+import type { HandleErrorFunction, MiddlewareFunction, ServerBuild } from "react-router";
+import { asError } from "../core/log.js";
 import { outsideLogger, requestContextValues } from "../core/request-context.js";
 import type { AppServerEnv, FrameworkRuntime, Mode, RequestContext } from "../core/types.js";
 import { CONTENT_TYPES } from "./content-types.js";
@@ -60,6 +66,48 @@ function withRoutePattern(build: ServerBuild): ServerBuild {
 	return { ...build, routes };
 }
 
+/**
+ * `build` with a `handleError` that adds each error that React Router caught
+ * in a loader, an action, or a render to `frameworkErrors` on the Hono
+ * context, so the `errors` plugin gets it. The plugin reads the status, and reports a
+ * 5xx only. Then it does what the app's `handleError` does, or what React
+ * Router does with none: it writes the error to the console unless the client
+ * left.
+ */
+function withFrameworkErrors(build: ServerBuild): ServerBuild {
+	const handleError: HandleErrorFunction =
+		build.entry.module.handleError ??
+		((error, { request }) => {
+			if (!request.signal.aborted) {
+				// oxlint-disable-next-line no-console -- React Router writes the error to the console when the app has no `handleError`.
+				console.error(isRouteErrorResponse(error) && "error" in error ? error.error : error);
+			}
+		});
+	return {
+		...build,
+		entry: {
+			...build.entry,
+			module: {
+				...build.entry.module,
+				handleError: (error, args) => {
+					// Why unwrap: React Router gives its own errors in an error response, such as a 404 for a
+					// path that no route matches. Why not each error response: a thrown `data()` has no error.
+					const isResponse = isRouteErrorResponse(error);
+					const thrown: unknown = isResponse && "error" in error ? error.error : error;
+					if ((!isResponse || thrown != null) && args.context instanceof RouterContextProvider) {
+						const context = args.context.get(honoContext);
+						context.set("frameworkErrors", [
+							...(context.get("frameworkErrors") ?? []),
+							asError(thrown),
+						]);
+					}
+					handleError(error, args);
+				},
+			},
+		},
+	};
+}
+
 /** Whether a module is a React Router server build. */
 function isServerBuild(value: unknown): value is ServerBuild {
 	return (
@@ -90,7 +138,7 @@ export function runtime(build: unknown, { mode }: { mode: Mode }): FrameworkRunt
 			`@ngrok/app-server serves a build at "/" only, and this build has the publicPath "${build.publicPath}".`,
 		);
 	}
-	const handler = createRequestHandler(withRoutePattern(build), mode);
+	const handler = createRequestHandler(withFrameworkErrors(withRoutePattern(build)), mode);
 	// Why: lazy route discovery fetches this exact path, so a redirect breaks it.
 	const manifestPath =
 		build.routeDiscovery.mode === "lazy"

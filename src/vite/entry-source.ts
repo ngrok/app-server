@@ -1,3 +1,4 @@
+import { CLIENT_ERRORS_PATH_CONSTANT } from "../core/client-error-report.js";
 import type { CreateServerOptions } from "../core/create-server.js";
 import type { FrameworkBuild, HostBuild } from "./index.js";
 
@@ -49,6 +50,8 @@ type EntrySource = {
 	appModule: string | undefined;
 	/** The source of an expression that gives the client build: a path or a `file:` URL. */
 	clientDirectory: string;
+	/** The `clientErrorsPath` of the `appServer` Vite plugin, when the app set one. */
+	clientErrorsPath?: string | undefined;
 };
 
 /**
@@ -64,6 +67,7 @@ export function serverEntrySource({
 	host,
 	appModule,
 	clientDirectory,
+	clientErrorsPath,
 }: EntrySource): string {
 	const modules = [
 		framework.serverModule,
@@ -75,6 +79,11 @@ export function serverEntrySource({
 		...(appModule == null ? [] : [appModule]),
 	];
 	return [
+		// Why a global, and first: the copy of `@ngrok/app-server` that the server loads reads it, also
+		// when that copy stays external, and no module of the app runs before it.
+		...(clientErrorsPath == null
+			? []
+			: [`globalThis.${CLIENT_ERRORS_PATH_CONSTANT} = ${JSON.stringify(clientErrorsPath)};`]),
 		// Why before the imports: React reads `NODE_ENV` when it loads. Why dynamic imports: a static
 		// import loads before this line.
 		"if (import.meta.main) {",

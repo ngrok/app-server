@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { asError } from "../log.js";
-import { optionPlugin } from "../plugin-options.js";
+import { checkRequestPath, optionPlugin } from "../plugin-options.js";
 import type { Plugin, RequestLogger, ServerEnv } from "../types.js";
 
 /** Options for {@link health}. */
@@ -58,17 +58,7 @@ export function health({
 	ready,
 }: HealthOptions = {}): Plugin {
 	for (const [option, path] of Object.entries({ livePath, readyPath })) {
-		if (!path.startsWith("/")) {
-			throw new Error(
-				`health needs a ${option} that starts with "/", not ${JSON.stringify(path)}.`,
-			);
-		}
-		// Why: the request path has no query and no fragment, so no probe could match.
-		if (/[?#]/u.test(path)) {
-			throw new Error(
-				`health needs a ${option} with no "?" and no "#", not ${JSON.stringify(path)}. A probe path matches the path of the request only.`,
-			);
-		}
+		checkRequestPath({ plugin: "health", option, path });
 	}
 	// Why: the liveness answer comes first, so one path for both probes always answers 200.
 	if (livePath === readyPath) {
