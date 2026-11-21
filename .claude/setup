@@ -23,6 +23,8 @@ export PATH="${HOME}/.local/bin:${PATH}"
 # shellcheck source=../scripts/install-mise
 source ./scripts/install-mise
 step "mise" ensure_pinned_mise
+# Why: mise refuses the `exec` template of an untrusted mise.toml, as CI does before its install.
+step "mise trust" mise trust ./mise.toml
 step "mise install" mise install
 step "mise run setup" mise run setup
 
