@@ -6,6 +6,7 @@ import { clientErrorsReactRouter } from "../../client/client-errors.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import type { LogSink } from "../types.js";
 import { assets } from "./static.js";
+import { buildId } from "./build-id.js";
 import { errors } from "./errors.js";
 import type { AppErrorEvent } from "./errors.js";
 
@@ -556,15 +557,18 @@ describe("errors on the server", () => {
 		expect(received[0]?.event.side === "server" && received[0].event.error).toBe(thrown);
 	});
 
-	it("gives the sink the error that the framework caught, for a 5xx only", async () => {
+	it("gives the sink each error that the framework caught, for a 5xx only", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({
 			plugins: [errors({ sink })],
 			render: async (incoming, context) => {
-				context.set("frameworkError", new Error(`failed at ${new URL(incoming.url).pathname}`));
-				return new Response("error boundary", {
-					status: incoming.url.endsWith("/missing") ? 404 : 500,
-				});
+				const { pathname } = new URL(incoming.url);
+				// Why two: a root loader and a child loader can fail in one request.
+				context.set("frameworkErrors", [
+					new Error(`root failed at ${pathname}`),
+					new Error(`child failed at ${pathname}`),
+				]);
+				return new Response("error boundary", { status: pathname === "/missing" ? 404 : 500 });
 			},
 		});
 
@@ -573,21 +577,41 @@ describe("errors on the server", () => {
 
 		expect([failed.status, missing.status]).toStrictEqual([500, 404]);
 		expect(events.map(({ side, source, message }) => ({ side, source, message }))).toStrictEqual([
-			{ side: "server", source: "framework", message: "failed at /dash" },
+			{ side: "server", source: "framework", message: "root failed at /dash" },
+			{ side: "server", source: "framework", message: "child failed at /dash" },
 		]);
 	});
 
-	it("gives the sink nothing for a thrown 4xx, a 5xx with no error, or an error that the filter refuses", async () => {
+	it("gives a server event the build that buildId() sends", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({
+			plugins: [errors({ sink }), buildId({ value: "release-v42" })],
+			render: async () => {
+				throw new Error("boom");
+			},
+		});
+
+		await request("/dash");
+
+		expect(events.map((event) => event.buildId)).toStrictEqual(["release-v42"]);
+	});
+
+	it("gives the sink nothing for a thrown 4xx, a 5xx with no error or a 4xx error, or an error that the filter refuses", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({
 			plugins: [errors({ sink, filter: (event) => event.message !== "known" })],
-			render: async (incoming) => {
+			render: async (incoming, context) => {
 				const { pathname } = new URL(incoming.url);
 				if (pathname === "/forbidden") {
 					throw new HTTPException(403);
 				}
 				if (pathname === "/known") {
 					throw new Error("known");
+				}
+				if (pathname === "/upload") {
+					// Why: a framework answers 500 for the 413 of `bodyLimit` that it caught in an action.
+					context.set("frameworkErrors", [new HTTPException(413)]);
+					return new Response("error boundary", { status: 500 });
 				}
 				return new Response("busy", { status: 503 });
 			},
@@ -597,9 +621,10 @@ describe("errors on the server", () => {
 			(await request("/forbidden")).status,
 			(await request("/busy")).status,
 			(await request("/known")).status,
+			(await request("/upload")).status,
 		];
 
-		expect(statuses).toStrictEqual([403, 503, 500]);
+		expect(statuses).toStrictEqual([403, 503, 500, 500]);
 		expect(events).toStrictEqual([]);
 	});
 

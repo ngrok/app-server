@@ -135,8 +135,10 @@ describe("runtime", () => {
 			path: "api/:name",
 			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a resource route has no default export, which the type requires.
 			module: {
-				loader: () => {
-					throw thrown;
+				loader: ({ params }: { params: { name?: string } }) => {
+					// Why `null`: React Router answers 500 for it, so it is a failure too.
+					// oxlint-disable-next-line typescript/only-throw-error -- an app can throw any value.
+					throw params.name === "null" ? null : thrown;
 				},
 			} as unknown as RouteModule,
 		};
@@ -154,13 +156,18 @@ describe("runtime", () => {
 		});
 
 		const failed = await request("/api/status");
+		const failedNull = await request("/api/null");
 		// Why: React Router gives a path that no route matches to handleError as a 404.
 		const missing = await request("/nothing/here");
 
-		expect([failed.status, missing.status]).toStrictEqual([500, 404]);
+		expect([failed.status, failedNull.status, missing.status]).toStrictEqual([500, 500, 404]);
 		expect(
-			events.map((event) => event.side === "server" && [event.source, event.route, event.error]),
-		).toStrictEqual([["framework", "/api/:name", thrown]]);
+			events.map((event) => event.side === "server" && [event.source, event.route, event.message]),
+		).toStrictEqual([
+			["framework", "/api/:name", "db down"],
+			["framework", "/api/:name", "A non-Error value was thrown: null"],
+		]);
+		expect(events[0]?.side === "server" && events[0].error).toBe(thrown);
 		expect(handled[0]).toBe(thrown);
 	});
 

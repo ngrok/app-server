@@ -67,20 +67,9 @@ function withRoutePattern(build: ServerBuild): ServerBuild {
 }
 
 /**
- * The thrown error in `error`. Why unwrap: React Router gives its own errors
- * in an error response, such as a 404 for a path that no route matches.
- */
-function thrownIn(error: unknown): unknown {
-	if (!isRouteErrorResponse(error)) {
-		return error;
-	}
-	return "error" in error ? error.error : undefined;
-}
-
-/**
- * `build` with a `handleError` that sets `frameworkError` on the Hono context
- * to the error that React Router caught in a loader, an action, or a render,
- * so the `errors` plugin gets it. The plugin reads the status, and reports a
+ * `build` with a `handleError` that adds each error that React Router caught
+ * in a loader, an action, or a render to `frameworkErrors` on the Hono
+ * context, so the `errors` plugin gets it. The plugin reads the status, and reports a
  * 5xx only. Then it does what the app's `handleError` does, or what React
  * Router does with none: it writes the error to the console unless the client
  * left.
@@ -91,7 +80,7 @@ function withFrameworkErrors(build: ServerBuild): ServerBuild {
 		((error, { request }) => {
 			if (!request.signal.aborted) {
 				// oxlint-disable-next-line no-console -- React Router writes the error to the console when the app has no `handleError`.
-				console.error(thrownIn(error) ?? error);
+				console.error(isRouteErrorResponse(error) && "error" in error ? error.error : error);
 			}
 		});
 	return {
@@ -101,9 +90,16 @@ function withFrameworkErrors(build: ServerBuild): ServerBuild {
 			module: {
 				...build.entry.module,
 				handleError: (error, args) => {
-					const thrown = thrownIn(error);
-					if (thrown != null && args.context instanceof RouterContextProvider) {
-						args.context.get(honoContext).set("frameworkError", asError(thrown));
+					// Why unwrap: React Router gives its own errors in an error response, such as a 404 for a
+					// path that no route matches. Why not each error response: a thrown `data()` has no error.
+					const isResponse = isRouteErrorResponse(error);
+					const thrown: unknown = isResponse && "error" in error ? error.error : error;
+					if ((!isResponse || thrown != null) && args.context instanceof RouterContextProvider) {
+						const context = args.context.get(honoContext);
+						context.set("frameworkErrors", [
+							...(context.get("frameworkErrors") ?? []),
+							asError(thrown),
+						]);
 					}
 					handleError(error, args);
 				},

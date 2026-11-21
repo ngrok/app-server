@@ -140,8 +140,10 @@ export function buildId({
 		// answer 200 when the build ID changes.
 		etagPart: () => value,
 		// oxlint-disable-next-line typescript/promise-function-async -- the server awaits each stage in a `try`, and an `async` stage adds a promise to each request.
-		middleware: (context, next) =>
-			withBuiltInHeaderHook({
+		middleware: (context, next) => {
+			// Why: the `errors` plugin gives this build to the sink with a server error.
+			context.set("buildId", value);
+			return withBuiltInHeaderHook({
 				context,
 				next,
 				hook: (response) => {
@@ -168,6 +170,7 @@ export function buildId({
 						response.delete(headerName);
 					}
 				},
-			}),
+			});
+		},
 	});
 }

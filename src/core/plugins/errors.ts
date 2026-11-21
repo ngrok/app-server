@@ -38,7 +38,8 @@ type AppErrorFields = {
 	userAgent: string;
 	/**
 	 * The build: for a client error, the build that the page runs, when `buildId()` sent one, and it
-	 * can be older than the build of the server. For a server error, the build of the server.
+	 * can be older than the build of the server. For a server error, the build that `buildId()`
+	 * sends.
 	 */
 	buildId: string | undefined;
 };
@@ -409,30 +410,46 @@ export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}):
 		await send(context, event, sinkContext);
 		return empty(204);
 	};
-	/** Gives the sink the error of a request that failed with a 5xx in a later stage. */
+	/** Gives the sink each error of a request that failed with a 5xx in a later stage. */
 	const failed = async (context: Context<AppServerEnv>): Promise<void> => {
-		const error = context.error ?? context.get("frameworkError");
+		const caught = context.get("frameworkErrors") ?? [];
 		// Why the status: a 4xx, such as a thrown `HTTPException` or a route that React Router does not
 		// match, is not a server failure. Why `aborted`: the client left, so the error is no failure.
-		if (error == null || context.res.status < 500 || context.req.raw.signal.aborted) {
+		if (
+			(context.error == null && caught.length === 0) ||
+			context.res.status < 500 ||
+			context.req.raw.signal.aborted
+		) {
 			return;
 		}
-		const event: AppErrorEvent = {
-			side: "server",
-			source: context.error == null ? "framework" : "pipeline",
-			error,
-			name: error.name,
-			message: error.message,
-			frames: serverFramesOf(error),
-			route: context.get("routePattern"),
-			path: context.req.path,
-			userAgent: context.req.header("User-Agent") ?? "",
-			buildId,
-		};
+		const thrown = [
+			...caught.map((error) => ({ error, source: "framework" as const })),
+			...(context.error == null ? [] : [{ error: context.error, source: "pipeline" as const }]),
+		];
 		const sinkContext = { request: context.req.raw };
-		if (filter?.(event, sinkContext) !== false) {
-			await send(context, event, sinkContext);
-		}
+		await Promise.all(
+			thrown
+				// Why: an error with a 4xx status, such as the `HTTPException` of `bodyLimit` that a
+				// framework caught, is an answer to the client, even when the framework answered 500.
+				.filter(({ error }) => !(Number(Reflect.get(error, "status")) < 500))
+				.map(async ({ error, source }) => {
+					const event: AppErrorEvent = {
+						side: "server",
+						source,
+						error,
+						name: error.name,
+						message: error.message,
+						frames: serverFramesOf(error),
+						route: context.get("routePattern"),
+						path: context.req.path,
+						userAgent: context.req.header("User-Agent") ?? "",
+						buildId: context.get("buildId") ?? buildId,
+					};
+					if (filter?.(event, sinkContext) !== false) {
+						await send(context, event, sinkContext);
+					}
+				}),
+		);
 	};
 	return optionPlugin("errors", {
 		name: "errors",

@@ -730,9 +730,9 @@ The sink also gets each error that ends a request with a 5xx in the server, as a
 - `pipeline`: a plugin after `errors()`, a route of the app, or the framework threw. The client gets the answer of the app's `onError`, as with no plugin.
 - `framework`: React Router caught the error in a loader, an action, or a render, and answered with an error boundary. The plugin gets it from React Router's `handleError`. Then the app's own `handleError` runs, or with none, the error goes to the console, as React Router does.
 
-The plugin does not report a 4xx, such as a thrown `HTTPException` or a path that no route matches, a 5xx with no thrown error, or a request whose client went away. `maxPerMinute` does not count a server error.
+When React Router catches more than one error in a request, such as in a root loader and a child loader, the sink gets one event for each. The plugin does not report a 4xx, such as a thrown `HTTPException` or a path that no route matches, a 5xx with no thrown error, an error with a 4xx `status` that the framework answered with a 500, or a request whose client went away. `maxPerMinute` does not count a server error.
 
-- An error after the response started, such as in a streamed body, and an uncaught exception give no event. The server logs each one.
+- An error after the plugin's stage returns gives no event: a header hook that throws, such as a `contentSecurityPolicy` policy, an error in a streamed body, and an uncaught exception. The server logs each one.
 - TanStack Start answers an error that it catches in a loader itself, and gives the server no hook. So with TanStack Start, the plugin gets only the errors that reach the pipeline.
 
 ### The endpoint
@@ -785,18 +785,18 @@ createServer({
 
 An event has these fields:
 
-| Field       | Value                                                                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `side`      | `client` for a report of the browser, `server` for a 5xx of the server.                                                                                                                     |
-| `name`      | The name of the error, such as `TypeError`.                                                                                                                                                 |
-| `message`   | The message of the error. A client message is 1,000 characters at most.                                                                                                                     |
-| `frames`    | The frames of the stack, from the frame that threw, 50 at most. Each has `function`, `file` (the URL of the chunk, or the path of the server file), `line`, and `column`.                   |
-| `source`    | Where the error came from. On the client: `error`, `unhandledrejection`, `uncaught`, `caught`, `recoverable`, or `router`. On the server: `pipeline` or `framework`.                        |
-| `route`     | The route pattern, such as `/domains/:domainId`, when the router gave one. Else `undefined`.                                                                                                |
-| `path`      | The pathname of the page or of the request, with no query and no fragment.                                                                                                                  |
-| `userAgent` | The `User-Agent` of the request.                                                                                                                                                            |
-| `buildId`   | The build. On the client, the build that the page runs, when `buildId()` sent one, and after a deploy it can be older than the build of the server. On the server, the build of the server. |
-| `error`     | On the server only: the thrown error, with its `cause`.                                                                                                                                     |
+| Field       | Value                                                                                                                                                                                                |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `side`      | `client` for a report of the browser, `server` for a 5xx of the server.                                                                                                                              |
+| `name`      | The name of the error, such as `TypeError`.                                                                                                                                                          |
+| `message`   | The message of the error. A client message is 1,000 characters at most.                                                                                                                              |
+| `frames`    | The frames of the stack, from the frame that threw, 50 at most. Each has `function`, `file` (the URL of the chunk, or the path of the server file), `line`, and `column`.                            |
+| `source`    | Where the error came from. On the client: `error`, `unhandledrejection`, `uncaught`, `caught`, `recoverable`, or `router`. On the server: `pipeline` or `framework`.                                 |
+| `route`     | The route pattern, such as `/domains/:domainId`, when the router gave one. Else `undefined`.                                                                                                         |
+| `path`      | The pathname of the page or of the request, with no query and no fragment.                                                                                                                           |
+| `userAgent` | The `User-Agent` of the request.                                                                                                                                                                     |
+| `buildId`   | The build. On the client, the build that the page runs, when `buildId()` sent one, and after a deploy it can be older than the build of the server. On the server, the build that `buildId()` sends. |
+| `error`     | On the server only: the thrown error, with its `cause`.                                                                                                                                              |
 
 - The server waits for the sink before it answers, for 3 seconds at most, so a serverless host does not stop the function before the sink ends. No visitor waits for the answer to a report. The 5xx of a server error waits for the sink, so give it a sink that queues the event, such as an SDK call.
 - A sink that throws or rejects logs one `error sink failed` line, and the answer does not change: a 204 for a report, and the 5xx for a server error. A filter that throws is an error of the app: the request gets a 500 and an `unhandled error` line.

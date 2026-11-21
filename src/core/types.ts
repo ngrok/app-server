@@ -295,11 +295,13 @@ export type AppServerEnv = {
 		 */
 		routePattern?: string;
 		/**
-		 * The error that the framework caught and answered itself, such as a
+		 * The errors that the framework caught and answered itself, such as a
 		 * loader error that React Router renders in an error boundary. The
-		 * framework adapter sets it, and the `errors` plugin reads it.
+		 * framework adapter adds to it, and the `errors` plugin reads it.
 		 */
-		frameworkError?: Error;
+		frameworkErrors?: readonly Error[];
+		/** The build that the `buildId` plugin sends. The plugin sets it before its `next()`. */
+		buildId?: string | undefined;
 		/** The client's IP address. See `trustedProxyHops` on `createServer`. */
 		clientAddress?: string | undefined;
 		/** Attributes that each log line of the request carries, such as the trace IDs from the `requestId` plugin. */
