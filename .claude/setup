@@ -51,30 +51,5 @@ install_playwright() {
 }
 step "playwright" install_playwright
 
-# Amp and orb services start in login shells. In an orb, ~/.bash_profile reads ~/.env, and ~/.env
-# sets PATH. Apply the mise env at the end of ~/.bash_profile, so that the pinned tools stay on PATH.
-profile_marker="# app-server: apply mise env (.agents/setup)"
-if ! grep -Fqx "${profile_marker}" "${HOME}/.bash_profile" 2>/dev/null; then
-	cat >>"${HOME}/.bash_profile" <<EOF
-
-${profile_marker}
-export PATH="\$HOME/.local/bin:\$PATH"
-if [ -n "\${MISE_SHELL:-}" ]; then
-	eval "\$(mise hook-env --force -s bash)"
-else
-	eval "\$(mise activate bash)"
-fi
-EOF
-fi
-# Interactive shells, such as the Terminal tab, read ~/.bashrc.
-rc_marker="# app-server: activate mise (.agents/setup)"
-if ! grep -Fqx "${rc_marker}" "${HOME}/.bashrc" 2>/dev/null; then
-	cat >>"${HOME}/.bashrc" <<EOF
-
-${rc_marker}
-export PATH="\$HOME/.local/bin:\$PATH"
-if [ -z "\${MISE_SHELL:-}" ]; then
-	eval "\$(mise activate bash)"
-fi
-EOF
-fi
+# Why also here: the orb that runs setup, and a snapshot of one member, keep the shell hooks.
+step "resume" ./.claude/resume
