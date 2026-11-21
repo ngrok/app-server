@@ -1,4 +1,4 @@
-import type { Context } from "hono";
+import type { Context, Next } from "hono";
 import { checkCount } from "../check-count.js";
 import {
 	CLIENT_ERROR_SOURCES,
@@ -72,9 +72,12 @@ export type AppErrorContext = {
 /** Options for {@link errors}. */
 export type ErrorsOptions = {
 	/**
-	 * Takes each event, such as to send it to an error tracker. The server
-	 * waits for it for 3 seconds at most before it answers, so a serverless
-	 * host does not stop it. A sink that throws or rejects logs one error line.
+	 * Takes each event, such as to send it to an error tracker. For a client
+	 * error, the server waits for it for 3 seconds at most before it answers
+	 * the report. For a server error, the 5xx does not wait: the sink runs on
+	 * after the answer, and a host with a `waitUntil` binding, such as the
+	 * vercel handler, keeps the function for it for 3 seconds at most. A sink
+	 * that throws or rejects logs one error line.
 	 * @default one `client error` line of the request's logger for a client error, with the level `error`. A server error already has the `unhandled error` line of the server.
 	 */
 	sink?: (event: AppErrorEvent, context: AppErrorContext) => void | Promise<void>;
@@ -87,7 +90,7 @@ export type ErrorsOptions = {
 	 * gives the sink no client error.
 	 * @default 60
 	 */
-	maxPerMinute?: number;
+	maxClientReportsPerMinute?: number;
 };
 
 /** How long the server waits for the sink. */
@@ -289,7 +292,7 @@ function logEvent(logger: RequestLogger, event: AppErrorEvent): void {
  * - a 403 from a page of another origin,
  * - a 413 for a body of more than 6 KiB,
  * - a 400 for a body that is not a report,
- * - a 429 after the sink got `maxPerMinute` client errors in one minute.
+ * - a 429 after the sink got `maxClientReportsPerMinute` client errors in one minute.
  *
  * The plugin drops a report from a bot, and one whose stack has no frame. In
  * production, it also drops one whose first frame is not a file of Vite's
@@ -300,7 +303,7 @@ function logEvent(logger: RequestLogger, event: AppErrorEvent): void {
  *
  * The limit counts in the memory of one process. On a serverless host, each
  * instance has its own count, so the limit of the sink's service is the hard
- * limit there. A `maxPerMinute` that is not a whole number of 0 or more
+ * limit there. A `maxClientReportsPerMinute` that is not a whole number of 0 or more
  * stops startup.
  *
  * @example
@@ -315,10 +318,14 @@ function logEvent(logger: RequestLogger, event: AppErrorEvent): void {
  * 	}),
  * });
  */
-export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}): Plugin {
+export function errors({
+	sink,
+	filter,
+	maxClientReportsPerMinute = 60,
+}: ErrorsOptions = {}): Plugin {
 	/** Why in `setup`: the server entry sets the path before the setup, and can set it after this call. */
 	let path = "";
-	checkCount("The maxPerMinute of errors", maxPerMinute);
+	checkCount("The maxClientReportsPerMinute of errors", maxClientReportsPerMinute);
 	/** In development, each file is an app file: Vite serves source modules from many paths. */
 	let assetsPath = "/";
 	let buildId: string | undefined;
@@ -331,7 +338,7 @@ export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}):
 			taken = 0;
 		}
 		taken += 1;
-		return taken > maxPerMinute;
+		return taken > maxClientReportsPerMinute;
 	};
 	/** Gives `event` to the sink, and waits for it for {@link SINK_DEADLINE_MS} at most. */
 	const send = async (
@@ -410,8 +417,12 @@ export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}):
 		await send(context, event, sinkContext);
 		return empty(204);
 	};
-	/** Gives the sink each error of a request that failed with a 5xx in a later stage. */
-	const failed = async (context: Context<AppServerEnv>): Promise<void> => {
+	/**
+	 * Gives the sink each error of a request that failed with a 5xx in a later
+	 * stage. Why not wait: the client waits for this answer. A host that can
+	 * stop the process after the answer, such as Vercel, waits through `waitUntil`.
+	 */
+	const failed = (context: Context<AppServerEnv>): void => {
 		const caught = context.get("frameworkErrors") ?? [];
 		// Why the status: a 4xx, such as a thrown `HTTPException` or a route that React Router does not
 		// match, is not a server failure. Why `aborted`: the client left, so the error is no failure.
@@ -427,29 +438,33 @@ export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}):
 			...(context.error == null ? [] : [{ error: context.error, source: "pipeline" as const }]),
 		];
 		const sinkContext = { request: context.req.raw };
-		await Promise.all(
-			thrown
-				// Why: an error with a 4xx status, such as the `HTTPException` of `bodyLimit` that a
-				// framework caught, is an answer to the client, even when the framework answered 500.
-				.filter(({ error }) => !(Number(Reflect.get(error, "status")) < 500))
-				.map(async ({ error, source }) => {
-					const event: AppErrorEvent = {
-						side: "server",
-						source,
-						error,
-						name: error.name,
-						message: error.message,
-						frames: serverFramesOf(error),
-						route: context.get("routePattern"),
-						path: context.req.path,
-						userAgent: context.req.header("User-Agent") ?? "",
-						buildId: context.get("buildId") ?? buildId,
-					};
-					if (filter?.(event, sinkContext) !== false) {
-						await send(context, event, sinkContext);
-					}
-				}),
-		);
+		const events = thrown
+			// Why: an error with a 4xx status, such as the `HTTPException` of `bodyLimit` that a
+			// framework caught, is an answer to the client, even when the framework answered 500.
+			.filter(({ error }) => !(Number(Reflect.get(error, "status")) < 500))
+			.map(({ error, source }): AppErrorEvent => ({
+				side: "server",
+				source,
+				error,
+				name: error.name,
+				message: error.message,
+				frames: serverFramesOf(error),
+				route: context.get("routePattern"),
+				path: context.req.path,
+				userAgent: context.req.header("User-Agent") ?? "",
+				buildId: context.get("buildId") ?? buildId,
+			}))
+			.filter((event) => filter?.(event, sinkContext) !== false);
+		if (events.length === 0) {
+			return;
+		}
+		const work = Promise.all(events.map(async (event) => send(context, event, sinkContext)));
+		context.env?.waitUntil?.(work.then(() => undefined));
+	};
+	/** Runs the later stages, then gives the sink their failure. */
+	const passOn = async (context: Context<AppServerEnv>, next: Next): Promise<void> => {
+		await next();
+		failed(context);
 	};
 	return optionPlugin("errors", {
 		name: "errors",
@@ -464,6 +479,6 @@ export function errors({ sink, filter, maxPerMinute = 60 }: ErrorsOptions = {}):
 		middleware: (context, next) =>
 			context.req.method === "POST" && context.req.path === path
 				? receive(context)
-				: next().then(async () => failed(context)),
+				: passOn(context, next),
 	});
 }

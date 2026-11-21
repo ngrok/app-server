@@ -254,6 +254,13 @@ export type ListenerBindings = {
 	 * listener. See {@link ResponseEdge}.
 	 */
 	edge?: ResponseEdge | undefined;
+	/**
+	 * Given by a host that can stop the process after the response, such as
+	 * the vercel handler. It keeps the process until `work` settles. Work
+	 * that a request starts after its answer, such as the `errors` sink for a
+	 * server error, passes its promise here.
+	 */
+	waitUntil?: ((work: Promise<void>) => void) | undefined;
 	[binding: string]: unknown;
 };
 

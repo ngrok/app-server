@@ -400,10 +400,12 @@ describe("errors", () => {
 		expect(events.map((event) => event.name)).toStrictEqual(["TypeError"]);
 	});
 
-	it("answers 429 after maxPerMinute reports, and takes reports again in the next minute", async () => {
+	it("answers 429 after maxClientReportsPerMinute reports, and takes reports again in the next minute", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [errors({ sink, maxPerMinute: 2 })] });
+		const { request } = await testServer({
+			plugins: [errors({ sink, maxClientReportsPerMinute: 2 })],
+		});
 
 		const statuses = [];
 		for (let sent = 0; sent < 3; sent += 1) {
@@ -417,10 +419,16 @@ describe("errors", () => {
 		expect(events).toHaveLength(3);
 	});
 
-	it("does not count a report that it drops in maxPerMinute", async () => {
+	it("does not count a report that it drops in maxClientReportsPerMinute", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({
-			plugins: [errors({ sink, maxPerMinute: 1, filter: (event) => event.message !== "noise" })],
+			plugins: [
+				errors({
+					sink,
+					maxClientReportsPerMinute: 1,
+					filter: (event) => event.message !== "noise",
+				}),
+			],
 		});
 
 		const statuses = [];
@@ -489,9 +497,9 @@ describe("errors", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("stops startup for a bad maxPerMinute", () => {
-		expect(() => errors({ maxPerMinute: 1.5 })).toThrow(
-			"The maxPerMinute of errors must be an integer of 0 or more, not 1.5.",
+	it("stops startup for a bad maxClientReportsPerMinute", () => {
+		expect(() => errors({ maxClientReportsPerMinute: 1.5 })).toThrow(
+			"The maxClientReportsPerMinute of errors must be an integer of 0 or more, not 1.5.",
 		);
 	});
 
@@ -518,7 +526,7 @@ describe("errors on the server", () => {
 			// Why 0: the limit is for the reports of clients, not for the errors of the server.
 			plugins: [
 				errors({
-					maxPerMinute: 0,
+					maxClientReportsPerMinute: 0,
 					sink: (event, { request: failed }) => {
 						received.push({ event, url: failed.url });
 					},
@@ -555,6 +563,28 @@ describe("errors on the server", () => {
 			},
 		]);
 		expect(received[0]?.event.side === "server" && received[0].event.error).toBe(thrown);
+	});
+
+	it("answers a 5xx with no wait for the sink, and gives the sink's work to waitUntil", async () => {
+		vi.useFakeTimers();
+		const { app, framework } = await testServer({
+			plugins: [errors({ sink: async () => new Promise<void>(() => {}) })],
+			render: async () => {
+				throw new Error("boom");
+			},
+		});
+		const waitUntil = vi.fn<(work: Promise<void>) => void>();
+		let status: number | undefined;
+
+		void (async () => {
+			({ status } = await app.request("/dash", undefined, { framework, waitUntil }));
+		})();
+		// Why less than 3 seconds: a server that waits for the sink answers at its deadline.
+		await vi.advanceTimersByTimeAsync(1000);
+		vi.useRealTimers();
+
+		expect(status).toBe(500);
+		expect(waitUntil).toHaveBeenCalledExactlyOnceWith(expect.any(Promise));
 	});
 
 	it("gives the sink each error that the framework caught, for a 5xx only", async () => {

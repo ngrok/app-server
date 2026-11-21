@@ -86,6 +86,8 @@ export const host: HostRuntime = {
  *   and replaces a value that the client sends.
  * - The node response writer sends each response, as the node host's
  *   listener does.
+ * - The work that the request gives to the `waitUntil` binding settles
+ *   before the handler returns.
  * - The log lines of the request reach stdout before the handler returns.
  *   Why: Vercel can freeze the function after the response, before the next
  *   turn of the event loop writes them.
@@ -96,17 +98,27 @@ export const host: HostRuntime = {
 export function handler(
 	entry: AppServerEntry,
 ): (incoming: IncomingMessage, outgoing: ServerResponse) => Promise<void> {
+	/** The work of each request that the handler waits for, from the `waitUntil` binding. */
+	const pending = new WeakMap<IncomingMessage, Promise<void>[]>();
 	const listener = requestListener(
 		async (request, bindings) => {
-			const realIp = bindings.incoming?.headers["x-real-ip"];
+			const { incoming } = bindings;
+			const realIp = incoming?.headers["x-real-ip"];
 			return entry.fetch(withForwardedProto(request), {
 				...bindings,
 				...(typeof realIp === "string" ? { remoteAddress: realIp } : {}),
+				waitUntil: (work) => {
+					if (incoming != null) {
+						pending.get(incoming)?.push(work);
+					}
+				},
 			});
 		},
 		{ trustForwardedProto: true },
 	);
 	return async (incoming, outgoing) => {
+		const work: Promise<void>[] = [];
+		pending.set(incoming, work);
 		try {
 			await listener(incoming, outgoing);
 			// Why wait: the access log writes its line when the response closes, after the listener returns.
@@ -115,6 +127,8 @@ export function handler(
 					outgoing.once("close", resolve);
 				});
 			}
+			// Why after the close: the response does not wait for this work, and a frozen function stops it.
+			await Promise.all(work);
 		} finally {
 			flushLogs();
 			// Why wait: a full pipe keeps the rest of a write in a queue, and a frozen function does not send it.
