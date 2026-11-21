@@ -33,8 +33,8 @@ export {
 } from "./plugins/build-id.js";
 export {
 	//,
-	clientErrors,
-} from "./plugins/client-errors.js";
+	errors,
+} from "./plugins/errors.js";
 export {
 	//,
 	health,
@@ -140,10 +140,11 @@ export type {
 } from "./plugins/build-id.js";
 export type {
 	//,
-	ClientErrorEvent,
-	ClientErrorFrame,
-	ClientErrorsOptions,
-} from "./plugins/client-errors.js";
+	AppErrorContext,
+	AppErrorEvent,
+	AppErrorFrame,
+	ErrorsOptions,
+} from "./plugins/errors.js";
 export type {
 	//,
 	ClientErrorSource,

@@ -34,8 +34,9 @@ type PageReporterOptions = {
  * bytes in each document. The reasons for its code:
  *
  * - It keeps only the frame lines of the stack. Chromium starts the stack
- *   with the name and the message, and the message can hold a URL and can be
- *   long. Its frames start with `at`. Firefox and Safari give only frames,
+ *   with the name and the message, and the message can hold a URL, a line
+ *   that looks like a frame, and many bytes. So it removes them first. The
+ *   frames of Chromium start with `at`. Firefox and Safari give only frames,
  *   and each ends with a line and a column.
  * - It reads the first URL of the frames: the frame that threw. A browser
  *   extension and a script of another origin give another origin, and an
@@ -47,7 +48,9 @@ type PageReporterOptions = {
  * - `keepalive` sends the report when the page unloads. `omit` sends no
  *   cookie, so the server gets no session with the report.
  * - A report that the network drops has no second try.
- * - The 404 warning tells the app developer that the endpoint is off.
+ * - The warning tells the app developer that the endpoint is off: the
+ *   endpoint answers 204 or an error, and a framework answers a path with
+ *   no endpoint with a 404, a 405 for a route with no action, or a page.
  */
 export function pageReporter({
 	global,
@@ -59,12 +62,12 @@ export function pageReporter({
 	const sent = new Set<string>();
 	const encoder = new TextEncoder();
 	let warned = false;
-	const warnOnce = (response: Response): void => {
-		if (response.status === 404 && !warned) {
+	const warnOnce = ({ status, ok }: Response): void => {
+		if ((status === 404 || status === 405 || (ok && status !== 204)) && !warned) {
 			warned = true;
 			// oxlint-disable-next-line no-console -- the app developer must see that no report arrives.
 			console.warn(
-				`@ngrok/app-server: ${path} answered 404, so the app gets no client error report. Turn on clientErrors in the server, such as defaultPlugins({ clientErrors: true }).`,
+				`@ngrok/app-server: ${path} answered ${status}, so the app gets no client error report. Turn on errors in the server, such as defaultPlugins({ errors: true }).`,
 			);
 		}
 	};
@@ -73,7 +76,8 @@ export function pageReporter({
 			return;
 		}
 		const { name, message, stack } = thrown;
-		const lines = stack.split("\n");
+		const header = message ? `${name}: ${message}` : name;
+		const lines = (stack.startsWith(header) ? stack.slice(header.length) : stack).split("\n");
 		const atLines = lines.filter((line) => line.startsWith("    at "));
 		const frames = (
 			atLines.length > 0 ? atLines : lines.filter((line) => /:\d+:\d+$/u.test(line))
@@ -147,7 +151,7 @@ export function clientErrorsScriptOf(path: string): string {
 
 /**
  * The text of the inline script that reports the errors of the page's client
- * code to the endpoint of `clientErrors()`. Render it in the `<head>` of the
+ * code to the endpoint of `errors()`. Render it in the `<head>` of the
  * document, before the framework's scripts, with the CSP nonce. A
  * prerendered page needs no nonce: the `appServer` Vite plugin records the
  * hash of the script.

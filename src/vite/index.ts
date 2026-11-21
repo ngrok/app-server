@@ -205,7 +205,7 @@ export type AppServerOptions = {
 		omit?: readonly string[];
 	};
 	/**
-	 * The path of the endpoint of `clientErrors()`. The plugin writes it into
+	 * The path of the endpoint of `errors()`. The plugin writes it into
 	 * each build and gives it to the server, so the inline script and the
 	 * endpoint use one path. It must start with `/`.
 	 * @default "/_app/issues"
@@ -963,6 +963,16 @@ export function appServer(options: AppServerOptions = {}): Plugin[] {
 	const { clientErrorsPath } = options;
 	if (clientErrorsPath != null) {
 		checkRequestPath({ plugin: "appServer", option: "clientErrorsPath", path: clientErrorsPath });
+		// Why: the browser resolves the path, such as `/a/../b` to `/b` and `//host/b` to another
+		// host, and Hono decodes a `%`, so the endpoint would get no report.
+		if (
+			clientErrorsPath.includes("%") ||
+			URL.parse(clientErrorsPath, "http://localhost")?.pathname !== clientErrorsPath
+		) {
+			throw new Error(
+				`appServer needs a clientErrorsPath that a browser sends as it is, with no "%", no "." or ".." segment, and no "//" at the start, not ${JSON.stringify(clientErrorsPath)}.`,
+			);
+		}
 	}
 	// Why one value: `configResolved` sets all three, so no hook sees a config with no framework.
 	let resolved:

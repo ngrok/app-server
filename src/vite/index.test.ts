@@ -890,6 +890,13 @@ describe("appServer", () => {
 		expect(() => appServer({ ...options, clientErrorsPath: "issues" })).toThrow(
 			'appServer needs a clientErrorsPath that starts with "/", not "issues".',
 		);
+		// Why: the browser or Hono changes each of these before the endpoint compares the path.
+		for (const path of ["/a/../_x", "//collector.example/_x", "/_x%20y", "/_x y"]) {
+			expect(() => appServer({ ...options, clientErrorsPath: path })).toThrow(
+				"appServer needs a clientErrorsPath that a browser sends as it is",
+			);
+		}
+		expect(() => appServer({ ...options, clientErrorsPath: "/_app/x-1.y_z~" })).not.toThrow();
 	});
 
 	it("writes a gzip and a brotli copy of each text file of 1 KiB or more after the build", async () => {

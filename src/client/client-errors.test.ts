@@ -175,6 +175,18 @@ describe("clientErrorsReactRouter", () => {
 		]);
 	});
 
+	it("keeps no line of a multiline message as a frame", () => {
+		const { reports } = page();
+		clientErrorsReactRouter();
+
+		// Why: Chromium puts the message before the frames, and a message can hold another stack.
+		dispatchEvent(errorEvent(ownError("failed\n    at https://vendor.example/x.js:9:4")));
+
+		expect(reports().map((report) => report.stack)).toStrictEqual([
+			"    at Usage (http://localhost:3000/assets/usage-3f9a1c.js:12:34)",
+		]);
+	});
+
 	it("sends 64 KiB or less in the 10 reports of a page load, the limit of keepalive", () => {
 		const { send } = page();
 		clientErrorsReactRouter();
@@ -233,17 +245,32 @@ describe("clientErrorsReactRouter", () => {
 		expect(send).not.toHaveBeenCalled();
 	});
 
-	it("warns one time when the endpoint answers 404, because the plugin is off", async () => {
-		page({ status: 404 });
+	// Why these: with the plugin off, the framework answers a 404, a 405 for a route with no
+	// action, or a page.
+	it.each([404, 405, 200])(
+		"warns one time when the endpoint answers %i, because the plugin is off",
+		async (status) => {
+			page({ status });
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			dispatchEvent(errorEvent(ownError("first")));
+			dispatchEvent(errorEvent(ownError("second")));
+			await vi.waitFor(() => {
+				expect(warn).toHaveBeenCalledExactlyOnceWith(
+					expect.stringContaining(`/_app/issues answered ${status}`),
+				);
+			});
+		},
+	);
+
+	it.each([204, 403, 429])("does not warn when the endpoint answers %i", async (status) => {
+		const { send } = page({ status });
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		dispatchEvent(errorEvent(ownError("first")));
-		dispatchEvent(errorEvent(ownError("second")));
-		await vi.waitFor(() => {
-			expect(warn).toHaveBeenCalledExactlyOnceWith(
-				expect.stringContaining("/_app/issues answered 404"),
-			);
-		});
+		await Promise.all(send.mock.results.map(async ({ value }): Promise<unknown> => value));
+
+		expect(warn).not.toHaveBeenCalled();
 	});
 
 	it("reports an error of the router with its route pattern", () => {

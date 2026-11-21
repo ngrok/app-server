@@ -2,6 +2,8 @@ import { RouterContextProvider } from "react-router";
 import type { HandleDocumentRequestFunction, ServerBuild } from "react-router";
 import { describe, expect, it } from "vitest";
 import { accessLog } from "../core/plugins/access-log.js";
+import { errors } from "../core/plugins/errors.js";
+import type { AppErrorEvent } from "../core/plugins/errors.js";
 import { requestId } from "../core/plugins/request-id.js";
 import { appServerContext, runtime } from "./index.js";
 import { reactRouterAdapter } from "./vite.js";
@@ -116,6 +118,50 @@ describe("runtime", () => {
 			undefined,
 		]);
 		expect(seen).toContain("/domains/d_1");
+	});
+
+	it("gives the errors plugin the error that a loader threw, with its route, and calls the app's handleError", async () => {
+		const handled: unknown[] = [];
+		const thrown = new Error("db down");
+		const build = documentBuild();
+		build.entry.module.handleError = (error) => {
+			handled.push(error);
+		};
+		// Why: an app's entry answers a document with the status that React Router gives.
+		build.entry.module.default = (_request, status) => new Response(null, { status });
+		build.routes.status = {
+			id: "status",
+			parentId: "root",
+			path: "api/:name",
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a resource route has no default export, which the type requires.
+			module: {
+				loader: () => {
+					throw thrown;
+				},
+			} as unknown as RouteModule,
+		};
+		const events: AppErrorEvent[] = [];
+		const framework = runtime(build, { mode: "production" });
+		const { request } = await testServer({
+			plugins: [
+				errors({
+					sink: (event) => {
+						events.push(event);
+					},
+				}),
+			],
+			render: framework.fetch,
+		});
+
+		const failed = await request("/api/status");
+		// Why: React Router gives a path that no route matches to handleError as a 404.
+		const missing = await request("/nothing/here");
+
+		expect([failed.status, missing.status]).toStrictEqual([500, 404]);
+		expect(
+			events.map((event) => event.side === "server" && [event.source, event.route, event.error]),
+		).toStrictEqual([["framework", "/api/:name", thrown]]);
+		expect(handled[0]).toBe(thrown);
 	});
 
 	it("gives the client the build's route manifest, so the route pattern middleware adds no client request", async () => {

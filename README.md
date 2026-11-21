@@ -53,7 +53,7 @@ For a marketing site:
 For a web app:
 
 - [Deploys and open tabs](#deploys-and-open-tabs): after a deploy, the next navigation of an old tab loads its target as a document, so the old code never renders new data. The client module adds no request to a client navigation.
-- [Client errors](#client-errors): the server takes the reports of the errors of the client code and gives each one to a sink of the app, with 1.5 KB of client code and no vendor script.
+- [Errors](#errors): one sink of the app gets the errors of the client code and the 5xx failures of the server, with 1.6 KB of client code and no vendor script.
 - [Health checks](#health-checks) at `/livez` and `/readyz`, and a delay before the drain.
 - A [request body limit](#the-pipeline), and [`Cache-Control: private`](#the-pipeline) on each rendered page and data response with no `Cache-Control`, so a shared cache never keeps them for one user.
 - [Logs](#logs) with W3C and Datadog trace IDs, a logger in each loader, and the client address behind a proxy.
@@ -132,7 +132,7 @@ export default defineConfig({
 - `host`: the host adapter. Default: `node()` from `@ngrok/app-server/node/vite`.
 - `app`: the module whose default export is the app, relative to the Vite root. Default: `server.ts`, else `server.js`, in the Vite root. If neither file exists, the server uses the default plugins. An `app` path with no module stops `app-server start` and the build, with an error that names the path.
 - `externals`: how the server build copies the packages that stay external. `whole` lists packages that keep each file, and `omit` lists packages that the build does not copy. Default: no package in either list. See [Deploy](#deploy).
-- `clientErrorsPath`: the path of the endpoint of [`clientErrors()`](#client-errors). Default `/_app/issues`. The plugin writes it into each build and gives it to the server.
+- `clientErrorsPath`: the path of the endpoint of [`errors()`](#errors) for the client errors. Default `/_app/issues`. The plugin writes it into each build and gives it to the server.
 
 An option that you set replaces its default. Set it for a third-party adapter or for an app in another file:
 
@@ -283,7 +283,7 @@ The function differs from a long-lived process:
 4. `streamingCompress()`: brotli or gzip that flushes after each chunk. A client gets brotli, at quality 4, when its `Accept-Encoding` ranks `br` at least as high as `gzip`. For HTML, brotli at quality 4 is smaller than gzip, for the same CPU time. For example, a page of 149 KiB in 10 chunks takes 0.60 ms and 7.7 KiB as brotli, and 0.68 ms and 10.6 KiB as gzip, on an Apple M3 Max. The `compression` middleware of Express also uses quality 4. On the node host, brotli holds the start of a body to pick its window. A body that ends within 256 KiB gets a window of 256 KiB, in one zlib call. A longer body gets the default window of 4 MiB, so it can use a repeat that is more than 256 KiB back. Why not 4 MiB for each body: Node.js tells V8 the full window of each open encoder, and under load V8 then runs a full garbage collection for every few responses. When the body waits for its next chunk first, for one turn of the event loop, the stream sends what it holds with the 256 KiB window. So a page shell that waits for slow data, such as a React `<Suspense>` boundary, still goes out at once. Chunks that the body has queued together go out as one, up to 64 KiB, so a rendered page costs fewer flushes. For example, a rendered page of 19 KB that the body queues at once costs one zlib call, not three. When the body ends by the time the stream finishes its last chunk, that chunk and the end of the stream go out together. On the node host, a body that ends with its first chunk, up to 64 KiB for gzip and 256 KiB for brotli, uses a zlib stream from a pool, so a small page costs no new zlib stream. Each encoding keeps up to 16 streams between responses. The gzip streams hold about 4.3 MiB in all. A gzip stream takes only such a body, and only one at least as long as each earlier body of that stream, so the gzip bytes of a body depend on that body alone. A reset gives a brotli stream a new encoder, so its bytes also depend on the body alone. On Bun and Deno, each brotli body gets a new stream, because a reset there loses the quality or gives no bytes. It skips encoded, partial, and `no-transform` responses, and a body under 1,024 bytes: by its `Content-Length`, or a body from a string. It adds `Accept-Encoding` to `Vary` only on a compressible type, the same types that get a copy from the build. A static file with a compressed copy from the build gets that copy, and this plugin skips it. It follows the `q` values of `Accept-Encoding`, and `q=0` refuses an encoding. The host gives the streams. On a host with neither, the plugin does nothing.
 5. `securityHeaders()`: safe default security headers on each response, prerendered pages included. `defaultPlugins({ securityHeaders })` changes them, and `false` turns them off. See [Security headers](#security-headers).
 6. `bodyLimit({ maxBytes })`: a 413 for a request body over `defaultPlugins({ bodyLimit })`, 10 mebibytes (MiB) by default. `false` turns it off. A `Content-Length` that is too large gets the 413 before the app runs. A streamed body errors when it passes the limit. When the app reads the body before it answers, the response becomes a 413. When the app streams the body into its response, the response stream errors. A `bodyLimit` that is not a whole number of 0 or more stops startup. The body streams. The plugin does not read it into memory.
-7. `clientErrors()`, with `defaultPlugins({ clientErrors })`: the endpoint that takes the reports of the errors of the client code. It answers a `POST` to `/_app/issues`, and each other request goes on. See [Client errors](#client-errors).
+7. `errors()`, with `defaultPlugins({ errors })`: one sink for the errors of the client code and the 5xx failures of the server. It answers a `POST` to `/_app/issues`, and each other request goes on. See [Errors](#errors).
 8. The plugins of the named options. They see every response, prerendered pages included:
    - `noindex()`, with `defaultPlugins({ noindex })`. See [Preview deploys](#preview-deploys).
    - `buildId()`, on by default. `defaultPlugins({ buildId })` changes it, and `false` turns it off. See [Deploys and open tabs](#deploys-and-open-tabs).
@@ -300,7 +300,7 @@ A route that takes a body larger than the limit needs a higher `bodyLimit` for t
 
 The options `requestId`, `accessLog`, and `prerendered` of `defaultPlugins()` take the options of the plugin of the same name, and `trailingSlash` takes the mode.
 
-`defaultPlugins()` is a plain array, so you can filter it or splice into it. To find a plugin in the array, compare its `name`. The names, in the order of the list, are `health`, `request-id`, `access-log`, `streaming-compress`, `security-headers`, `body-limit`, `client-errors`, `noindex`, `build-id`, `content-security-policy`, `runtime-env`, `assets`, `redirects`, `trailing-slash`, `prerendered`, and `private-documents`. A filter on a name that no plugin has removes nothing, with no error. For example, behind a proxy that compresses each response, remove the compression of the server:
+`defaultPlugins()` is a plain array, so you can filter it or splice into it. To find a plugin in the array, compare its `name`. The names, in the order of the list, are `health`, `request-id`, `access-log`, `streaming-compress`, `security-headers`, `body-limit`, `errors`, `noindex`, `build-id`, `content-security-policy`, `runtime-env`, `assets`, `redirects`, `trailing-slash`, `prerendered`, and `private-documents`. A filter on a name that no plugin has removes nothing, with no error. For example, behind a proxy that compresses each response, remove the compression of the server:
 
 ```ts
 createServer({
@@ -645,16 +645,16 @@ export default app;
 
 The client module sends no request of its own and adds no wait. A client navigation makes the same requests with it as without it. It reads the build from the responses that the router already fetches. After a deploy, one navigation loads its target as a document: at most one more request, once for each deploy. Polling the server or checking the build before each navigation would add a round trip to every navigation. See [add no round trips to a client navigation](./docs/principles/no-added-round-trips.md).
 
-## Client errors
+## Errors
 
-`clientErrors()` and the client module tell the app when its own client code breaks, with no vendor script in the browser. An inline script in the document sends each error to the server, and the server gives it to a sink that the app supplies. The setup has three parts, and each part is in the app's own code.
+`errors()` gives each error of the app to one sink that the app supplies: the errors of the client code, and the errors that end a request with a 5xx in the server. So the app sends both to one error tracker from the server, with no vendor script in the browser. For the client errors, an inline script in the document sends each error to the server. The setup has three parts, and each part is in the app's own code. The server errors need only the first part.
 
-1. Turn the plugin on in the server. With no `sink`, each error is one `client error` line of the [log](#logs):
+1. Turn the plugin on in the server. With no `sink`, each client error is one `client error` line of the [log](#logs), and each server error has its `unhandled error` line already:
 
 ```ts
 // server.ts
 createServer({
-	plugins: defaultPlugins({ clientErrors: true }),
+	plugins: defaultPlugins({ errors: true }),
 });
 ```
 
@@ -700,9 +700,9 @@ startTransition(() => {
 A part that is absent does not fail in silence:
 
 - With no inline script in the page, the client module logs one error line in the browser console, and the app sends no report.
-- With the plugin off, the endpoint answers 404, and the inline script logs one warning in the browser console.
+- With the plugin off, the framework answers the report with a 404, a 405, or a page, and the inline script logs one warning in the browser console.
 
-### What the app gets
+### What the browser reports
 
 The inline script reports the `error` and `unhandledrejection` events of the page. It starts before each chunk of the app. So the app also gets the error of a chunk that throws while it loads, when the client entry does not run.
 
@@ -719,48 +719,63 @@ What the script sends:
 
 ### The cost
 
-The inline script is 2.3 KB in each HTML document, and 1.0 KB as brotli. The client module adds 0.5 KB of gzip to the client bundle (Vite 8, minified). A test fails above 1.3 KB of gzip for the script and above 0.6 KB for the module. In the browser, `clientErrorsScript()` gives the text of the script that the document has, so the client bundle holds no copy of it, and React finds no change when it hydrates.
+The inline script is 2.5 KB in each HTML document, and 1.1 KB as brotli. The client module adds 0.5 KB of gzip to the client bundle (Vite 8, minified). A test fails above 1.3 KB of gzip for the script and above 0.6 KB for the module. In the browser, `clientErrorsScript()` gives the text of the script that the document has, so the client bundle holds no copy of it, and React finds no change when it hydrates.
 
 With [a CSP for each document](#a-csp-for-each-document), a rendered page trusts the script by its nonce, and a prerendered page by its hash, which the `appServer` Vite plugin records with the other inline scripts.
+
+### Server errors
+
+The sink also gets each error that ends a request with a 5xx in the server, as an event with `side: "server"` and the thrown `error`. Its `source` tells where the error came from:
+
+- `pipeline`: a plugin after `errors()`, a route of the app, or the framework threw. The client gets the answer of the app's `onError`, as with no plugin.
+- `framework`: React Router caught the error in a loader, an action, or a render, and answered with an error boundary. The plugin gets it from React Router's `handleError`. Then the app's own `handleError` runs, or with none, the error goes to the console, as React Router does.
+
+The plugin does not report a 4xx, such as a thrown `HTTPException` or a path that no route matches, a 5xx with no thrown error, or a request whose client went away. `maxPerMinute` does not count a server error.
+
+- An error after the response started, such as in a streamed body, and an uncaught exception give no event. The server logs each one.
+- TanStack Start answers an error that it catches in a loader itself, and gives the server no hook. So with TanStack Start, the plugin gets only the errors that reach the pipeline.
 
 ### The endpoint
 
 The plugin answers a `POST` to its path before the framework runs, so the origin check of React Router's actions does not apply. For each report:
 
-1. A page of another origin gets a 403. The plugin reads `Sec-Fetch-Site`, and for a browser that does not send it, it compares `Origin` with the host of the request.
+1. A page of another origin gets a 403. The plugin reads `Sec-Fetch-Site`, and for a browser that does not send it, it compares `Origin` with the origin of the request, scheme included. Behind a proxy that ends TLS, set `trustForwardedProto` on `createServer`, so the request has its `https:` scheme.
 2. A body of more than 6 KiB gets a 413, and a body that is not a report gets a 400.
 3. A report from a bot, by its `User-Agent`, gets a 204, and the plugin drops it.
 4. The plugin reads the stack into frames, in the formats of Chromium, Firefox, and Safari. It drops a report with no frame. In production, it also drops a report whose first frame is not a file of Vite's `build.assetsDir`, such as an inline script that a browser extension adds to the page.
 5. The `filter` decides. A report that it refuses gets a 204.
-6. After the sink got `maxPerMinute` events in one minute, 60 by default, each report gets a 429. A report that the plugin or the `filter` drops does not count.
+6. After the sink got `maxPerMinute` client errors in one minute, 60 by default, each report gets a 429. A report that the plugin or the `filter` drops does not count.
 7. The `sink` gets the event. The answer is a 204.
 
 `defaultPlugins()` puts the plugin after `bodyLimit`, so each answer has a request ID, a line in the access log, and the security headers.
 
-- Each field of an event comes from the client. A client that is not a browser can send any header and any value, so the origin check is not authentication. Do not trust a field in the sink.
-- `appServer({ clientErrorsPath })` in the Vite config sets another path. The Vite plugin writes it into each build and gives it to the server, so the inline script and the endpoint use one path, also in a prerendered page. An app with no `appServer` Vite plugin has the default path. The default has no word such as `error` or `log`, because an ad blocker blocks a request by such a word. A path that does not start with `/` stops the build and `app-server start`.
+- Each field of a client event comes from the client. A client that is not a browser can send any header and any value, so the origin check is not authentication. Do not trust a field in the sink.
+- `appServer({ clientErrorsPath })` in the Vite config sets another path. The Vite plugin writes it into each build and gives it to the server, so the inline script and the endpoint use one path, also in a prerendered page. An app with no `appServer` Vite plugin has the default path. The default has no word such as `error` or `log`, because an ad blocker blocks a request by such a word. A path that does not start with `/`, or that a browser changes before it sends it, such as one with a `%`, a `..` segment, or a `//` at its start, stops the build and `app-server start`.
 - The limit counts in the memory of one process. On a serverless host, each instance has its own count, so the limit of the sink's service is the hard limit there.
 - In development, the endpoint works the same, and Vite's source modules count as files of the app.
 
 ### A sink and a filter
 
-A sink is a function that takes one event. A filter is a function from the same event to a boolean, and `false` drops the event:
+A sink is a function that takes one event and its request. A filter is a function from the same values to a boolean, and `false` drops the event. The request is the report of the browser for a client error, and the request that failed for a server error, so the sink reads headers such as `traceparent` from it:
 
 ```ts
 // server.ts
-import type { ClientErrorEvent } from "@ngrok/app-server";
+import type { AppErrorContext, AppErrorEvent } from "@ngrok/app-server";
 
-async function trackerSink(event: ClientErrorEvent) {
+async function trackerSink(event: AppErrorEvent, { request }: AppErrorContext) {
 	await fetch("https://errors.example.com/events", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers: {
+			"Content-Type": "application/json",
+			traceparent: request.headers.get("traceparent") ?? "",
+		},
 		body: JSON.stringify(event),
 	});
 }
 
 createServer({
 	plugins: defaultPlugins({
-		clientErrors: {
+		errors: {
 			sink: trackerSink,
 			filter: (event) => event.name !== "AbortError",
 		},
@@ -770,21 +785,67 @@ createServer({
 
 An event has these fields:
 
-| Field       | Value                                                                                                                                     |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`      | The name of the error, such as `TypeError`.                                                                                               |
-| `message`   | The message of the error, 1,000 characters at most.                                                                                       |
-| `frames`    | The frames of the stack, from the frame that threw, 50 at most. Each has `function`, `file` (the URL of the chunk), `line`, and `column`. |
-| `source`    | Where the client got the error: `error`, `unhandledrejection`, `uncaught`, `caught`, `recoverable`, or `router`.                          |
-| `route`     | The route pattern, such as `/domains/:domainId`, for the source `router`. Else `undefined`.                                               |
-| `path`      | The pathname of the page, with no query and no fragment.                                                                                  |
-| `userAgent` | The `User-Agent` of the request.                                                                                                          |
-| `buildId`   | The build that the page runs, when `buildId()` sent one. After a deploy, it can be older than the build of the server.                    |
+| Field       | Value                                                                                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `side`      | `client` for a report of the browser, `server` for a 5xx of the server.                                                                                                                     |
+| `name`      | The name of the error, such as `TypeError`.                                                                                                                                                 |
+| `message`   | The message of the error. A client message is 1,000 characters at most.                                                                                                                     |
+| `frames`    | The frames of the stack, from the frame that threw, 50 at most. Each has `function`, `file` (the URL of the chunk, or the path of the server file), `line`, and `column`.                   |
+| `source`    | Where the error came from. On the client: `error`, `unhandledrejection`, `uncaught`, `caught`, `recoverable`, or `router`. On the server: `pipeline` or `framework`.                        |
+| `route`     | The route pattern, such as `/domains/:domainId`, when the router gave one. Else `undefined`.                                                                                                |
+| `path`      | The pathname of the page or of the request, with no query and no fragment.                                                                                                                  |
+| `userAgent` | The `User-Agent` of the request.                                                                                                                                                            |
+| `buildId`   | The build. On the client, the build that the page runs, when `buildId()` sent one, and after a deploy it can be older than the build of the server. On the server, the build of the server. |
+| `error`     | On the server only: the thrown error, with its `cause`.                                                                                                                                     |
 
-- The server waits for the sink before it answers, for 3 seconds at most, so a serverless host does not stop the function before the sink ends. No visitor waits for this answer.
-- A sink that throws or rejects logs one `client error sink failed` line, and the report still gets a 204. A filter that throws is an error of the app: the report gets a 500 and an `unhandled error` line.
-- The package has no source maps. A frame has the URL of the chunk, the line, and the column, and the event has the build. A sink that wants source lines maps them with these values.
-- An event comes from a browser, so each string in it is input that the server did not write. Encode it before you put it into HTML.
+- The server waits for the sink before it answers, for 3 seconds at most, so a serverless host does not stop the function before the sink ends. No visitor waits for the answer to a report. The 5xx of a server error waits for the sink, so give it a sink that queues the event, such as an SDK call.
+- A sink that throws or rejects logs one `error sink failed` line, and the answer does not change: a 204 for a report, and the 5xx for a server error. A filter that throws is an error of the app: the request gets a 500 and an `unhandled error` line.
+- The package has no source maps. A client frame has the URL of the chunk, the line, and the column, and the event has the build. A sink that wants source lines maps them with these values.
+- A client event comes from a browser, so each string in it is input that the server did not write. Encode it before you put it into HTML.
+
+### Send errors to Sentry
+
+The sink runs in the server, so the browser loads no Sentry SDK, and the DSN stays on the server. A server event has the thrown error. A client event has the frames, which Sentry wants with the oldest frame first:
+
+```ts
+// server.ts, with `Sentry.init()` from `@sentry/node` done at startup
+createServer({
+	plugins: defaultPlugins({
+		errors: {
+			sink: (event, { request }) => {
+				const tags = { side: event.side, source: event.source, route: event.route ?? "" };
+				if (event.side === "server") {
+					Sentry.captureException(event.error, { tags });
+					return;
+				}
+				Sentry.captureEvent({
+					tags,
+					release: event.buildId,
+					request: { url: new URL(event.path, request.url).href },
+					exception: {
+						values: [
+							{
+								type: event.name,
+								value: event.message,
+								stacktrace: {
+									frames: event.frames.toReversed().map((frame) => ({
+										function: frame.function,
+										filename: frame.file,
+										lineno: frame.line,
+										colno: frame.column,
+									})),
+								},
+							},
+						],
+					},
+				});
+			},
+		},
+	}),
+});
+```
+
+On a serverless host, end the sink with `await Sentry.flush(2000)`, within the 3 seconds that the server waits.
 
 ## Trailing slashes
 
@@ -1137,9 +1198,9 @@ The server also writes these lines. A line of a request also has `http.request_i
 | `setup failed`                                 | `error` | `error.*`                                                                                                                | On a serverless host, the setup threw, such as the `setup` of a plugin. The request fails, and the next request runs the setup again.                                                                             |
 | `unhandled error`                              | `error` | `error.*`                                                                                                                | A stage, a route, or the framework threw, and the client got a 500. Or a response body failed after its head went out.                                                                                            |
 | `access log attributes failed`                 | `error` | `error.*`, and the attributes of the `request` line                                                                      | The `attributes` callback of `accessLog()` threw. This line goes out in place of the `request` line.                                                                                                              |
-| `client error`                                 | `error` | `error.*`, `app_server.client.source`, `app_server.client.route`, `app_server.client.path`, `app_server.client.build_id` | The client code of a page threw, and `clientErrors()` has no `sink`. `error.stack` has the frames of the browser. See [Client errors](#client-errors).                                                            |
-| `client error sink failed`                     | `error` | `error.*`                                                                                                                | The `sink` of `clientErrors()` threw or rejected. The report is lost.                                                                                                                                             |
-| `client error sink passed the deadline`        | `warn`  | `app_server.deadline_ms`                                                                                                 | The `sink` of `clientErrors()` ran for longer than 3 seconds. The server answered the report and did not wait for it.                                                                                             |
+| `client error`                                 | `error` | `error.*`, `app_server.client.source`, `app_server.client.route`, `app_server.client.path`, `app_server.client.build_id` | The client code of a page threw, and `errors()` has no `sink`. `error.stack` has the frames of the browser. See [Errors](#errors).                                                                                |
+| `error sink failed`                            | `error` | `error.*`                                                                                                                | The `sink` of `errors()` threw or rejected. The event is lost.                                                                                                                                                    |
+| `error sink passed the deadline`               | `warn`  | `app_server.deadline_ms`                                                                                                 | The `sink` of `errors()` ran for longer than 3 seconds. The server answered and did not wait for it.                                                                                                              |
 | `readiness check failed`                       | `warn`  | `error.*`, when the check threw                                                                                          | The `ready` check of `health()` starts to fail, and `/readyz` answers 503.                                                                                                                                        |
 | `readiness check passed`                       | `info`  |                                                                                                                          | The `ready` check passes again.                                                                                                                                                                                   |
 | `client build not found`                       | `warn`  | `app_server.client_directory`                                                                                            | At startup, the directory of the client build is not there, so the framework answers each request for a file. Copy the client build to that path.                                                                 |

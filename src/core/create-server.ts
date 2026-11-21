@@ -5,10 +5,10 @@ import { asError, hookSink, jsonSink, requestLogger, textSink } from "./log.js";
 import { accessLog } from "./plugins/access-log.js";
 import type { AccessLogOptions } from "./plugins/access-log.js";
 import { bodyLimit } from "./plugins/body-limit.js";
-import { clientErrors } from "./plugins/client-errors.js";
-import type { ClientErrorsOptions } from "./plugins/client-errors.js";
 import { buildId } from "./plugins/build-id.js";
 import type { BuildIdOptions } from "./plugins/build-id.js";
+import { errors } from "./plugins/errors.js";
+import type { ErrorsOptions } from "./plugins/errors.js";
 import { health } from "./plugins/health.js";
 import type { HealthOptions } from "./plugins/health.js";
 import { noindex } from "./plugins/noindex.js";
@@ -238,12 +238,12 @@ export type DefaultPluginsOptions = {
 	 */
 	buildId?: BuildIdOptions | false;
 	/**
-	 * Takes the reports of the errors of the client code, from the client
-	 * module, and gives each one to a sink. `true` uses the default options.
-	 * See {@link clientErrors}.
+	 * Gives each error of the app to one sink: the reports of the client
+	 * code, and the 5xx failures of the server. `true` uses the default
+	 * options. See {@link errors}.
 	 * @default false
 	 */
-	clientErrors?: boolean | ClientErrorsOptions;
+	errors?: boolean | ErrorsOptions;
 	/**
 	 * The options of the `Content-Security-Policy` of each HTML document. It
 	 * has no default. See {@link contentSecurityPolicy}.
@@ -264,7 +264,7 @@ export type DefaultPluginsOptions = {
 
 /**
  * The default pipeline, in order: `health`, `requestId`, `accessLog`,
- * `streamingCompress`, `securityHeaders`, `bodyLimit`, `clientErrors` (when
+ * `streamingCompress`, `securityHeaders`, `bodyLimit`, `errors` (when
  * set), `noindex` (when set), `buildId`, `contentSecurityPolicy` (when set), `env` (when set), the
  * `beforeStatic` plugins, `assets`, `redirects` (when the option has rules),
  * `trailingSlash`, `prerendered`, and `privateDocuments`. It is a plain
@@ -295,10 +295,10 @@ export function defaultPlugins(options: DefaultPluginsOptions = {}): Plugin[] {
 		...(options.securityHeaders === false ? [] : [securityHeaders(options.securityHeaders)]),
 		...(maxBytes === false ? [] : [bodyLimit({ maxBytes })]),
 		// Why here: its answers get the request ID, the access log line, and the security headers,
-		// and a report runs no later stage.
-		...(options.clientErrors == null || options.clientErrors === false
+		// a report runs no later stage, and it sees the failures of each later stage.
+		...(options.errors == null || options.errors === false
 			? []
-			: [options.clientErrors === true ? clientErrors() : clientErrors(options.clientErrors)]),
+			: [options.errors === true ? errors() : errors(options.errors)]),
 		// Why before the static stages: these plugins must see the prerendered pages. Why before
 		// `beforeStatic`: an app plugin, such as an auth check, then gets the CSP nonce, and its own
 		// responses get these headers. Their order among themselves changes no response.

@@ -8,7 +8,7 @@ const app = createServer({
 	listeners: [tcp({ port: 0, host: "127.0.0.1" })],
 	shutdownDeadlineMs: 3_000,
 	plugins: defaultPlugins({
-		clientErrors: {
+		errors: {
 			sink: (event) => {
 				events.push(event);
 			},

@@ -29,7 +29,7 @@ function pageReport(): ClientErrorsGlobal["report"] {
 	if (page == null) {
 		// oxlint-disable-next-line no-console -- the app developer must see that no report goes out.
 		console.error(
-			"@ngrok/app-server: the page has no client error script, so the app sends no client error report. Render clientErrorsScript() in the <head> of the document, and turn on clientErrors in the server.",
+			"@ngrok/app-server: the page has no client error script, so the app sends no client error report. Render clientErrorsScript() in the <head> of the document, and turn on errors in the server.",
 		);
 		return () => {
 			// The page has no reporter.
@@ -64,7 +64,7 @@ function rootOptionsOf(report: ClientErrorsGlobal["report"]): ClientErrorsRootOp
 /**
  * Gives the errors that React and React Router catch in a React Router app
  * to the inline script of `clientErrorsScript()`, which sends each report to
- * the endpoint of `clientErrors()`. Call it once, in the client entry.
+ * the endpoint of `errors()`. Call it once, in the client entry.
  *
  * - The hooks report the errors of the React root, and the errors that the
  *   router gets from a loader, an action, or a route render, with the route

@@ -2,7 +2,7 @@
 // imports it, and that bundle must hold no server code.
 
 /**
- * The default path of the endpoint of `clientErrors()`. Why this name: an ad
+ * The default path of the endpoint of `errors()`. Why this name: an ad
  * blocker blocks a request whose path has a word such as `error`, `log`, or
  * `report`.
  */
@@ -21,7 +21,7 @@ export const CLIENT_ERRORS_PATH_CONSTANT = "__APP_SERVER_CLIENT_ERRORS_PATH__";
 declare const __APP_SERVER_CLIENT_ERRORS_PATH__: string | undefined;
 
 /**
- * The path of the endpoint of `clientErrors()`: the `clientErrorsPath` of
+ * The path of the endpoint of `errors()`: the `clientErrorsPath` of
  * the `appServer` Vite plugin, else {@link CLIENT_ERRORS_PATH}. Why a
  * function: the server entry sets the global after this module loads.
  */
@@ -59,7 +59,7 @@ export const CLIENT_ERROR_SOURCES = [
  */
 export type ClientErrorSource = (typeof CLIENT_ERROR_SOURCES)[number];
 
-/** The JSON body that the client module posts to the endpoint of `clientErrors()`. */
+/** The JSON body that the client module posts to the endpoint of `errors()`. */
 export type ClientErrorReport = {
 	name: string;
 	message: string;

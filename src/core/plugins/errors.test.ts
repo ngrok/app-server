@@ -1,3 +1,4 @@
+import { HTTPException } from "hono/http-exception";
 import { describe, expect, it, vi } from "vitest";
 import { createServer, defaultPlugins, serverInternals } from "../create-server.js";
 import { clientErrorsScript } from "../../client/client-errors-script.js";
@@ -5,8 +6,8 @@ import { clientErrorsReactRouter } from "../../client/client-errors.js";
 import { productionSetup, stubFramework, testServer } from "../../test-server.js";
 import type { LogSink } from "../types.js";
 import { assets } from "./static.js";
-import { clientErrors } from "./client-errors.js";
-import type { ClientErrorEvent } from "./client-errors.js";
+import { errors } from "./errors.js";
+import type { AppErrorEvent } from "./errors.js";
 
 const CHROMIUM_STACK = [
 	"TypeError: Cannot read properties of undefined (reading 'id')",
@@ -48,25 +49,26 @@ function report(fields: Record<string, unknown> = {}, headers: Record<string, st
 
 /** A sink that keeps each event. */
 function recordingSink() {
-	const events: ClientErrorEvent[] = [];
+	const events: AppErrorEvent[] = [];
 	return {
 		events,
-		sink: (event: ClientErrorEvent) => {
+		sink: (event: AppErrorEvent) => {
 			events.push(event);
 		},
 	};
 }
 
-describe("clientErrors", () => {
+describe("errors", () => {
 	it("gives the sink one event with the frames of a Chromium stack, and answers 204", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		const response = await request("/_app/issues", report());
 
 		expect(response.status).toBe(204);
 		expect(events).toStrictEqual([
 			{
+				side: "client",
 				name: "TypeError",
 				message: "Cannot read properties of undefined (reading 'id')",
 				frames: [
@@ -100,7 +102,7 @@ describe("clientErrors", () => {
 
 	it("takes the report that the inline script sends for the client module", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 		// The browser globals that the inline script reads.
 		const send = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
 		vi.stubGlobal("fetch", send);
@@ -126,6 +128,7 @@ describe("clientErrors", () => {
 		expect(response.status).toBe(204);
 		expect(events).toStrictEqual([
 			{
+				side: "client",
 				name: "TypeError",
 				message: "no id",
 				frames: [
@@ -147,7 +150,7 @@ describe("clientErrors", () => {
 
 	it("reads the frames of a Firefox or Safari stack", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		await request(
 			"/_app/issues",
@@ -178,7 +181,7 @@ describe("clientErrors", () => {
 	});
 
 	it("logs one error line for a report when the app gives no sink", async () => {
-		const { request, lines } = await testServer({ plugins: [clientErrors()] });
+		const { request, lines } = await testServer({ plugins: [errors()] });
 
 		await request("/_app/issues", report());
 
@@ -204,7 +207,7 @@ describe("clientErrors", () => {
 
 	it("answers 403 to a page of another origin, and gives the sink nothing", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		const crossSite = await request("/_app/issues", report({}, { "Sec-Fetch-Site": "cross-site" }));
 		const otherOrigin = await request(
@@ -218,7 +221,7 @@ describe("clientErrors", () => {
 
 	it("takes a report with a matching Origin from a browser that sends no Sec-Fetch-Site", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 		const init = report({}, { Origin: "http://localhost" });
 		const headers = new Headers(init.headers);
 		headers.delete("Sec-Fetch-Site");
@@ -227,13 +230,17 @@ describe("clientErrors", () => {
 		headers.delete("Origin");
 		const noOrigin = await request("http://localhost/_app/issues", { ...init, headers });
 
-		expect([taken.status, noOrigin.status]).toStrictEqual([204, 403]);
+		// Why the same host: a page on `http:` is another origin than the endpoint on `https:`.
+		headers.set("Origin", "http://example.com");
+		const otherScheme = await request("https://example.com/_app/issues", { ...init, headers });
+
+		expect([taken.status, noOrigin.status, otherScheme.status]).toStrictEqual([204, 403, 403]);
 		expect(events).toHaveLength(1);
 	});
 
 	it("answers 413 to a body of more than 6 KiB, by its length and as a stream", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 		const large = report({ stack: "x".repeat(17_000) });
 		const streamed: RequestInit & { duplex: "half" } = {
 			...large,
@@ -252,7 +259,7 @@ describe("clientErrors", () => {
 	});
 
 	it("cancels a streamed body when it passes 6 KiB", async () => {
-		const { request } = await testServer({ plugins: [clientErrors()] });
+		const { request } = await testServer({ plugins: [errors()] });
 		const { headers } = report();
 		let canceled = false;
 		const body = new ReadableStream<Uint8Array>({
@@ -277,7 +284,7 @@ describe("clientErrors", () => {
 	});
 
 	it("answers 413 to a Content-Length of more than 6 KiB before it reads the body", async () => {
-		const { request } = await testServer({ plugins: [clientErrors()] });
+		const { request } = await testServer({ plugins: [errors()] });
 		const { headers } = report();
 		const never: RequestInit & { duplex: "half" } = {
 			method: "POST",
@@ -293,7 +300,7 @@ describe("clientErrors", () => {
 
 	it("reads a frame whose URL has parentheses or an @", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		await request(
 			"/_app/issues",
@@ -321,7 +328,7 @@ describe("clientErrors", () => {
 
 	it("answers 400 to a body that is not a report", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		const statuses = [];
 		for (const init of [
@@ -341,7 +348,7 @@ describe("clientErrors", () => {
 
 	it("drops a report from a bot, one with no frame, and one that a file outside the assets threw", async () => {
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		const statuses = [];
 		for (const init of [
@@ -362,7 +369,7 @@ describe("clientErrors", () => {
 	it("takes a report whose first frame is a source module in development", async () => {
 		const { events, sink } = recordingSink();
 		const logger: LogSink = { log: () => {} };
-		const app = createServer({ plugins: [clientErrors({ sink }), assets()], logger });
+		const app = createServer({ plugins: [errors({ sink }), assets()], logger });
 		await serverInternals(app)?.prepare({
 			...(await productionSetup({ logger })),
 			mode: "development",
@@ -383,7 +390,7 @@ describe("clientErrors", () => {
 	it("gives the sink no event that the filter refuses", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({
-			plugins: [clientErrors({ sink, filter: (event) => event.name !== "AbortError" })],
+			plugins: [errors({ sink, filter: (event) => event.name !== "AbortError" })],
 		});
 
 		await request("/_app/issues", report({ name: "AbortError" }));
@@ -395,7 +402,7 @@ describe("clientErrors", () => {
 	it("answers 429 after maxPerMinute reports, and takes reports again in the next minute", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink, maxPerMinute: 2 })] });
+		const { request } = await testServer({ plugins: [errors({ sink, maxPerMinute: 2 })] });
 
 		const statuses = [];
 		for (let sent = 0; sent < 3; sent += 1) {
@@ -412,9 +419,7 @@ describe("clientErrors", () => {
 	it("does not count a report that it drops in maxPerMinute", async () => {
 		const { events, sink } = recordingSink();
 		const { request } = await testServer({
-			plugins: [
-				clientErrors({ sink, maxPerMinute: 1, filter: (event) => event.message !== "noise" }),
-			],
+			plugins: [errors({ sink, maxPerMinute: 1, filter: (event) => event.message !== "noise" })],
 		});
 
 		const statuses = [];
@@ -434,7 +439,7 @@ describe("clientErrors", () => {
 	it("answers 204 and logs one error line when the sink fails", async () => {
 		const { request, lines } = await testServer({
 			plugins: [
-				clientErrors({
+				errors({
 					sink: async () => {
 						await Promise.reject(new Error("tracker is down"));
 					},
@@ -447,13 +452,13 @@ describe("clientErrors", () => {
 		expect(response.status).toBe(204);
 		expect(
 			lines.map((line) => [line.level, line.message, line.attributes["error.message"]]),
-		).toStrictEqual([["error", "client error sink failed", "tracker is down"]]);
+		).toStrictEqual([["error", "error sink failed", "tracker is down"]]);
 	});
 
 	it("answers after 3 seconds and logs one warn line when the sink hangs", async () => {
 		vi.useFakeTimers();
 		const { request, lines } = await testServer({
-			plugins: [clientErrors({ sink: async () => new Promise<void>(() => {}) })],
+			plugins: [errors({ sink: async () => new Promise<void>(() => {}) })],
 		});
 
 		const answer = request("/_app/issues", report());
@@ -463,7 +468,7 @@ describe("clientErrors", () => {
 
 		expect(response.status).toBe(204);
 		expect(lines.map((line) => [line.level, line.message])).toStrictEqual([
-			["warn", "client error sink passed the deadline"],
+			["warn", "error sink passed the deadline"],
 		]);
 	});
 
@@ -471,7 +476,7 @@ describe("clientErrors", () => {
 		// The server entry that the Vite plugin generates sets this global.
 		vi.stubGlobal("__APP_SERVER_CLIENT_ERRORS_PATH__", "/_x");
 		const { events, sink } = recordingSink();
-		const { request } = await testServer({ plugins: [clientErrors({ sink })] });
+		const { request } = await testServer({ plugins: [errors({ sink })] });
 
 		const taken = await request("/_x", report());
 		const defaultPath = await request("/_app/issues", report());
@@ -484,14 +489,14 @@ describe("clientErrors", () => {
 	});
 
 	it("stops startup for a bad maxPerMinute", () => {
-		expect(() => clientErrors({ maxPerMinute: 1.5 })).toThrow(
-			"The maxPerMinute of clientErrors must be an integer of 0 or more, not 1.5.",
+		expect(() => errors({ maxPerMinute: 1.5 })).toThrow(
+			"The maxPerMinute of errors must be an integer of 0 or more, not 1.5.",
 		);
 	});
 
 	it("is off in defaultPlugins() until the app sets the option", async () => {
 		const off = await testServer({ plugins: defaultPlugins() });
-		const on = await testServer({ plugins: defaultPlugins({ clientErrors: true }) });
+		const on = await testServer({ plugins: defaultPlugins({ errors: true }) });
 
 		await expect((await off.request("/_app/issues", report())).text()).resolves.toBe("rendered");
 		const response = await on.request("/_app/issues", report());
@@ -499,5 +504,115 @@ describe("clientErrors", () => {
 		expect(response.status).toBe(204);
 		expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect(on.lines.map((line) => line.message)).toStrictEqual(["client error", "request"]);
+	});
+});
+
+describe("errors on the server", () => {
+	it("gives the sink the error of a 5xx, with its frames and its request, and keeps the answer", async () => {
+		const received: { event: AppErrorEvent; url: string }[] = [];
+		// Why a message with a line like a frame: V8 puts the message before the frames.
+		const thrown = new TypeError("db down\n    at other (/vendor/pool.js:9:9)");
+		thrown.stack = `TypeError: ${thrown.message}\n    at load (file:///app/build/server/index.js:12:34)`;
+		const { request } = await testServer({
+			// Why 0: the limit is for the reports of clients, not for the errors of the server.
+			plugins: [
+				errors({
+					maxPerMinute: 0,
+					sink: (event, { request: failed }) => {
+						received.push({ event, url: failed.url });
+					},
+				}),
+			],
+			render: async () => {
+				throw thrown;
+			},
+		});
+
+		const response = await request("http://localhost/dash?tab=1", {
+			headers: { "User-Agent": USER_AGENT },
+		});
+
+		expect(response.status).toBe(500);
+		await expect(response.text()).resolves.toBe("Internal Server Error");
+		expect(received).toStrictEqual([
+			{
+				event: {
+					side: "server",
+					source: "pipeline",
+					error: thrown,
+					name: "TypeError",
+					message: thrown.message,
+					frames: [
+						{ function: "load", file: "file:///app/build/server/index.js", line: 12, column: 34 },
+					],
+					route: undefined,
+					path: "/dash",
+					userAgent: USER_AGENT,
+					buildId: undefined,
+				},
+				url: "http://localhost/dash?tab=1",
+			},
+		]);
+		expect(received[0]?.event.side === "server" && received[0].event.error).toBe(thrown);
+	});
+
+	it("gives the sink the error that the framework caught, for a 5xx only", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({
+			plugins: [errors({ sink })],
+			render: async (incoming, context) => {
+				context.set("frameworkError", new Error(`failed at ${new URL(incoming.url).pathname}`));
+				return new Response("error boundary", {
+					status: incoming.url.endsWith("/missing") ? 404 : 500,
+				});
+			},
+		});
+
+		const failed = await request("/dash");
+		const missing = await request("/missing");
+
+		expect([failed.status, missing.status]).toStrictEqual([500, 404]);
+		expect(events.map(({ side, source, message }) => ({ side, source, message }))).toStrictEqual([
+			{ side: "server", source: "framework", message: "failed at /dash" },
+		]);
+	});
+
+	it("gives the sink nothing for a thrown 4xx, a 5xx with no error, or an error that the filter refuses", async () => {
+		const { events, sink } = recordingSink();
+		const { request } = await testServer({
+			plugins: [errors({ sink, filter: (event) => event.message !== "known" })],
+			render: async (incoming) => {
+				const { pathname } = new URL(incoming.url);
+				if (pathname === "/forbidden") {
+					throw new HTTPException(403);
+				}
+				if (pathname === "/known") {
+					throw new Error("known");
+				}
+				return new Response("busy", { status: 503 });
+			},
+		});
+
+		const statuses = [
+			(await request("/forbidden")).status,
+			(await request("/busy")).status,
+			(await request("/known")).status,
+		];
+
+		expect(statuses).toStrictEqual([403, 503, 500]);
+		expect(events).toStrictEqual([]);
+	});
+
+	it("adds no log line for a server error when the app gives no sink", async () => {
+		const { request, lines } = await testServer({
+			plugins: [errors()],
+			render: async () => {
+				throw new Error("boom");
+			},
+		});
+
+		await request("/dash");
+
+		expect(lines.map((line) => line.message)).toStrictEqual(["unhandled error"]);
 	});
 });
