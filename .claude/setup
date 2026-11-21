@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Prepare an Amp orb for this repository. Amp runs this file as .agents/setup.
+#
+# Amp also runs this script on a stale snapshot, so every step must be
+# non-interactive, idempotent, and fast when tools and dependencies exist.
+
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+step() {
+	local name="$1"
+	shift
+	local start=${SECONDS}
+	echo "==> ${name}"
+	"$@"
+	echo "<== ${name} ($((SECONDS - start))s)"
+}
+
+# Find the mise that an earlier run installed, so that it is not downloaded again.
+export PATH="${HOME}/.local/bin:${PATH}"
+# shellcheck source=../scripts/install-mise
+source ./scripts/install-mise
+step "mise" ensure_pinned_mise
+# Why: mise refuses the `exec` template of an untrusted mise.toml, as CI does before its install.
+step "mise trust" mise trust ./mise.toml
+step "mise install" mise install
+step "mise run setup" mise run setup
+
+# `pnpm run test:browsers` needs Chromium, Firefox, and WebKit. Install them here so that the
+# snapshot keeps them. Why the check: setup also runs on a branch that has no Playwright.
+install_playwright() {
+	if [ ! -d node_modules/playwright ]; then
+		echo "Playwright is not a dependency of this branch."
+		return
+	fi
+	local browsers="chromium firefox webkit" dirs dir
+	# shellcheck disable=SC2086 # Why: each browser is one argument.
+	dirs="$(mise x -- pnpm exec playwright install --dry-run ${browsers} | awk '/Install location:/ { print $3 }')"
+	if [ -z "${dirs}" ]; then
+		echo "app-server: playwright install --dry-run printed no install locations" >&2
+		return 1
+	fi
+	for dir in ${dirs}; do
+		if [ ! -f "${dir}/INSTALLATION_COMPLETE" ]; then
+			# shellcheck disable=SC2086 # Why: each browser is one argument.
+			mise x -- pnpm exec playwright install --with-deps ${browsers}
+			return
+		fi
+	done
+	echo "Playwright browsers are already installed."
+}
+step "playwright" install_playwright
+
+# Why also here: the orb that runs setup, and a snapshot of one member, keep the shell hooks.
+step "resume" ./.claude/resume

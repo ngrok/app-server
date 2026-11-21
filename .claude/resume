@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Repair an Amp orb after it starts or wakes. Amp runs this file as .agents/resume.
+#
+# Why here and not in setup: a shared snapshot keeps only the PATH directories of ~/.bashrc and
+# ~/.bash_profile, and drops lines such as `eval "$(mise activate bash)"`.
+
+set -euo pipefail
+
+# Amp and orb services start in login shells, and ~/.bash_profile reads ~/.env, which sets PATH.
+# Interactive shells, such as the Terminal tab, read ~/.bashrc, and the orb's ~/.bashrc also reads
+# ~/.env. So activate mise at the end of each file. Why no MISE_SHELL check: a child shell inherits
+# the variable, but not the hook of mise.
+marker="# app-server: activate mise (.agents/resume)"
+for file in "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
+	if ! grep -Fqx "${marker}" "${file}" 2>/dev/null; then
+		cat >>"${file}" <<EOF
+
+${marker}
+export PATH="\$HOME/.local/bin:\$PATH"
+if command -v mise >/dev/null 2>&1; then
+	eval "\$(mise activate bash)"
+fi
+EOF
+	fi
+done

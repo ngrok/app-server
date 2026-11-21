@@ -186,3 +186,6 @@ test/fixtures/client-errors/.react-router
 test/fixtures/tanstack-start/dist
 test/fixtures/tanstack-start/src/routeTree.gen.ts
 test/fixtures/tanstack-start/.tanstack
+
+# Amp orb portal metadata
+.amp/portals/*
