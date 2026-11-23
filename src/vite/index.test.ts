@@ -1459,6 +1459,45 @@ describe("appServer in a server build", () => {
 		]);
 	});
 
+	it("copies each file of a package that gives an HTML template to `require.resolve()`", async () => {
+		const { values, server } = await buildAlone(
+			{
+				...ogPackage,
+				"node_modules/og/package.json": JSON.stringify({
+					name: "og",
+					type: "module",
+					exports: { ".": { node: "./dist/node.js", default: "./dist/edge.js" } },
+					dependencies: { views: "1.0.0" },
+				}),
+				"node_modules/og/dist/node.js": [
+					'import { readFileSync } from "node:fs";',
+					'import views from "views";',
+					"export const word = async () => {",
+					'\tconst own = readFileSync(new URL("./word.txt", import.meta.url), "utf8");',
+					'\treturn own + " " + views.page;',
+					"};",
+				].join("\n"),
+				// Why a name in the template: a template engine finds a partial at run time, so a trace cannot see it.
+				...commonJsPackage(
+					"views",
+					[
+						'const { readFileSync } = require("node:fs");',
+						'const { dirname, join } = require("node:path");',
+						'const read = (file) => readFileSync(file, "utf8");',
+						"const render = (file) => read(join(dirname(file), read(file).trim().slice(1, -1)));",
+						'exports.page = render(require.resolve("./template.html"));',
+					].join("\n"),
+				),
+				"node_modules/views/template.html": "<partial.html>",
+				"node_modules/views/partial.html": "partial",
+			},
+			{},
+		);
+
+		expect(values).toStrictEqual(["own file partial"]);
+		expect(existsSync(join(server, "node_modules/views/partial.html"))).toBe(true);
+	});
+
 	it("copies the dependencies of a package whose Bun entry the trace cannot parse, such as TypeScript", async () => {
 		const { values, server } = await buildAlone(
 			{
