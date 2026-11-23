@@ -89,7 +89,7 @@
   },
   "dependencies": {
     "@hono/node-server": "2.1.11",
-    "@vercel/nft": "1.11.10"
+    "@vercel/nft": "1.11.12"
   },
   "devDependencies": {
     "@changesets/changelog-github": "1.0.1",
@@ -102,10 +102,10 @@
     "@types/node": "26.6.6",
     "@vitejs/plugin-react": "6.3.0",
     "happy-dom": "20.14.6",
-    "hono": "4.13.19",
-    "oxfmt": "0.79.0",
-    "oxlint": "1.94.0",
-    "oxlint-tsgolint": "7.0.2007",
+    "hono": "4.13.21",
+    "oxfmt": "0.80.0",
+    "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2008",
     "playwright": "1.65.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -136,5 +136,5 @@
   "engines": {
     "node": "^26.0.0"
   },
-  "packageManager": "pnpm@12.21.0"
+  "packageManager": "pnpm@12.23.0"
 }

@@ -276,9 +276,10 @@ const UNPARSED = /^Failed to parse (?<file>.+) as module:/u;
  * system's loader, such as `sharp` loads libvips, and a trace cannot see it.
  * The trace misses the files that a module loads through
  * {@link UNTRACED_OWN_FILE}, the imports of a module that it cannot parse,
- * and a file that {@link RESOLVE_CALL} finds through the `exports` of a
- * package. So the package of such a module, or the package that it
- * resolves, keeps each file, with each package that it depends on.
+ * the partials of an HTML template that a module resolves, and a file that
+ * {@link RESOLVE_CALL} finds through the `exports` of a package. So the
+ * package of such a module, or the package that it resolves, keeps each file,
+ * with each package that it depends on.
  *
  * @example
  * await removeUntraced("/app/build/server", copied, (copy) => isNativePackage(copy.source));
@@ -321,14 +322,20 @@ export async function removeUntraced(
 	);
 	// Why relative: the warning names the real path, and `/tmp` on macOS is a symbolic link.
 	const real = realpathSync(serverDirectory);
-	const unparsed = new Set(
-		traces.flatMap(({ warnings }) =>
-			[...warnings].flatMap(({ message }) => {
-				const file = UNPARSED.exec(message)?.groups?.file;
-				return file == null ? [] : [join(serverDirectory, relative(real, file))];
-			}),
+	const failed = traces.flatMap(({ warnings }) =>
+		[...warnings].flatMap(({ message }) => {
+			const file = UNPARSED.exec(message)?.groups?.file;
+			return file == null ? [] : [join(serverDirectory, relative(real, file))];
+		}),
+	);
+	// Why: the trace does not parse an HTML file that a module resolves, so it gives no warning, and
+	// a template can name a partial at run time.
+	const templates = traces.flatMap(({ reasons }) =>
+		[...reasons].flatMap(([file, { type }]) =>
+			type.includes("dependency") && /\.html?$/u.test(file) ? [join(serverDirectory, file)] : [],
 		),
 	);
+	const unparsed = new Set([...failed, ...templates]);
 	const present = [...copied.keys()].filter((destination) => existsSync(destination));
 	for (const destination of present.filter((each) => !kept.has(each))) {
 		const loaded = ownFiles(destination).filter((file) => traced.has(file));

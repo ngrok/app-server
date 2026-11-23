@@ -65,6 +65,7 @@ function recordingLogger(lines: string[]): LogSink {
 
 describe("createEntry", () => {
 	it("refuses an app that is not from createServer", () => {
+		// oxlint-disable-next-line typescript/no-unsafe-class-instance-assignment -- the test needs a fake app to prove the check
 		const app = {} as AppServer;
 
 		expect(() => createEntry({ app, host: nodeHost, framework: () => stubFramework() })).toThrow(
