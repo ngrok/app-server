@@ -1,5 +1,11 @@
 # @ngrok/app-server
 
+## 0.5.4
+
+### Patch Changes
+
+- [#91](https://github.com/ngrok/app-server/pull/91) [`529f97c`](https://github.com/ngrok/app-server/commit/529f97c05478e3a0f5af272ad064d94733665e6d) Thanks [@cody-dot-js](https://github.com/cody-dot-js)! - Update dependencies within the 6h minimum release age. A standalone server build now keeps each file of a package that resolves an HTML template, so a partial that the template names at run time stays in the build. `@vercel/nft` 1.11.12 no longer parses HTML, so before this fix the build removed such a partial.
+
 ## 0.5.3
 
 ### Patch Changes
