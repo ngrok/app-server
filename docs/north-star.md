@@ -4,6 +4,8 @@ These are the goals of each change to `@ngrok/app-server`: its code, its options
 
 The goals have no order. They work together: a change that meets five goals and fails one is not done.
 
+Choose a design by what the visitor, the app developer, and the operator get, not by what is easy to build or to migrate. The number of apps or call sites that a change must move is never a reason to keep a worse API.
+
 ## How to use the goals
 
 - **Before you design:** for each goal, ask what the change does to it. Choose the design that meets all six. The [principles](./principles/README.md) are the methods that get you there.

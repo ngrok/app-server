@@ -13,6 +13,8 @@ Judge a change by what the people on the other side get: the visitor who waits f
 - A visitor who sees a failed navigation, a blank page, or a reload that they did not cause.
 - A log line that an operator cannot act on, or a startup error that does not name the bad value.
 - A changeset that describes the diff and not what changes for the app.
+- An option, mode, or default that exists only so that existing apps do not have to change.
+- A pattern copied from nearby code only because it is there, such as a workaround or a `// TODO`.
 
 **In this repo:** the README lists what the server fixes in `@react-router/serve`. Each item is an experience that the server owns.
 
